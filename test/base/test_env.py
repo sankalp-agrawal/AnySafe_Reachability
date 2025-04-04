@@ -6,8 +6,8 @@ import numpy as np
 import pytest
 from gymnasium.spaces.discrete import Discrete
 
-from LCRL.data import Batch
-from LCRL.env import (
+from PyHJ.data import Batch
+from PyHJ.env import (
     ContinuousToDiscrete,
     DummyVectorEnv,
     MultiDiscreteToDiscrete,
@@ -16,8 +16,8 @@ from LCRL.env import (
     SubprocVectorEnv,
     VectorEnvNormObs,
 )
-from LCRL.env.gym_wrappers import TruncatedAsTerminated
-from LCRL.utils import RunningMeanStd
+from PyHJ.env.gym_wrappers import TruncatedAsTerminated
+from PyHJ.utils import RunningMeanStd
 
 if __name__ == "__main__":
     from env import MyTestEnv, NXEnv

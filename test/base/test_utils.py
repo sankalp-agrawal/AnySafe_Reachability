@@ -1,10 +1,10 @@
 import numpy as np
 import torch
 
-from LCRL.exploration import GaussianNoise, OUNoise
-from LCRL.utils import MovAvg, MultipleLRSchedulers, RunningMeanStd
-from LCRL.utils.net.common import MLP, Net
-from LCRL.utils.net.continuous import RecurrentActorProb, RecurrentCritic
+from PyHJ.exploration import GaussianNoise, OUNoise
+from PyHJ.utils import MovAvg, MultipleLRSchedulers, RunningMeanStd
+from PyHJ.utils.net.common import MLP, Net
+from PyHJ.utils.net.continuous import RecurrentActorProb, RecurrentCritic
 
 
 def test_noise():

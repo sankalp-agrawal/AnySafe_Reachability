@@ -5,7 +5,7 @@ import gymnasium as gym
 import numpy as np
 import tqdm
 
-from LCRL.data import Batch, ReplayBuffer, VectorReplayBuffer
+from PyHJ.data import Batch, ReplayBuffer, VectorReplayBuffer
 
 
 def test_replaybuffer(task="Pendulum-v1"):

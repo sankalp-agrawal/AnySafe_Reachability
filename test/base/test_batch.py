@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 import torch
 
-from LCRL.data import Batch, to_numpy, to_torch
+from PyHJ.data import Batch, to_numpy, to_torch
 
 
 def test_batch():

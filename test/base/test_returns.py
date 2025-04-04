@@ -3,8 +3,8 @@ from timeit import timeit
 import numpy as np
 import torch
 
-from LCRL.data import Batch, ReplayBuffer, to_numpy
-from LCRL.policy import BasePolicy
+from PyHJ.data import Batch, ReplayBuffer, to_numpy
+from PyHJ.policy import BasePolicy
 
 
 def compute_episodic_return_base(batch, gamma):

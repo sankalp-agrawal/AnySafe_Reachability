@@ -1,9 +1,9 @@
 import numpy as np
 import tqdm
 
-from LCRL.data import AsyncCollector, Batch, Collector, VectorReplayBuffer
-from LCRL.env import DummyVectorEnv, SubprocVectorEnv
-from LCRL.policy import BasePolicy
+from PyHJ.data import AsyncCollector, Batch, Collector, VectorReplayBuffer
+from PyHJ.env import DummyVectorEnv, SubprocVectorEnv
+from PyHJ.policy import BasePolicy
 
 if __name__ == '__main__':
     from env import MyTestEnv

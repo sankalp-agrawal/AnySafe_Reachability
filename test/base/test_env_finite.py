@@ -7,9 +7,9 @@ import gymnasium as gym
 import numpy as np
 from torch.utils.data import DataLoader, Dataset, DistributedSampler
 
-from LCRL.data import Batch, Collector
-from LCRL.env import BaseVectorEnv, DummyVectorEnv, SubprocVectorEnv
-from LCRL.policy import BasePolicy
+from PyHJ.data import Batch, Collector
+from PyHJ.env import BaseVectorEnv, DummyVectorEnv, SubprocVectorEnv
+from PyHJ.policy import BasePolicy
 
 
 class DummyDataset(Dataset):

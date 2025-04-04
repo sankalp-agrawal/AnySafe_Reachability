@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 import torch
 
-from LCRL.data import (
+from PyHJ.data import (
     Batch,
     CachedReplayBuffer,
     HERReplayBuffer,
@@ -19,7 +19,7 @@ from LCRL.data import (
     SegmentTree,
     VectorReplayBuffer,
 )
-from LCRL.data.utils.converter import to_hdf5
+from PyHJ.data.utils.converter import to_hdf5
 
 if __name__ == '__main__':
     from env import MyGoalEnv, MyTestEnv

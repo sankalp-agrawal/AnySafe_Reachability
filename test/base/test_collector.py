@@ -3,7 +3,7 @@ import pytest
 import tqdm
 from torch.utils.tensorboard import SummaryWriter
 
-from LCRL.data import (
+from PyHJ.data import (
     AsyncCollector,
     Batch,
     CachedReplayBuffer,
@@ -12,8 +12,8 @@ from LCRL.data import (
     ReplayBuffer,
     VectorReplayBuffer,
 )
-from LCRL.env import DummyVectorEnv, SubprocVectorEnv
-from LCRL.policy import BasePolicy
+from PyHJ.env import DummyVectorEnv, SubprocVectorEnv
+from PyHJ.policy import BasePolicy
 
 try:
     import envpool

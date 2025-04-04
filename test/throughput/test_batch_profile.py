@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 import torch
 
-from LCRL.data import Batch
+from PyHJ.data import Batch
 
 
 @pytest.fixture(scope="module")
