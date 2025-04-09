@@ -297,6 +297,7 @@ def get_eval_plot():
         axes1[i].imshow(V>0, extent=(-1.1, 1.1, -1.1, 1.1), origin='lower')
         axes2[i].imshow(V, extent=(-1.1, 1.1, -1.1, 1.1), vmin=-1., vmax=1., origin='lower')    
         axes1[i].set_title('theta = {}'.format(np.round(thetas[i],2)), fontsize=12,)
+        axes2[i].set_title('theta = {}'.format(np.round(thetas[i],2)), fontsize=12,)
         
             
     return fig1, fig2
@@ -352,7 +353,8 @@ for iter in range(args.total_episodes):
 
     plot1, plot2 = get_eval_plot()
     wandb.log({"binary_reach_avoid_plot": wandb.Image(plot1), "continuous_plot": wandb.Image(plot2)})
-    
+    plt.close()
+
 
 
 

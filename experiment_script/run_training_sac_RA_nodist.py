@@ -19,7 +19,9 @@ import PyHJ.reach_rl_gym_envs as reach_rl_gym_envs
 from PyHJ.data import Batch
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
-
+import math
+from PIL import Image
+import io
 """
     Note that, we can pass arguments to the script by using
     For learning our new reach-avoid value function:
@@ -48,7 +50,7 @@ def get_args():
     parser.add_argument('--tau', type=float, default=0.005)
     parser.add_argument('--exploration-noise', type=float, default=0.0)
     parser.add_argument('--total-episodes', type=int, default=100)
-    parser.add_argument('--step-per-epoch', type=int, default=40000)
+    parser.add_argument('--step-per-epoch', type=int, default=20000)
     parser.add_argument('--step-per-collect', type=int, default=8)
     parser.add_argument('--update-per-step', type=float, default=0.125)
     parser.add_argument('--batch-size', type=int, default=512)
@@ -64,8 +66,6 @@ def get_args():
     parser.add_argument('--continue-training-logdir', type=str, default=None)
     parser.add_argument('--continue-training-epoch', type=int, default=None)
     parser.add_argument('--actor-gradient-steps', type=int, default=1)
-    parser.add_argument('--is-game-baseline', type=bool, default=False) # it will be set automatically
-    parser.add_argument('--is-game', type=bool, default=False) # it will be set automatically
     parser.add_argument('--target-update-freq', type=int, default=400)
     parser.add_argument(
         '--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu'
@@ -271,10 +271,10 @@ def evaluate_V(state):
 
 def get_eval_plot():
     nx, ny = 51, 51
-    thetas = [0, np.pi/6, np.pi/3, np.pi/2]
+    thetas = [3*np.pi/2, 7*np.pi/4, 0, np.pi/4, np.pi/2]
 
-    fig1, axes1 = plt.subplots(1,len(thetas))
-    fig2, axes2 = plt.subplots(1,len(thetas))
+    fig1, axes1 = plt.subplots(1,len(thetas), figsize=(25, 5))
+    fig2, axes2 = plt.subplots(1,len(thetas), figsize=(25, 5))
     X, Y = np.meshgrid(
         np.linspace(-1.1, 1.1, nx, endpoint=True),
         np.linspace(-1.1, 1.1, ny, endpoint=True),
@@ -286,24 +286,36 @@ def get_eval_plot():
                 tmp_point = torch.tensor([
                             X[ii,jj],
                             Y[ii,jj],
-                            thetas[i],
+                            math.sin(thetas[i]),
+                            math.cos(thetas[i]),
                         ])
                 V[ii,jj] = evaluate_V( tmp_point )
         
         axes1[i].imshow(V>0, extent=(-1.1, 1.1, -1.1, 1.1), origin='lower')
-        goal = Circle((0.5, 0.5), 0.25, color='green', fill=False)  # fill=False makes it a ring
-        const = Circle((-0.5, -0.5), 0.25, color='red', fill=False)  # fill=False makes it a ring
+        goal = Circle((0.5, 0.0), 0.25, color='green', fill=False)  # fill=False makes it a ring
+        const = Circle((-0.5, -0.0), 0.25, color='red', fill=False)  # fill=False makes it a ring
 
         # Add the circle to the axes
         axes2[i].add_patch(goal)
         axes2[i].add_patch(const)
         axes2[i].imshow(V, extent=(-1.1, 1.1, -1.1, 1.1), vmin=-1., vmax=1., origin='lower')    
+        goal2 = Circle((0.5, 0.0), 0.25, color='green', fill=False)  # fill=False makes it a ring
+        const2 = Circle((-0.5, -0.0), 0.25, color='red', fill=False)  # fill=False makes it a ring
+        # Add the circle to the axes
+        axes1[i].add_patch(goal2)
+        axes1[i].add_patch(const2)  
         axes1[i].set_title('theta = {}'.format(np.round(thetas[i],2)), fontsize=12,)
+        axes2[i].set_title('theta = {}'.format(np.round(thetas[i],2)), fontsize=12,)
         
             
     return fig1, fig2
 
-
+def fig_to_image(fig):
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png')
+    buf.seek(0)
+    img = Image.open(buf)
+    return img.convert('RGB')
 
 if not os.path.exists(log_path+"/epoch_id_{}".format(epoch)):
     print("Just created the log directory!")
@@ -312,9 +324,13 @@ if not os.path.exists(log_path+"/epoch_id_{}".format(epoch)):
 
 
 
-gammas = np.linspace(0.95, 0.9999, endpoint=True, num=args.total_episodes)
+gammas = np.linspace(0.99, 0.9999, endpoint=True, num=args.total_episodes)
 
 logger = None
+
+
+cont_figs =[]
+binary_figs =[]
 for iter in range(args.total_episodes):
     policy._gamma = gammas[iter]
     if args.continue_training_epoch is not None:
@@ -354,10 +370,28 @@ for iter in range(args.total_episodes):
 
     plot1, plot2 = get_eval_plot()
     wandb.log({"binary_reach_avoid_plot": wandb.Image(plot1), "continuous_plot": wandb.Image(plot2)})
-    
+    cont_figs.append(fig_to_image(plot2))
+    binary_figs.append(fig_to_image(plot1))
+    plt.close(plot1)
+    plt.close(plot2)
 
-
-
+# Save GIF
+cont_figs[0].save(
+    'cont_plot.gif',
+    format='GIF',
+    append_images=cont_figs[1:],
+    save_all=True,
+    duration=500,  # ms per frame
+    loop=0
+)
+binary_figs[0].save(
+    'binary_plot.gif',
+    format='GIF',
+    append_images=binary_figs[1:],
+    save_all=True,
+    duration=500,  # ms per frame
+    loop=0
+)
 
 
 '''def get_eval_plot():

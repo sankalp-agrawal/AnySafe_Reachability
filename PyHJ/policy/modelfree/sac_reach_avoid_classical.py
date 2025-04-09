@@ -176,7 +176,6 @@ class reach_avoid_SACPolicy_annealing(DDPGPolicy):
         pure_critic_value1 = torch.min(current_q1a, current_q2a)
         actor1_loss = (
             self._alpha * obs_result1.log_prob.flatten() -
-            # torch.min(current_q1a, current_q2a)
             pure_critic_value1
         ).mean()
         self.actor1_optim.zero_grad()
@@ -184,21 +183,12 @@ class reach_avoid_SACPolicy_annealing(DDPGPolicy):
         self.actor1_optim.step()
         
         
-        
-        
-        # import pdb; pdb.set_trace()
-        obs_result2 = self(batch)
-        act = obs_result2.act
-        current_q1a = self.critic1(batch.obs, act).flatten()
-        current_q2a = self.critic2(batch.obs, act).flatten()
-        pure_critic_value2 = torch.max(current_q1a, current_q2a)
-        
+
         
         if self._is_auto_alpha:
             log_prob1 = obs_result1.log_prob.detach() + self._target_entropy
-            log_prob2 = obs_result2.log_prob.detach() + self._target_entropy
             # please take a look at issue #258 if you'd like to change this line
-            alpha_loss = -(self._log_alpha * log_prob1).mean() + -(self._log_alpha * log_prob2).mean()
+            alpha_loss = -(self._log_alpha * log_prob1).mean()
             self._alpha_optim.zero_grad()
             alpha_loss.backward()
             self._alpha_optim.step()
@@ -218,3 +208,12 @@ class reach_avoid_SACPolicy_annealing(DDPGPolicy):
         return result
 
 
+    def exploration_noise(self, act: Union[np.ndarray, Batch],
+                            batch: Batch) -> Union[np.ndarray, Batch]:
+        return act
+        rand_act = np.random.uniform(-1, 1, act.shape)
+
+        values = self.critic1(batch.obs, rand_act).cpu().detach().numpy()
+        act = np.where(values < 0.0, act, rand_act)
+
+        return act
