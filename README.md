@@ -3,7 +3,7 @@
 This is a minimal repository for doing HJ reachability analysis using the Discounted Safety/Reach-avoid Bellman equation originally introduced in [this](https://ieeexplore.ieee.org/abstract/document/8794107) and [this](https://arxiv.org/abs/2112.12288) paper. We build on the implementation used as baselines from [this repo](https://github.com/jamesjingqili/Lipschitz_Continuous_Reachability_Learning). 
 
 
-This repository supports SAC and DDPG implementations of both the safety-only and reach-avoid value functions. 
+This repository supports SAC and DDPG implementations of both the safety-only and reach-avoid value functions. I have not yet tested HJ with disturbances.
 
 
 We recommend Python version 3.12. 
@@ -18,22 +18,21 @@ Install instruction:
 
 4. run in terminal: conda install -c conda-forge ffmpeg
 
-Brief tutorial: we use `experiment_script/run_training_ddpg.py` to learn our reach-avoid value function. We visualize the learned reach-avoid sets, Lipschitz certified, and SOCP certified sets in `experiment_script/droneracing_post_training_DDPG_eval_new.ipynb`. 
 
 # Some sample training scripts:
 
-For drone racing: 
+For a Dubins Car Reach-avoid example: 
 
-> python run_training_ddpg.py --task ra_droneracing_Game-v6 --control-net 512 512 512 512 --disturbance-net 512 512 512 512 --critic-net 512 512 512 512 --epoch 10 --total-episodes 160 --gamma 0.95
+> python run_training_sac_RA_nodist.py --control-net 512 512 512 512 --critic-net 512 512 512 512 --epoch 1 --total-episodes 80
 
-For highway take-over: 
+For a Dubins car avoid-only example: 
 
-> python run_training_ddpg.py --task ra_highway_Game-v2 --control-net 512 512 512 --disturbance-net 512 512 512 --critic-net 512 512 512 --epoch 10 --total-episodes 160 --gamma 0.95
+> python run_training_sac_nodist.py --control-net 512 512 512 --critic-net 512 512 512 --epoch 1 --total-episodes 40
 
 Finally, we recommend always setting the action space to range from -1 to 1 in the gym.env definition, but we can scale or shift the actions within the gym.step() function when defining the dynamics. For example, if we have two double integrator dynamics: the first integrator’s control is bounded by -0.1 to 0.1, and the second integrator’s control is bounded by -0.3 to 0.3. In this case, we can define self.action_space = spaces.Box(-1, 1, shape=(2,), dtype=np.float64) and implement the dynamics in gym.step(self, u) as follows:
 
 
-**A key thing to notice is that the initial state distribution should cover a portion of the target set. Otherwise, no state in the target set shows up in the data buffer and therefore, the policy cannot see where it should go to maximize the value function. **
+**A key thing to notice is that the initial state distribution should cover a portion of the target set for reach-avoid settings. Otherwise, no state in the target set shows up in the data buffer and therefore, the policy cannot see where it should go to maximize the value function. **
 
 In addition, we remark that the convergence of critic loss implies that the neural network value function approximates well the value function induced by the current learned policy. However, it does not mean the learning is done because we cannot tell the quality of policies by just looking at the critic loss. In minimax DDPG, it improves the learned policy by minimizing the control actor loss, and refines the disturbance policy by maximizing the disturbance actor loss. However, we observe that a small critic loss stabilizes the multi-agent reinforcement learning training, and therefore helps policy learning. 
 
