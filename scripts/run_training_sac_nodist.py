@@ -19,9 +19,6 @@ import PyHJ.reach_rl_gym_envs as reach_rl_gym_envs
 from PyHJ.data import Batch
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
-import math
-from PIL import Image
-import io
 """
     Note that, we can pass arguments to the script by using
     For learning our new reach-avoid value function:
@@ -39,7 +36,7 @@ import io
 
 def get_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--task', type=str, default='dubinsRA-v0') # ra_droneracing_Game-v6, ra_highway_Game-v2, ra_1d_Game-v0
+    parser.add_argument('--task', type=str, default='dubins-v0') # ra_droneracing_Game-v6, ra_highway_Game-v2, ra_1d_Game-v0
     parser.add_argument('--reward-threshold', type=float, default=None)
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--buffer-size', type=int, default=40000)
@@ -50,7 +47,7 @@ def get_args():
     parser.add_argument('--tau', type=float, default=0.005)
     parser.add_argument('--exploration-noise', type=float, default=0.0)
     parser.add_argument('--total-episodes', type=int, default=100)
-    parser.add_argument('--step-per-epoch', type=int, default=20000)
+    parser.add_argument('--step-per-epoch', type=int, default=40000)
     parser.add_argument('--step-per-collect', type=int, default=8)
     parser.add_argument('--update-per-step', type=float, default=0.125)
     parser.add_argument('--batch-size', type=int, default=512)
@@ -66,6 +63,8 @@ def get_args():
     parser.add_argument('--continue-training-logdir', type=str, default=None)
     parser.add_argument('--continue-training-epoch', type=int, default=None)
     parser.add_argument('--actor-gradient-steps', type=int, default=1)
+    parser.add_argument('--is-game-baseline', type=bool, default=False) # it will be set automatically
+    parser.add_argument('--is-game', type=bool, default=False) # it will be set automatically
     parser.add_argument('--target-update-freq', type=int, default=400)
     parser.add_argument(
         '--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu'
@@ -142,6 +141,8 @@ else:
     # report error:
     raise ValueError("Please provide critic_net!")
 
+# critic = Critic(critic_net, device=args.device).to(args.device)
+# critic_optim = torch.optim.Adam(critic.parameters(), lr=args.critic_lr)
 
 critic1 = Critic(critic_net, device=args.device).to(args.device)
 critic1_optim = torch.optim.Adam(critic1.parameters(), lr=args.critic_lr)
@@ -150,8 +151,8 @@ critic2_optim = torch.optim.Adam(critic2.parameters(), lr=args.critic_lr)
 # import pdb; pdb.set_trace()
 log_path = None
 
-from PyHJ.policy import reach_avoid_SACPolicy_annealing as SACPolicy
-print("SAC under the Reach-Avoid annealed Bellman equation has been loaded!")
+from PyHJ.policy import avoid_SACPolicy_annealing as SACPolicy
+print("SAC under the Avoid annealed Bellman equation has been loaded!")
 
 actor1_net = Net(args.state_shape, hidden_sizes=args.control_net, activation=actor_activation, device=args.device)
 actor1 = ActorProb(
@@ -215,6 +216,8 @@ if args.warm_start_path is not None:
     args.kwargs = args.kwargs + "warmstarted"
 
 epoch = 0
+# writer = SummaryWriter(log_path, filename_suffix="_"+timestr+"epoch_id_{}".format(epoch))
+# logger = TensorboardLogger(writer)
 log_path = log_path+'/noise_{}_actor_lr_{}_critic_lr_{}_batch_{}_step_per_epoch_{}_kwargs_{}_seed_{}'.format(
         args.exploration_noise, 
         args.actor_lr, 
@@ -256,66 +259,6 @@ def stop_fn(mean_rewards):
     return False
 
 
-def find_a(state):
-    tmp_obs = np.array(state).reshape(1,-1)
-    tmp_batch = Batch(obs = tmp_obs, info = Batch())
-    tmp = policy(tmp_batch, model = "actor_old").act
-    act = policy.map_action(tmp).cpu().detach().numpy().flatten()
-    return act
-
-def evaluate_V(state):
-    tmp_obs = np.array(state).reshape(1,-1)
-    tmp_batch = Batch(obs = tmp_obs, info = Batch())
-    tmp = policy.critic1(tmp_batch.obs, policy(tmp_batch, model="actor_old").act)
-    return tmp.cpu().detach().numpy().flatten()
-
-def get_eval_plot():
-    nx, ny = 51, 51
-    thetas = [3*np.pi/2, 7*np.pi/4, 0, np.pi/4, np.pi/2]
-
-    fig1, axes1 = plt.subplots(1,len(thetas), figsize=(25, 5))
-    fig2, axes2 = plt.subplots(1,len(thetas), figsize=(25, 5))
-    X, Y = np.meshgrid(
-        np.linspace(-1.1, 1.1, nx, endpoint=True),
-        np.linspace(-1.1, 1.1, ny, endpoint=True),
-    )
-    for i in range(len(thetas)):
-        V = np.zeros_like(X)
-        for ii in range(nx):
-            for jj in range(ny):
-                tmp_point = torch.tensor([
-                            X[ii,jj],
-                            Y[ii,jj],
-                            math.sin(thetas[i]),
-                            math.cos(thetas[i]),
-                        ])
-                V[ii,jj] = evaluate_V( tmp_point )
-        
-        axes1[i].imshow(V>0, extent=(-1.1, 1.1, -1.1, 1.1), origin='lower')
-        goal = Circle((0.5, 0.0), 0.25, color='green', fill=False)  # fill=False makes it a ring
-        const = Circle((-0.5, -0.0), 0.25, color='red', fill=False)  # fill=False makes it a ring
-
-        # Add the circle to the axes
-        axes2[i].add_patch(goal)
-        axes2[i].add_patch(const)
-        axes2[i].imshow(V, extent=(-1.1, 1.1, -1.1, 1.1), vmin=-1., vmax=1., origin='lower')    
-        goal2 = Circle((0.5, 0.0), 0.25, color='green', fill=False)  # fill=False makes it a ring
-        const2 = Circle((-0.5, -0.0), 0.25, color='red', fill=False)  # fill=False makes it a ring
-        # Add the circle to the axes
-        axes1[i].add_patch(goal2)
-        axes1[i].add_patch(const2)  
-        axes1[i].set_title('theta = {}'.format(np.round(thetas[i],2)), fontsize=12,)
-        axes2[i].set_title('theta = {}'.format(np.round(thetas[i],2)), fontsize=12,)
-        
-            
-    return fig1, fig2
-
-def fig_to_image(fig):
-    buf = io.BytesIO()
-    fig.savefig(buf, format='png')
-    buf.seek(0)
-    img = Image.open(buf)
-    return img.convert('RGB')
 
 if not os.path.exists(log_path+"/epoch_id_{}".format(epoch)):
     print("Just created the log directory!")
@@ -324,13 +267,9 @@ if not os.path.exists(log_path+"/epoch_id_{}".format(epoch)):
 
 
 
-gammas = np.linspace(0.99, 0.9999, endpoint=True, num=args.total_episodes)
+gammas = np.linspace(0.95, 0.9999, endpoint=True, num=args.total_episodes)
 
 logger = None
-
-
-cont_figs =[]
-binary_figs =[]
 for iter in range(args.total_episodes):
     policy._gamma = gammas[iter]
     if args.continue_training_epoch is not None:
@@ -348,7 +287,7 @@ for iter in range(args.total_episodes):
             os.makedirs(log_path+"/total_epochs_{}".format(epoch))
         writer = SummaryWriter(log_path+"/total_epochs_{}".format(epoch)) #filename_suffix="_"+timestr+"_epoch_id_{}".format(epoch))
     if logger is None:
-        logger = WandbLogger()
+        logger = WandbLogger(name ='SAC')
         logger.load(writer)
     
     # import pdb; pdb.set_trace()
@@ -368,86 +307,13 @@ for iter in range(args.total_episodes):
     )
     save_best_fn(policy, epoch=epoch)
 
-    plot1, plot2 = get_eval_plot()
+    plots = env.get_eval_plot(policy, policy.critic1)
+    plot1, plot2 = plots[0], plots[1]
     wandb.log({"binary_reach_avoid_plot": wandb.Image(plot1), "continuous_plot": wandb.Image(plot2)})
-    cont_figs.append(fig_to_image(plot2))
-    binary_figs.append(fig_to_image(plot1))
-    plt.close(plot1)
-    plt.close(plot2)
+    if len(plots) ==3:
+        f1 = plots[2]
+        wandb.log({"f1_score": wandb.Image(f1)}) 
 
-# Save GIF
-cont_figs[0].save(
-    'cont_plot.gif',
-    format='GIF',
-    append_images=cont_figs[1:],
-    save_all=True,
-    duration=500,  # ms per frame
-    loop=0
-)
-binary_figs[0].save(
-    'binary_plot.gif',
-    format='GIF',
-    append_images=binary_figs[1:],
-    save_all=True,
-    duration=500,  # ms per frame
-    loop=0
-)
+    plt.close()
 
 
-'''def get_eval_plot():
-    grid = np.load('/home/kensuke/HJRL/new_BRT_v1_w1.25.npy')
-
-    #thetas = [0, np.pi/6, np.pi/3, np.pi/2]
-    plot_idxs = [0, 7, 14, 20]
-
-    fig1, axes1 = plt.subplots(1,len(plot_idxs))
-    fig2, axes2 = plt.subplots(1,len(plot_idxs))
-    X, Y = np.meshgrid(
-        np.linspace(-1.1, 1.1, grid.shape[0], endpoint=True),
-        np.linspace(-1.1, 1.1, grid.shape[1], endpoint=True),
-    )
-    thetas_lin = np.linspace(0, 2*np.pi, grid.shape[2], endpoint=True)
-
-    tp, fp, fn, tn = 0, 0, 0, 0
-    for i in range(len(thetas_lin)):
-        V = np.zeros_like(X)
-        for ii in range(grid.shape[0]):
-            for jj in range(grid.shape[1]):
-                tmp_point = torch.tensor([
-                            X[ii,jj],
-                            Y[ii,jj],
-                            thetas_lin[i],
-                        ])
-                V[ii,jj] = evaluate_V( tmp_point )
-        
-        V_grid = grid[:, :, i]
-        tp_grid = np.sum((V>0) & (V_grid.T>0))
-        fp_grid = np.sum((V>0) & (V_grid.T<0)) 
-        fn_grid = np.sum((V<0) & (V_grid.T>0))
-        tn_grid = np.sum((V<0) & (V_grid.T<0))
-        tp += tp_grid
-        fp += fp_grid
-        fn += fn_grid
-        tn += tn_grid
-
-        prec_grid = tp_grid / (tp_grid + fp_grid) if (tp_grid + fp_grid) > 0 else 0
-        rec_grid = tp_grid / (tp_grid + fn_grid) if (tp_grid + fn_grid) > 0 else 0
-        f1_grid = 2 * (prec_grid * rec_grid) / (prec_grid + rec_grid) if (prec_grid + rec_grid) > 0 else 0
-        
-        if i in plot_idxs:
-            plot_idx = plot_idxs.index(i)
-
-            tmp_val = evaluate_V(torch.tensor([-0.8, 0, thetas_lin[i]]))
-            axes1[plot_idx].imshow(V>0, extent=(-1.1, 1.1, -1.1, 1.1), origin='lower')
-            axes2[plot_idx].imshow(V, extent=(-1.1, 1.1, -1.1, 1.1), vmin=-1., vmax=1., origin='lower')    
-            axes1[plot_idx].set_title('theta = {}'.format(np.round(thetas_lin[i],2)), fontsize=12,)
-            axes2[plot_idx].set_title('f1 = {}'.format(np.round(f1_grid,2)), fontsize=12,)
-            
-            axes1[plot_idx].contour(grid[:,:,i].T, levels=[0.], colors='purple', linewidths=2, origin='lower', extent=[-1.1, 1.1, -1.1, 1.1])
-            
-    print("TP: {}, FP: {}, FN: {}, TN: {}".format(tp, fp, fn, tn))
-    prec = tp / (tp + fp) if (tp + fp) > 0 else 0
-    rec =  tp / (tp + fn) if (tp + fn) > 0 else 0
-    f1 = 2 * (prec * rec) / (prec+ rec) if (prec + rec) > 0 else 0
-    
-    return fig1, fig2, f1'''

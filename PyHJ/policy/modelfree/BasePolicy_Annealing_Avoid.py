@@ -343,115 +343,50 @@ class BasePolicy_Annealing_Avoid(ABC, nn.Module):
         :return: a Batch. The result will be stored in batch.returns as a
             torch.Tensor with the same shape as target_q_fn's return tensor.
         """
-        # assert not rew_norm, \
-            # "Reward normalization in computing n-step returns is unsupported now."
+
         rew = buffer.rew
-        #const = buffer.info.constraint
         bsz = len(indice)
         indices = [indice]
         for _ in range(n_step - 1):
             indices.append(buffer.next(indices[-1]))
         indices = np.stack(indices)
 
-        #print('rew', np.shape(rew))
-        #print('bsz', bsz)
-        #print('nstep', n_step)
-        #print('indices', np.shape(indices))
-
-        '''
-        n_step = 1
-
-        rew (40000,)
-        bsz 512
-        nstep 1
-        indices (1, 512)
-        target_q_torch torch.Size([512, 1])
-
-        n_step = 2
-        rew (40000,)
-        bsz 512
-        nstep 2
-        indices (2, 512)
-        target_q_torch torch.Size([512, 1])
-        '''
         # terminal indicates buffer indexes nstep after 'indice',
         # and are truncated at the end of each episode
         terminal = indices[-1]
         with torch.no_grad():
             target_q_torch = target_q_fn(buffer, terminal)  # (bsz, ?)
-            #print('target_q_torch', target_q_torch.size())
-            #simplified_index = np.arange(0,len(terminal),1)
+
         target_q = to_numpy(target_q_torch.reshape(bsz, -1))
-        target_q = target_q * BasePolicy_Annealing_Avoid.value_mask(buffer, terminal).reshape(-1, 1)
-        #print('target_q', np.shape(target_q))
-        end_flag = buffer.done.copy()
-        end_flag[buffer.unfinished_index()] = True
-        #target_q = _nstep_return(rew, end_flag, target_q, indices, gamma, n_step)
-        #print('end_flag', np.shape(end_flag))
-        target_q = _nstep_return_approximated_avoid_Bellman_equation(end_flag, rew, target_q, indices, gamma)
+
+        target_q = _nstep_return_approximated_avoid_Bellman_equation(rew, target_q, indices, gamma)
         batch.returns = to_torch_as(target_q, target_q_torch)
         if hasattr(batch, "weight"):  # prio buffer update
             batch.weight = to_torch_as(batch.weight, target_q_torch)
         return batch
 
     def _compile(self) -> None:
-        f64 = np.array([0, 1], dtype=np.float64)
         f32 = np.array([0, 1], dtype=np.float32)
-        b = np.array([False, True], dtype=np.bool_)
         i64 = np.array([[0, 1]], dtype=np.int64)
-        _gae_return(f64, f64, f64, b, 0.1, 0.1)
-        _gae_return(f32, f32, f64, b, 0.1, 0.1)
-        _nstep_return_approximated_avoid_Bellman_equation(b, f32.reshape(-1, 1),f32.reshape(-1, 1), i64, 0.9)
+        _nstep_return_approximated_avoid_Bellman_equation(f32.reshape(-1, 1),f32.reshape(-1, 1), i64, 0.9)
 
-
-@njit
-def _gae_return(
-    v_s: np.ndarray,
-    v_s_: np.ndarray,
-    rew: np.ndarray,
-    end_flag: np.ndarray,
-    gamma: float,
-    gae_lambda: float,
-) -> np.ndarray:
-    returns = np.zeros(rew.shape)
-    delta = rew + v_s_ * gamma - v_s
-    m = (1.0 - end_flag) * (gamma * gae_lambda)
-    gae = 0.0
-    for i in range(len(rew) - 1, -1, -1):
-        gae = delta[i] + m[i] * gae
-        returns[i] = gae
-    return returns
 
 
 # @njit
 def _nstep_return_approximated_avoid_Bellman_equation(
-    end_flag: np.ndarray,
     rew: np.ndarray,
-    target_q: np.ndarray,
+    terminal_value: np.ndarray,
     indices: np.ndarray,
     gamma: float,
 ) -> np.ndarray:
-    target_shape = target_q.shape
+    target_shape = terminal_value.shape
     bsz = target_shape[0]
-    
-    # Here, the done variable, d, represents whether the simulation length is over the time limit for the each state in the data replay buffer.
-    # For example, d is a vector of length bsz, where each element is True if the simulation length is over the time limit for the corresponding state in the data replay buffer.
-    # The terminal_value is the value of the terminal state, which is the value of the state where the simulation length is over the time limit.
-    # here we implement the same terminal condition as the type "max" in https://github.com/SafeRoboticsLab/ISAACS/blob/1c2d6b40f43d7218fdd2f3f4e489e5acff8d019d/utils/train.py#L40
-    
-    d = end_flag[indices] # get the done flag for each state in the data replay buffer
-    done_indices = np.where(d==True)[1]
- 
-    terminal_value = target_q
-    terminal_value[done_indices] = np.inf # this ensures that target_q = min(c(x), r(x)), as in the type "max" terminal condition of the original implementation in 
-    # https://github.com/SafeRoboticsLab/ISAACS/blob/1c2d6b40f43d7218fdd2f3f4e489e5acff8d019d/utils/train.py#L40
-    
+        
     # convention: negative is unsafe
+    # V = min(l(x), V(x'))
     target_q = gamma*np.minimum( # take the worst between
                 rew[indices].reshape(bsz,1), # safety now
                 terminal_value # and safety in the future
                 ) + (1-gamma)*rew[indices].reshape(bsz,1) #discount toward safety now
     
-    
-
     return target_q.reshape(target_shape)

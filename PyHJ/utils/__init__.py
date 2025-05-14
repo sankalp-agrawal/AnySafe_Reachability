@@ -7,6 +7,7 @@ from PyHJ.utils.lr_scheduler import MultipleLRSchedulers
 from PyHJ.utils.progress_bar import DummyTqdm, tqdm_config
 from PyHJ.utils.statistics import MovAvg, RunningMeanStd
 from PyHJ.utils.warning import deprecation
+from PyHJ.utils.eval_utils import evaluate_V, find_a
 
 __all__ = [
     "MovAvg",
@@ -20,4 +21,6 @@ __all__ = [
     "WandbLogger",
     "deprecation",
     "MultipleLRSchedulers",
+    "evaluate_V",
+    "find_a",
 ]

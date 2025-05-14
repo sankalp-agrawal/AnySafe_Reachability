@@ -57,8 +57,8 @@ class avoid_DDPGPolicy_annealing(BasePolicy):
         estimation_step: int = 1,
         action_scaling: bool = True,
         action_bound_method: str = "clip",
-        actor1: Optional[torch.nn.Module] = None, # control policy
-        actor1_optim: Optional[torch.optim.Optimizer] = None,
+        actor: Optional[torch.nn.Module] = None, # control policy
+        actor_optim: Optional[torch.optim.Optimizer] = None,
         actor_gradient_steps: int = 5,
         **kwargs: Any,
     ) -> None:
@@ -75,16 +75,11 @@ class avoid_DDPGPolicy_annealing(BasePolicy):
             self.critic_old = deepcopy(critic)
             self.critic_old.eval()
             self.critic_optim: torch.optim.Optimizer = critic_optim
-        if actor1 is not None and actor1_optim is not None:
-            self.actor1: torch.nn.Module = actor1
-            self.actor1_old = deepcopy(actor1)
-            self.actor1_old.eval()
-            self.actor1_optim: torch.optim.Optimizer = actor1_optim
-        '''if actor2 is not None and actor2_optim is not None:
-            self.actor2: torch.nn.Module = actor2
-            self.actor2_old = deepcopy(actor2)
-            self.actor2_old.eval()
-            self.actor2_optim: torch.optim.Optimizer = actor2_optim'''
+        if actor is not None and actor_optim is not None:
+            self.actor: torch.nn.Module = actor
+            self.actor_old = deepcopy(actor)
+            self.actor_old.eval()
+            self.actor_optim: torch.optim.Optimizer = actor_optim
         
         assert 0.0 <= tau <= 1.0, "tau should be in [0, 1]"
         self.tau = tau
@@ -94,6 +89,8 @@ class avoid_DDPGPolicy_annealing(BasePolicy):
         self._rew_norm = reward_normalization
         self._n_step = estimation_step
         self.actor_gradient_steps = actor_gradient_steps
+        self.new_expl = True
+        self.warmup = False
 
     def set_exp_noise(self, noise: Optional[BaseNoise]) -> None:
         """Set the exploration noise."""
@@ -103,13 +100,12 @@ class avoid_DDPGPolicy_annealing(BasePolicy):
         """Set the module in training mode, except for the target network."""
         self.training = mode
         self.critic.train(mode)
-        self.actor1.train(mode)
+        self.actor.train(mode)
         return self
 
     def sync_weight(self) -> None:
         """Soft-update the weight for the target network."""
-        self.soft_update(self.actor1_old, self.actor1, self.tau)
-        #self.soft_update(self.actor2_old, self.actor2, self.tau)
+        self.soft_update(self.actor_old, self.actor, self.tau)
         self.soft_update(self.critic_old, self.critic, self.tau)
 
     def _target_q(self, buffer: ReplayBuffer, indices: np.ndarray) -> torch.Tensor:
@@ -153,11 +149,11 @@ class avoid_DDPGPolicy_annealing(BasePolicy):
             more detailed explanation.
         """
         if model=='actor_old':
-            model1 = getattr(self, "actor1_old")
+            actor_model = getattr(self, "actor_old")
         elif model=='actor':
-            model1 = getattr(self, "actor1")
+            actor_model = getattr(self, "actor")
         obs = batch[input]
-        actions1, hidden1 = model1(obs, state=state, info=batch.info)
+        actions1, hidden1 = actor_model(obs, state=state, info=batch.info)
         
         return Batch(act=actions1, 
                     state=hidden1)
@@ -171,7 +167,7 @@ class avoid_DDPGPolicy_annealing(BasePolicy):
         current_q = critic(batch.obs, batch.act).flatten()
         target_q = batch.returns.flatten()
         td = current_q - target_q
-        critic_loss = (td.pow(2) * torch.abs(td.detach())).mean()
+        critic_loss = (td.pow(2) * weight).mean()
 
         optimizer.zero_grad()
         critic_loss.backward()
@@ -186,23 +182,22 @@ class avoid_DDPGPolicy_annealing(BasePolicy):
         # actor
         
         """Note that we update actor 5 times for each critic update!"""
-        # update player 1's actor
-        # note that for self.act1, we fix the action of player 2
-        for _ in range(self.actor_gradient_steps):
-            act = self(batch, model="actor").act
-            rot_cost = torch.norm(act[:, 3:6], dim=1)
-            actor1_loss = -self.critic(batch.obs, act).mean() + 0.05*rot_cost.mean()
-            self.actor1_optim.zero_grad()
-            actor1_loss.backward()
-            self.actor1_optim.step()
+        # update actor
+        if not self.warmup:
+            for _ in range(self.actor_gradient_steps):
+                act = self(batch, model="actor").act
+                actor_loss = -self.critic(batch.obs, act).mean()
+                self.actor_optim.zero_grad()
+                actor_loss.backward()
+                self.actor_optim.step()
+        else:
+            actor_loss = torch.tensor(0.0)
                
-        print(act[0,3:6])
         
         # soft update the parameters
         self.sync_weight()
         return {
-            "loss/actor1": actor1_loss.item(),
-            #"loss/rotation": rot_cost.mean().item(),    
+            "loss/actor": actor_loss.item(),
             "loss/critic": critic_loss.item(),
         }
 
@@ -210,10 +205,20 @@ class avoid_DDPGPolicy_annealing(BasePolicy):
                             batch: Batch) -> Union[np.ndarray, Batch]:
         
         if self._noise is None:
-            return act
+            act = act
         if isinstance(act, np.ndarray):
-            return act + self._noise(act.shape)
-        warnings.warn("Cannot add exploration noise to non-numpy_array action.")
+            act =  act + self._noise(act.shape)
+        else:
+            warnings.warn("Cannot add exploration noise to non-numpy_array action.")
+
+        if self.new_expl:
+            rand_act = np.random.uniform(-1, 1, act.shape)
+            values = self.critic(batch.obs, rand_act).cpu().detach().numpy()
+            act = np.where(values < 0.0, act, rand_act)
+
+        if self.warmup:
+            act = np.random.uniform(-1, 1, act.shape)
+
         return act
     
     

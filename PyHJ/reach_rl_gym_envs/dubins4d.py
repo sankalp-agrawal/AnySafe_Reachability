@@ -9,37 +9,43 @@ from matplotlib.patches import Circle
 import torch
 from PyHJ.utils import evaluate_V
 
-class Dubins_Env(gym.Env):
+
+
+class Dubins_Env_4D(gym.Env):
     # TODO: 1. baseline over approximation; 2. our critic loss drop faster 
     def __init__(self):
         self.render_mode = None
         self.dt = 0.05
+        self.u_max = 1.25
+        self.a_max = 1
+        self.v_max = 3
         self.high = np.array([
-            1.1, 1.1, 1.1, 1.1
+            1.1, 1.1, 1.1, 1.1, 0
         ])
         self.low = np.array([
-            -1.1, -1.1, -1.1, -1.1
+            -1.1, -1.1, -1.1, -1.1, self.v_max
         ])
         self.observation_space = spaces.Box(low=self.low, high=self.high, dtype=np.float32)
-        self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(1,), dtype=np.float32) # joint action space
+        self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32) # joint action space
         
         self.constraint = [0., 0., 0.5] # constraint: [x, y, r]
-        self.u_max = 1.25
+        
 
         
     def step(self, action):
         # action is in -1, 1. Scale by self.u_max
 
-        self.state[0] = self.state[0] + self.dt * self.state[3]
-        self.state[1] = self.state[1] + self.dt * self.state[2]
+        self.state[0] = self.state[0] + self.dt * self.state[3] * self.state[4]
+        self.state[1] = self.state[1] + self.dt * self.state[2] * self.state[4]
         
         theta = np.arctan2(self.state[2], self.state[3]) # sin, cos
         theta_next = theta + self.dt * (action[0] * self.u_max)
-
-
         # this trick ensure the periodic state is continuous. this is important so the inputs the nn have no discontinuities
         self.state[2] = np.sin(theta_next)
         self.state[3] = np.cos(theta_next)
+
+        self.state[4] = self.state[4] + self.dt * (action[1] * self.a_max)
+        self.state[4] = np.clip(self.state[4], 0, self.v_max)
 
         # l(x) = (x-x0)^2 + (y-y0)^2 - r^2
         rew = ((self.state[0]-self.constraint[0])**2 + (self.state[1]-self.constraint[1])**2 - self.constraint[2]**2)
@@ -57,7 +63,7 @@ class Dubins_Env(gym.Env):
         if initial_state is None:
             theta = np.random.uniform(low=0, high=2*np.pi)
 
-            self.state = np.random.uniform(low=[-1, -1, -1, -1], high=[1, 1, 1, 1], size=(4,))
+            self.state = np.random.uniform(low=[-1.1, -1.1, -1.1, -1.1, 0.], high=[1.1, 1.1, 1.1, 1.1, self.v_max], size=(5,))
             self.state[2] = np.sin(theta)
             self.state[3] = np.cos(theta)        
         else:
@@ -69,36 +75,40 @@ class Dubins_Env(gym.Env):
     def get_eval_plot(self, policy, critic):
         nx, ny = 51, 51
         thetas = [0, np.pi/6, np.pi/3, np.pi/2]
-
-        fig1, axes1 = plt.subplots(1,len(thetas))
-        fig2, axes2 = plt.subplots(1,len(thetas))
+        vs = [ 1.0, 1.5, 3.0]
+        fig1, axes1 = plt.subplots(len(vs),len(thetas))
+        fig2, axes2 = plt.subplots(len(vs),len(thetas))
         X, Y = np.meshgrid(
-            np.linspace(-1., 1., nx, endpoint=True),
-            np.linspace(-1., 1., ny, endpoint=True),
+            np.linspace(-1.1, 1.1, nx, endpoint=True),
+            np.linspace(-1.1, 1.1, ny, endpoint=True),
         )
         for i in range(len(thetas)):
-            V = np.zeros_like(X)
-            for ii in range(nx):
-                for jj in range(ny):
-                    tmp_point = torch.tensor([
-                                X[ii,jj],
-                                Y[ii,jj],
-                                np.sin(thetas[i]),
-                                np.cos(thetas[i]),
-                            ])
-                    V[ii,jj] = evaluate_V( tmp_point, policy, critic)
+            for j in range(len(vs)):
+                V = np.zeros_like(X)
+                for ii in range(nx):
+                    for jj in range(ny):
+                        tmp_point = torch.tensor([
+                                    X[ii,jj],
+                                    Y[ii,jj],
+                                    np.sin(thetas[i]),
+                                    np.cos(thetas[i]),
+                                    vs[j]
+                                ])
+                        V[ii,jj] = evaluate_V( tmp_point, policy, critic)
             
         
-            axes1[i].imshow(V>0, extent=(-1., 1., -1., 1.), origin='lower')
-            axes2[i].imshow(V, extent=(-1., 1., -1., 1.), vmin=-1., vmax=1., origin='lower') 
-            const = Circle((-0.0, -0.0), 0.5, color='red', fill=False)  # fill=False makes it a ring
-            # Add the circle to the axes
-            axes1[i].add_patch(const)
-            const2 = Circle((-0.0, -0.0), 0.5, color='red', fill=False)  # fill=False makes it a ring
-            # Add the circle to the axes
-            axes2[i].add_patch(const2)   
-            axes1[i].set_title('theta = {}'.format(np.round(thetas[i],2)), fontsize=12,)
-            axes2[i].set_title('theta = {}'.format(np.round(thetas[i],2)), fontsize=12,)
+                axes1[j,i].imshow(V>0, extent=(-1.1, 1.1, -1.1, 1.1), origin='lower')
+                axes2[j,i].imshow(V, extent=(-1.1, 1.1, -1.1, 1.1), vmin=-1., vmax=1., origin='lower') 
+                const = Circle((-0.0, -0.0), 0.5, color='red', fill=False)  # fill=False makes it a ring
+                # Add the circle to the axes
+                axes1[j,i].add_patch(const)
+                const2 = Circle((-0.0, -0.0), 0.5, color='red', fill=False)  # fill=False makes it a ring
+                # Add the circle to the axes
+                axes2[j,i].add_patch(const2)   
+                axes1[0,i].set_title('theta = {}'.format(np.round(thetas[i],2)), fontsize=12,)
+                axes2[0,i].set_title('theta = {}'.format(np.round(thetas[i],2)), fontsize=12,)
+                axes1[j,0].set_ylabel('v = {}'.format(np.round(vs[j],2)), fontsize=12,)
+                axes2[j,0].set_ylabel('v = {}'.format(np.round(vs[j],2)), fontsize=12,)
             
                 
         return fig1, fig2

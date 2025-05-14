@@ -206,3 +206,14 @@ class avoid_SACPolicy_annealing(DDPGPolicy):
             result["alpha"] = self._alpha.item()  # type: ignore
 
         return result
+    
+    def exploration_noise(self, act: Union[np.ndarray, Batch],
+                            batch: Batch, new_expl = True) -> Union[np.ndarray, Batch]:
+
+        if new_expl:
+            rand_act = np.random.uniform(-1, 1, act.shape)
+
+            values = self.critic1(batch.obs, rand_act).cpu().detach().numpy()
+            act = np.where(values < 0.0, act, rand_act)
+
+        return act

@@ -28,6 +28,9 @@ def get_install_requires() -> str:
         "seaborn",
         "clarabel",
         "ipykernel",
+        "ruamel-yaml==0.17.40",
+        "termcolor",
+        "moviepy==1.0.3"
     ]
 
 
