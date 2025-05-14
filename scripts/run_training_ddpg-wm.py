@@ -188,7 +188,7 @@ else:
     raise ValueError("Please provide critic_net!")
 
 critic = Critic(critic_net, device=args.device).to(args.device)
-critic_optim = torch.optim.Adam(critic.parameters(), lr=args.critic_lr)
+critic_optim = torch.optim.AdamW(critic.parameters(), lr=args.critic_lr, weight_decay=args.weight_decay_pyhj)
 
 log_path = None
 
@@ -200,7 +200,7 @@ actor_net = Net(args.state_shape, hidden_sizes=args.control_net, activation=acto
 actor = Actor(
     actor_net, args.action_shape, max_action=args.max_action, device=args.device
 ).to(args.device)
-actor_optim = torch.optim.Adam(actor.parameters(), lr=args.actor_lr)
+actor_optim = torch.optim.AdamW(actor.parameters(), lr=args.actor_lr)
 
 
 policy = DDPGPolicy(
@@ -371,8 +371,8 @@ def evaluate_V(state):
     tmp = policy.critic(tmp_batch.obs, policy(tmp_batch, model="actor_old").act)
     return tmp.cpu().detach().numpy().flatten()
 def get_eval_plot(cache, thetas):
-    fig1, axes1 = plt.subplots(len(thetas), 1, figsize=(5, 1))
-    fig2, axes2 = plt.subplots(len(thetas), 1, figsize=(5, 1))
+    fig1, axes1 = plt.subplots(len(thetas), 1, figsize=(1, 5))
+    fig2, axes2 = plt.subplots(len(thetas), 1, figsize=(1, 5))
 
     for i in range(len(thetas)):
         theta = thetas[i]

@@ -152,6 +152,7 @@ defaults:
   auto-alpha: 1
   alpha-lr: 3e-4
   alpha: 0.2 
+  weight-decay-pyhj: 0.01
   
   actor-activation: 'ReLU' #type=str, default='ReLU')
   critic-activation: 'ReLU' # type=str, default='ReLU')
