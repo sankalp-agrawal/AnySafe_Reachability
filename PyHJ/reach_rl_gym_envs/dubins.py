@@ -100,7 +100,7 @@ class Dubins_Env(gym.Env):
         return self.obs, {}
 
     def select_constraints(self):
-        self.constraints = [np.array([0.0, 0.0, 0.5], [0.5, 0.5, 0.25])]
+        self.constraints = [np.array([-0.5, -0.5, 0.25]), np.array([0.5, 0.5, 0.25])]
         return self.constraints
 
     def get_eval_plot(self, policy, critic):
