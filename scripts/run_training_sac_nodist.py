@@ -60,6 +60,12 @@ def get_args():
     parser.add_argument(
         "--critic-net", type=int, nargs="*", default=None
     )  # for critic net
+    parser.add_argument(
+        "--constraint-embedding-dim", type=int, default=3
+    )  # for constraint embedding
+    parser.add_argument(
+        "--control-net-const", type=int, nargs="*", default=(128, 128)
+    )  # for control net constraint
     parser.add_argument("--training-num", type=int, default=8)
     parser.add_argument("--test-num", type=int, default=100)
     parser.add_argument("--logdir", type=str, default="log")
@@ -103,6 +109,7 @@ if isinstance(env.observation_space, gym.spaces.Dict):
     )
 else:
     args.state_shape = env.observation_space.shape or env.observation_space.n
+args.constraint_dim = env.constraints_shape
 args.action_shape = env.action_space.shape or env.action_space.n
 args.max_action = env.action_space.high[0]
 
@@ -144,6 +151,9 @@ if args.critic_net is not None:
         args.state_shape,
         args.action_shape,
         hidden_sizes=args.critic_net,
+        constraint_dim=args.constraint_dim,
+        constraint_embedding_dim=args.constraint_embedding_dim,
+        hidden_sizes_constraint=args.control_net_const,
         activation=critic_activation,
         concat=True,
         device=args.device,
@@ -171,6 +181,9 @@ actor1_net = Net(
     hidden_sizes=args.control_net,
     activation=actor_activation,
     device=args.device,
+    constraint_dim=args.constraint_dim,
+    constraint_embedding_dim=args.constraint_embedding_dim,
+    hidden_sizes_constraint=args.control_net_const,
 )
 actor1 = ActorProb(actor1_net, args.action1_shape, device=args.device).to(args.device)
 actor1_optim = torch.optim.Adam(actor1.parameters(), lr=args.actor_lr)

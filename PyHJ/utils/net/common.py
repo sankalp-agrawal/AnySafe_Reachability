@@ -199,6 +199,9 @@ class Net(nn.Module):
         state_shape: Union[int, Sequence[int]],
         action_shape: Union[int, Sequence[int]] = 0,
         hidden_sizes: Sequence[int] = (),
+        constraint_dim: Optional[Union[int, Sequence[int]]] = 0,
+        constraint_embedding_dim: Optional[int] = 0,
+        hidden_sizes_constraint: Optional[Union[int, Sequence[int]]] = (),
         norm_layer: Optional[Union[ModuleType, Sequence[ModuleType]]] = None,
         norm_args: Optional[ArgsType] = None,
         activation: Optional[Union[ModuleType, Sequence[ModuleType]]] = nn.ReLU,
@@ -220,7 +223,31 @@ class Net(nn.Module):
             input_dim += action_dim
         self.use_dueling = dueling_param is not None
         output_dim = action_dim if not self.use_dueling and not concat else 0
-        self.obs_inputs = ["state"]
+        self.obs_inputs = ["state", "constraint"]
+        if "constraint" in self.obs_inputs:
+            self.use_constraint = True
+            assert (
+                constraint_dim is not None and constraint_embedding_dim is not None
+            ), (
+                "constraint_dim and constraint_embedding_dim must be set if "
+                "constraint is used in the network."
+            )
+            self.constraint_encoder = MLP(
+                input_dim=constraint_dim,
+                output_dim=constraint_embedding_dim,
+                hidden_sizes=hidden_sizes_constraint,
+                norm_layer=norm_layer,
+                norm_args=norm_args,
+                activation=activation,
+                act_args=act_args,
+                device=device,
+                linear_layer=linear_layer,
+                flatten_input=False,
+            )
+            input_dim += constraint_embedding_dim
+        else:
+            self.use_constraint = False
+
         self.model = MLP(
             input_dim,
             output_dim,

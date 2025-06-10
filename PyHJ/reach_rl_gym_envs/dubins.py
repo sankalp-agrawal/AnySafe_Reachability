@@ -18,7 +18,7 @@ class Dubins_Env(gym.Env):
         self.dt = 0.05
         self.high = np.array([1.1, 1.1, 1.1, 1.1])
         self.low = np.array([-1.1, -1.1, -1.1, -1.1])
-        self.num_constraints = 1  # Number of constraints
+        self.num_constraints = 2  # Number of constraints
         self.constraints_shape = 3  # Shape of one constraint, e.g. [x, y, r]
         self.observation_space = spaces.Dict(
             {
@@ -55,7 +55,13 @@ class Dubins_Env(gym.Env):
         self.state[3] = np.cos(theta_next)
 
         # l(x) = (x-x0)^2 + (y-y0)^2 - r^2
-        rew = (self.state[0] - 0.0) ** 2 + (self.state[1] - 0.0) ** 2 - 0.5**2
+        rews = []
+        for constraint in self.constraints:
+            x, y, r = constraint
+            rew = (self.state[0] - x) ** 2 + (self.state[1] - y) ** 2 - r**2
+            rews.append(rew)
+
+        rew = np.min(rews)  # take the minimum reward across all constraints
 
         terminated = False
         truncated = False
@@ -94,7 +100,7 @@ class Dubins_Env(gym.Env):
         return self.obs, {}
 
     def select_constraints(self):
-        self.constraints = [np.array([0.0, 0.0, 0.5])]
+        self.constraints = [np.array([0.0, 0.0, 0.5], [0.5, 0.5, 0.25])]
         return self.constraints
 
     def get_eval_plot(self, policy, critic):
@@ -111,7 +117,7 @@ class Dubins_Env(gym.Env):
             V = np.zeros_like(X)
             for ii in range(nx):
                 for jj in range(ny):
-                    tmp_point = torch.tensor(
+                    tmp_point = np.array(
                         [
                             X[ii, jj],
                             Y[ii, jj],
@@ -119,7 +125,11 @@ class Dubins_Env(gym.Env):
                             np.cos(thetas[i]),
                         ]
                     )
-                    V[ii, jj] = evaluate_V(tmp_point, policy, critic)
+                    temp_obs = {
+                        "state": tmp_point,
+                        "constraints": np.array(self.select_constraints()),
+                    }
+                    V[ii, jj] = evaluate_V(obs=temp_obs, policy=policy, critic=critic)
 
             axes1[i].imshow(V > 0, extent=(-1.0, 1.0, -1.0, 1.0), origin="lower")
             axes2[i].imshow(

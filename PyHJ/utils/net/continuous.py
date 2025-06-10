@@ -116,6 +116,40 @@ class Critic(nn.Module):
             linear_layer=linear_layer,
             flatten_input=flatten_input,
         )
+        self.use_constraint = self.preprocess.use_constraint
+
+    def preprocess_obs(self, obs: Union[dict, Batch]):
+        """Preprocess the observation for the critic."""
+        if set(obs.keys()) != set(["state", "constraints"]):
+            raise NotImplementedError(
+                "obs beyond state and constraint is not supported yet."
+            )
+
+        constraints = torch.tensor(obs["constraints"], device=self.device)  # (B, N, C)
+        encodings = self.preprocess.constraint_encoder(
+            constraints
+        )  # unmasked encodings of constraints (B, N, Z)
+
+        mask = constraints[..., 2] >= 0  # TODO: Make this general
+        mask_expanded = mask.unsqueeze(-1)  # (B, N, 1)
+
+        # Step 2: Zero out masked values and sum
+        encodings_masked = (
+            encodings * mask_expanded
+        )  # masked values are zeroed (B, N, Z)
+        sum_masked = encodings_masked.sum(dim=1)  # shape (B, Z)
+
+        # Step 3: Count number of True entries per batch
+        count = mask.sum(dim=1, keepdim=True).clamp(
+            min=1
+        )  # shape (B, 1), clamp to avoid division by zero
+
+        # Step 4: Compute mean
+        encodings_masked = sum_masked / count  # shape (B, Z)
+
+        return torch.cat(
+            [torch.tensor(obs["state"], device=self.device), encodings_masked], dim=-1
+        )
 
     def forward(
         self,
@@ -124,8 +158,13 @@ class Critic(nn.Module):
         info: Dict[str, Any] = {},
     ) -> torch.Tensor:
         """Mapping: (s, a) -> logits -> Q(s, a)."""
+        if self.use_constraint:
+            assert isinstance(obs, (dict, Batch)), (
+                "obs should be a dict or Batch when using constraint, "
+                "but got {}".format(type(obs))
+            )
         if isinstance(obs, (dict, Batch)):
-            obs = obs["state"]  # type: ignore
+            obs = self.preprocess_obs(obs)
         else:
             obs = obs
 
@@ -212,6 +251,40 @@ class ActorProb(nn.Module):
             self.sigma_param = nn.Parameter(torch.zeros(self.output_dim, 1))
         self.max_action = max_action
         self._unbounded = unbounded
+        self.use_constraint = self.preprocess.use_constraint
+
+    def preprocess_obs(self, obs: Union[dict, Batch]):
+        """Preprocess the observation for the actor."""
+        if set(obs.keys()) != set(["state", "constraints"]):
+            raise NotImplementedError(
+                "obs beyond state and constraint is not supported yet."
+            )
+
+        constraints = torch.tensor(obs["constraints"], device=self.device)  # (B, N, C)
+        encodings = self.preprocess.constraint_encoder(
+            constraints
+        )  # unmasked encodings of constraints (B, N, Z)
+
+        mask = constraints[..., 2] >= 0  # TODO: Make this general
+        mask_expanded = mask.unsqueeze(-1)  # (B, N, 1)
+
+        # Step 2: Zero out masked values and sum
+        encodings_masked = (
+            encodings * mask_expanded
+        )  # masked values are zeroed (B, N, Z)
+        sum_masked = encodings_masked.sum(dim=1)  # shape (B, Z)
+
+        # Step 3: Count number of True entries per batch
+        count = mask.sum(dim=1, keepdim=True).clamp(
+            min=1
+        )  # shape (B, 1), clamp to avoid division by zero
+
+        # Step 4: Compute mean
+        encodings_masked = sum_masked / count  # shape (B, Z)
+
+        return torch.cat(
+            [torch.tensor(obs["state"], device=self.device), encodings_masked], dim=-1
+        )
 
     def forward(
         self,
@@ -220,8 +293,13 @@ class ActorProb(nn.Module):
         info: Dict[str, Any] = {},
     ) -> Tuple[Tuple[torch.Tensor, torch.Tensor], Any]:
         """Mapping: obs -> logits -> (mu, sigma)."""
+        if self.use_constraint:
+            assert isinstance(obs, (dict, Batch)), (
+                "obs should be a dict or Batch when using constraint, "
+                "but got {}".format(type(obs))
+            )
         if isinstance(obs, (dict, Batch)):
-            obs = obs["state"]  # TODO: Come back
+            obs = self.preprocess_obs(obs)
         else:
             obs = obs
 
