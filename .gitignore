@@ -5,6 +5,8 @@ experiment_script/log
 **.pth
 **/wandb/
 **/log/
+**.pt
+**.pkl
 
 **/__pycache__/
 LCRL/policy/__pycache__/

@@ -5,6 +5,7 @@ import numpy as np
 import torch
 from torch import nn
 
+from PyHJ.data.batch import Batch
 from PyHJ.utils.net.common import MLP
 
 SIGMA_MIN = -20
@@ -53,7 +54,7 @@ class Actor(nn.Module):
             input_dim,  # type: ignore
             self.output_dim,
             hidden_sizes,
-            device=self.device
+            device=self.device,
         )
         self.max_action = max_action
 
@@ -123,6 +124,11 @@ class Critic(nn.Module):
         info: Dict[str, Any] = {},
     ) -> torch.Tensor:
         """Mapping: (s, a) -> logits -> Q(s, a)."""
+        if isinstance(obs, (dict, Batch)):
+            obs = obs["state"]  # type: ignore
+        else:
+            obs = obs
+
         obs = torch.as_tensor(
             obs,
             device=self.device,
@@ -192,7 +198,7 @@ class ActorProb(nn.Module):
             input_dim,  # type: ignore
             self.output_dim,
             hidden_sizes,
-            device=self.device
+            device=self.device,
         )
         self._c_sigma = conditioned_sigma
         if conditioned_sigma:
@@ -200,7 +206,7 @@ class ActorProb(nn.Module):
                 input_dim,  # type: ignore
                 self.output_dim,
                 hidden_sizes,
-                device=self.device
+                device=self.device,
             )
         else:
             self.sigma_param = nn.Parameter(torch.zeros(self.output_dim, 1))
@@ -214,6 +220,11 @@ class ActorProb(nn.Module):
         info: Dict[str, Any] = {},
     ) -> Tuple[Tuple[torch.Tensor, torch.Tensor], Any]:
         """Mapping: obs -> logits -> (mu, sigma)."""
+        if isinstance(obs, (dict, Batch)):
+            obs = obs["state"]  # TODO: Come back
+        else:
+            obs = obs
+
         logits, hidden = self.preprocess(obs, state)
         mu = self.mu(logits)
         if not self._unbounded:
@@ -292,10 +303,11 @@ class RecurrentActorProb(nn.Module):
             # we store the stack data in [bsz, len, ...] format
             # but pytorch rnn needs [len, bsz, ...]
             obs, (hidden, cell) = self.nn(
-                obs, (
+                obs,
+                (
                     state["hidden"].transpose(0, 1).contiguous(),
-                    state["cell"].transpose(0, 1).contiguous()
-                )
+                    state["cell"].transpose(0, 1).contiguous(),
+                ),
             )
         logits = obs[:, -1]
         mu = self.mu(logits)
@@ -310,7 +322,7 @@ class RecurrentActorProb(nn.Module):
         # please ensure the first dim is batch size: [bsz, len, ...]
         return (mu, sigma), {
             "hidden": hidden.transpose(0, 1).detach(),
-            "cell": cell.transpose(0, 1).detach()
+            "cell": cell.transpose(0, 1).detach(),
         }
 
 
@@ -395,7 +407,7 @@ class Perturbation(nn.Module):
         preprocess_net: nn.Module,
         max_action: float,
         device: Union[str, int, torch.device] = "cpu",
-        phi: float = 0.05
+        phi: float = 0.05,
     ):
         # preprocess_net: input_dim=state_dim+action_dim, output_dim=action_dim
         super(Perturbation, self).__init__()
@@ -442,7 +454,7 @@ class VAE(nn.Module):
         hidden_dim: int,
         latent_dim: int,
         max_action: float,
-        device: Union[str, torch.device] = "cpu"
+        device: Union[str, torch.device] = "cpu",
     ):
         super(VAE, self).__init__()
         self.encoder = encoder
@@ -475,17 +487,19 @@ class VAE(nn.Module):
         return reconstruction, mean, std
 
     def decode(
-        self,
-        state: torch.Tensor,
-        latent_z: Union[torch.Tensor, None] = None
+        self, state: torch.Tensor, latent_z: Union[torch.Tensor, None] = None
     ) -> torch.Tensor:
         # decode(state) -> action
         if latent_z is None:
             # state.shape[0] may be batch_size
             # latent vector clipped to [-0.5, 0.5]
-            latent_z = torch.randn(state.shape[:-1] + (self.latent_dim, )) \
-                .to(self.device).clamp(-0.5, 0.5)
+            latent_z = (
+                torch.randn(state.shape[:-1] + (self.latent_dim,))
+                .to(self.device)
+                .clamp(-0.5, 0.5)
+            )
 
         # decode z with state!
-        return self.max_action * \
-            torch.tanh(self.decoder(torch.cat([state, latent_z], -1)))
+        return self.max_action * torch.tanh(
+            self.decoder(torch.cat([state, latent_z], -1))
+        )
