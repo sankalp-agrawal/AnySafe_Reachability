@@ -2,6 +2,10 @@
 experiment_script/log
 **/__pycache__/
 
+**.pth
+**/wandb/
+**/log/
+
 **/__pycache__/
 LCRL/policy/__pycache__/
 experiment_script/visualization/log/

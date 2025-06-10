@@ -15,6 +15,7 @@ sys.path.append(parent_dir)
 dreamer_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '../dreamerv3-torch'))
 sys.path.append(dreamer_dir)
 import tools
+from tqdm import tqdm
 
 
 def get_frame(states, config):
@@ -101,14 +102,15 @@ def gen_one_traj_img(config):
 
 def generate_trajs(config):
   demos = []
-  for i in range(config.num_trajs):
+  # use tqdm
+  for i in tqdm(range(config.num_trajs), desc="Generating trajectories"):
     state_obs, acs, state_gt, img_obs, dones = gen_one_traj_img(config)
     demo = {}
     demo['obs'] = {'image': img_obs, 'state': state_obs, 'priv_state': state_gt}
     demo['actions'] = acs
     demo['dones'] = dones
     demos.append(demo)
-    print('demo: ', i, "timesteps: ", len(state_obs))
+    # print('demo: ', i, "timesteps: ", len(state_obs))
 
   
   with open('wm_demos'+str(config.size[0])+'.pkl', 'wb') as f:
