@@ -119,27 +119,40 @@ class DubinsHJSolver:
         )
 
     # Run the solver
-    def solve(self, constraints):
+    def solve(self, constraints, constraints_shape):
         time = 0.0
         target_time = -2.8
 
+        constraints = np.array(constraints)
+
+        if constraints.shape[-1] == (constraints_shape + 1):
+            new_constraints = []
+            for constraint in constraints:
+                if constraint[-1] == 1.0:
+                    new_constraints.append(constraint[:-1])
+                else:
+                    continue
+            constraints = np.array(new_constraints)
+
+        assert constraints.shape[-1] == constraints_shape, (
+            "Constraints should be masked"
+        )
+
         failure_lx = jnp.zeros(
-            (self.grid.states.shape, constraints.shape[0])
-        )  # All grid points + num constraintd
+            (self.grid.states.shape[:-1] + (constraints.shape[0],))
+        )  # All grid points + num constraints
+
         for i, constraint in enumerate(constraints):
             x_c, y_c, radius = constraint
             obstacle_lx = (
                 jnp.linalg.norm(
-                    np.array([0.0, 1.0]) - self.grid.states[..., :2], axis=-1
+                    np.array([x_c, y_c]) - self.grid.states[..., :2], axis=-1
                 )
                 - radius
             )
-            failure_lx[..., i] = obstacle_lx
+            failure_lx = failure_lx.at[..., i].set(obstacle_lx)
 
-        failure_lx = jnp.minumum(failure_lx, axis=-1)
-        import ipdb
-
-        ipdb.set_trace()
+        failure_lx = jnp.min(failure_lx, axis=-1)
 
         target_values = hj.step(
             self.solver_settings, self.dyn_sys, self.grid, time, failure_lx, target_time

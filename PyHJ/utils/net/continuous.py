@@ -125,12 +125,15 @@ class Critic(nn.Module):
                 "obs beyond state and constraint is not supported yet."
             )
 
-        constraints = torch.tensor(obs["constraints"], device=self.device)  # (B, N, C)
+        constraints = torch.tensor(
+            obs["constraints"], device=self.device
+        )  # (B, N, C + 1)
+
         encodings = self.preprocess.constraint_encoder(
-            constraints
+            constraints[..., :-1]  # (B, N, C)
         )  # unmasked encodings of constraints (B, N, Z)
 
-        mask = constraints[..., 2] >= 0  # TODO: Make this general
+        mask = constraints[..., -1] == 1  # (B, N)
         mask_expanded = mask.unsqueeze(-1)  # (B, N, 1)
 
         # Step 2: Zero out masked values and sum
@@ -260,12 +263,15 @@ class ActorProb(nn.Module):
                 "obs beyond state and constraint is not supported yet."
             )
 
-        constraints = torch.tensor(obs["constraints"], device=self.device)  # (B, N, C)
+        constraints = torch.tensor(
+            obs["constraints"], device=self.device
+        )  # (B, N, C + 1)
+
         encodings = self.preprocess.constraint_encoder(
-            constraints
+            constraints[..., :-1]  # (B, N, C)
         )  # unmasked encodings of constraints (B, N, Z)
 
-        mask = constraints[..., 2] >= 0  # TODO: Make this general
+        mask = constraints[..., -1] == 1  # (B, N)
         mask_expanded = mask.unsqueeze(-1)  # (B, N, 1)
 
         # Step 2: Zero out masked values and sum
