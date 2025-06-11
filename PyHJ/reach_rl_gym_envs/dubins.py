@@ -20,7 +20,7 @@ class Dubins_Env(gym.Env):
         self.dt = 0.05
         self.high = np.array([1.1, 1.1, 1.1, 1.1])
         self.low = np.array([-1.1, -1.1, -1.1, -1.1])
-        self.num_constraints = 3  # Number of constraints
+        self.num_constraints = 1  # Number of constraints
         self.constraints_shape = 3  # Shape of one constraint, e.g. [x, y, r]
         self.observation_space = spaces.Dict(
             {
@@ -87,11 +87,24 @@ class Dubins_Env(gym.Env):
         }
         return self.obs, rew, terminated, truncated, info
 
+    # def render(self, mode="human"):
+    #     plt.clf()
+    #     plt.xlim(self.low[0], self.high[0])
+    #     plt.ylim(self.low[1], self.high[1])
+    #     plt.gca().set_aspect("equal", adjustable="box")
+    #     plt.plot(self.state[0], self.state[1], "ro")
+    #     for constraint in self.constraints:
+    #         x, y, r, u = constraint
+    #         circle = Circle((x, y), r, color="b", fill=False)
+    #         plt.gca().add_patch(circle)
+    #     plt.pause(0.001)
+
     def reset(
         self,
         initial_state=None,
         seed: Optional[int] = None,
         options: Optional[dict] = None,
+        in_distribution: bool = True,
     ):
         super().reset(seed=seed)
         if initial_state is None:
@@ -107,35 +120,46 @@ class Dubins_Env(gym.Env):
         self.state = self.state.astype(np.float32)
         self.obs = {
             "state": self.state,
-            "constraints": self.select_constraints(),
+            "constraints": self.select_constraints(in_distribution=in_distribution),
         }
         return self.obs, {}
 
-    def select_constraints(self):
+    def select_constraints(self, in_distribution=True):
         N = np.random.randint(1, self.num_constraints + 1)
         self.constraints = []
-        for _ in range(N):
-            self.constraints.append(
-                np.array(
-                    [
-                        np.random.uniform(low=-1.0, high=1.0),
-                        np.random.uniform(low=-1.0, high=1.0),
-                        np.random.uniform(low=0.1, high=0.5),
-                        1.0,  # This is used to say that this constraint is active
-                    ]
-                )
-            )
-        for _ in range(self.num_constraints - N):
-            self.constraints.append(
-                np.array(
-                    [
-                        np.random.uniform(low=-1.0, high=1.0),
-                        np.random.uniform(low=-1.0, high=1.0),
-                        np.random.uniform(low=0.1, high=0.5),
-                        0.0,  # This is used to say that this constraint is inactive
-                    ]
-                )
-            )
+        in_distribution_set = [
+            [np.array([-0.5, -0.5, 0.5, 1.0])],
+            [np.array([0.5, -0.5, 0.5, 1.0])],
+            [np.array([-0.5, 0.5, 0.5, 1.0])],
+            [np.array([0.5, 0.5, 0.5, 1.0])],
+        ]
+        if in_distribution:
+            i = np.random.randint(0, len(in_distribution_set))
+            self.constraints = in_distribution_set[i]
+        else:
+            self.constraints = [np.array([0.0, 0.0, 0.5, 1.0])]
+        # for _ in range(N):
+        #     self.constraints.append(
+        #         np.array(
+        #             [
+        #                 np.random.uniform(low=-1.0, high=1.0),
+        #                 np.random.uniform(low=-1.0, high=1.0),
+        #                 np.random.uniform(low=0.1, high=0.5),
+        #                 1.0,  # This is used to say that this constraint is active
+        #             ]
+        #         )
+        #     )
+        # for _ in range(self.num_constraints - N):
+        #     self.constraints.append(
+        #         np.array(
+        #             [
+        #                 np.random.uniform(low=-1.0, high=1.0),
+        #                 np.random.uniform(low=-1.0, high=1.0),
+        #                 np.random.uniform(low=0.1, high=0.5),
+        #                 0.0,  # This is used to say that this constraint is inactive
+        #             ]
+        #         )
+        #     )
 
         assert len(self.constraints) == self.num_constraints, (
             "Number of constraints should be {}, but got {}".format(
@@ -145,7 +169,7 @@ class Dubins_Env(gym.Env):
 
         return self.constraints
 
-    def get_eval_plot(self, policy, critic):
+    def get_eval_plot(self, policy, critic, in_distribution=True):
         nx, ny, nt = 51, 51, 51
         thetas = [0, np.pi / 6, np.pi / 3, np.pi / 2]
 
@@ -155,10 +179,12 @@ class Dubins_Env(gym.Env):
             np.linspace(-1.0, 1.0, nx, endpoint=True),
             np.linspace(-1.0, 1.0, ny, endpoint=True),
         )
-        self.select_constraints()
+        self.select_constraints(in_distribution=in_distribution)
         gt_values = self.solver.solve(  # (nx, ny, nt)
             constraints=self.constraints, constraints_shape=self.constraints_shape
         )
+
+        TP, TN, FP, FN, Accuracy, Precision, Recall, F1 = [], [], [], [], [], [], [], []
 
         for i in range(len(thetas)):
             V = np.zeros_like(X)
@@ -177,6 +203,16 @@ class Dubins_Env(gym.Env):
                         "constraints": np.array(self.constraints),
                     }
                     V[ii, jj] = evaluate_V(obs=temp_obs, policy=policy, critic=critic)
+
+            metrics = self.get_metrics(rl_values=V, gt_values=gt_values[:, :, i].T)
+            TP.append(metrics["TP"])
+            TN.append(metrics["TN"])
+            FP.append(metrics["FP"])
+            FN.append(metrics["FN"])
+            Accuracy.append(metrics["Accuracy"])
+            Precision.append(metrics["Precision"])
+            Recall.append(metrics["Recall"])
+            F1.append(metrics["F1"])
 
             nt_index = int(
                 np.round((thetas[i] / (2 * np.pi)) * (nt - 1))
@@ -293,7 +329,20 @@ class Dubins_Env(gym.Env):
 
         plt.tight_layout(rect=[0, 0, 1, 0.95])  # leave space for the legend
 
-        return fig1, fig2
+        return (
+            fig1,
+            fig2,
+            {
+                "TP": np.mean(TP),
+                "TN": np.mean(TN),
+                "FP": np.mean(FP),
+                "FN": np.mean(FN),
+                "Accuracy": np.mean(Accuracy),
+                "Precision": np.mean(Precision),
+                "Recall": np.mean(Recall),
+                "F1": np.mean(F1),
+            },
+        )
 
     def get_eval_plot_f1(self, policy, critic):
         grid = np.load("/home/kensuke/HJRL/new_BRT_v1_w1.25.npy")
@@ -377,3 +426,51 @@ class Dubins_Env(gym.Env):
         f1 = 2 * (prec * rec) / (prec + rec) if (prec + rec) > 0 else 0
 
         return fig1, fig2, f1
+
+    def generate_trajectory(self, policy, in_distributon=True):
+        self.reset()
+        obs = self.obs
+        traj = [obs["state"]]
+        imgs = []
+        done = False
+        eps = 0.5
+        while not done:
+            V = evaluate_V(obs=obs, policy=policy, critic=None)
+            if V > eps:
+                if self.nominal_policy == "Turn Right":
+                    action = np.array([1.0], dtype=np.float32)
+                else:
+                    raise ValueError(
+                        "Unknown nominal policy: {}".format(self.nominal_policy)
+                    )
+            else:
+                action = policy(obs, model="actor").act.cpu().detach().numpy()
+            obs, rew, done, _, _ = self.step(action)
+            traj.append(obs["state"])
+            imgs.append(self.render())
+
+    def get_metrics(self, rl_values, gt_values):
+        assert rl_values.shape == gt_values.shape
+
+        rl_values = rl_values > 0
+        gt_values = gt_values > 0
+        tp = np.sum((rl_values == 1) & (gt_values == 1))
+        fp = np.sum((rl_values == 1) & (gt_values == 0))
+        fn = np.sum((rl_values == 0) & (gt_values == 1))
+        tn = np.sum((rl_values == 0) & (gt_values == 0))
+        accuracy = (tp + tn) / (tp + fp + fn + tn)
+
+        prec = tp / (tp + fp) if (tp + fp) > 0 else 0
+        rec = tp / (tp + fn) if (tp + fn) > 0 else 0
+        f1 = 2 * (prec * rec) / (prec + rec) if (prec + rec) > 0 else 0
+
+        return {
+            "TP": tp,
+            "FP": fp,
+            "FN": fn,
+            "TN": tn,
+            "Accuracy": accuracy,
+            "Precision": prec,
+            "Recall": rec,
+            "F1": f1,
+        }

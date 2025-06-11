@@ -342,16 +342,30 @@ for iter in range(args.total_episodes):
     )
     save_best_fn(policy, epoch=epoch)
 
-    plots = env.get_eval_plot(policy, policy.critic1)
-    plot1, plot2 = plots[0], plots[1]
+    in_dist_plots = env.get_eval_plot(policy, policy.critic1, in_distribution=True)
+    plot1, plot2 = in_dist_plots[0], in_dist_plots[1]
     wandb.log(
         {
-            "binary_reach_avoid_plot": wandb.Image(plot1),
-            "continuous_plot": wandb.Image(plot2),
+            "in_dist/binary_reach_avoid_plot": wandb.Image(plot1),
+            "in_dist/continuous_plot": wandb.Image(plot2),
         }
     )
-    if len(plots) == 3:
-        f1 = plots[2]
-        wandb.log({"f1_score": wandb.Image(f1)})
+    if len(in_dist_plots) == 3:
+        metrics = in_dist_plots[2]
+        metrics = {"in_dist/" + k: v for k, v in metrics.items()}
+        wandb.log(metrics)
+
+    out_dist_plots = env.get_eval_plot(policy, policy.critic1, in_distribution=False)
+    plot1, plot2 = out_dist_plots[0], out_dist_plots[1]
+    wandb.log(
+        {
+            "out_dist/binary_reach_avoid_plot": wandb.Image(plot1),
+            "out_dist/continuous_plot": wandb.Image(plot2),
+        }
+    )
+    if len(out_dist_plots) == 3:
+        metrics = out_dist_plots[2]
+        metrics = {"out_dist/" + k: v for k, v in metrics.items()}
+        wandb.log(metrics)
 
     plt.close()
