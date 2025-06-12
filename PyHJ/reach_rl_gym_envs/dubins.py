@@ -10,7 +10,7 @@ from matplotlib.patches import Circle
 from skimage import measure
 
 from PyHJ.reach_rl_gym_envs.utils.dubins_gt_solver import DubinsHJSolver
-from PyHJ.utils import evaluate_V
+from PyHJ.utils import evaluate_V, find_a
 
 
 class Dubins_Env(gym.Env):
@@ -18,6 +18,7 @@ class Dubins_Env(gym.Env):
     def __init__(self):
         self.render_mode = None
         self.dt = 0.05
+        self.v = 1
         self.high = np.array([1.1, 1.1, 1.1, 1.1])
         self.low = np.array([-1.1, -1.1, -1.1, -1.1])
         self.num_constraints = 1  # Number of constraints
@@ -45,6 +46,7 @@ class Dubins_Env(gym.Env):
 
         self.u_max = 1.25
         self.solver = DubinsHJSolver()
+        self.nominal_policy = "Turn Right"  # Nominal policy for the agent
 
     def step(self, action):
         # action is in -1, 1. Scale by self.u_max
@@ -83,21 +85,57 @@ class Dubins_Env(gym.Env):
         info = {}
         self.obs = {
             "state": self.state,
-            "constraints": self.constraints,
+            "constraints": np.array(self.constraints),
         }
         return self.obs, rew, terminated, truncated, info
 
-    # def render(self, mode="human"):
-    #     plt.clf()
-    #     plt.xlim(self.low[0], self.high[0])
-    #     plt.ylim(self.low[1], self.high[1])
-    #     plt.gca().set_aspect("equal", adjustable="box")
-    #     plt.plot(self.state[0], self.state[1], "ro")
-    #     for constraint in self.constraints:
-    #         x, y, r, u = constraint
-    #         circle = Circle((x, y), r, color="b", fill=False)
-    #         plt.gca().add_patch(circle)
-    #     plt.pause(0.001)
+    def render(self, mode="human", unsafe=False, t=None):
+        fig, ax = plt.subplots(figsize=(6, 6))
+        ax.set_xlim(-1.0, 1.0)
+        ax.set_ylim(-1.0, 1.0)
+        ax.set_aspect("equal")
+        ax.set_title(f"Nominal Policy: {self.nominal_policy}, 'time': {t}")
+        for constraint in self.constraints:
+            x, y, r, u = constraint
+            if u == 0.0:
+                break
+            circle = Circle((x, y), r, color="red", fill=False, label="Fail Set")
+            ax.add_patch(circle)
+        state = self.obs["state"]
+        agent_color = "red" if unsafe else "blue"
+        plt.scatter(state[0], state[1], s=150, c=agent_color, zorder=3)
+        plt.quiver(
+            state[0],
+            state[1],
+            self.dt * self.v * state[3],  # cos
+            self.dt * self.v * state[2],  # sin
+            angles="xy",
+            scale_units="xy",
+            minlength=0,
+            scale=0.5,  # Slightly smaller arrow
+            width=0.05,
+            color=agent_color,
+            zorder=3,
+        )
+
+        handles, labels = [], []
+        h, label = ax.get_legend_handles_labels()
+        handles.extend(h)
+        labels.extend(label)
+
+        # Remove duplicates while preserving order
+        unique = dict(zip(labels, handles))
+
+        # Create a single, global legend
+        fig.legend(unique.values(), unique.keys(), loc="upper center", ncol=3)
+
+        # Return rgb array of the figure
+        fig.canvas.draw()
+        img = np.frombuffer(fig.canvas.tostring_argb(), dtype=np.uint8)
+        img = img.reshape(fig.canvas.get_width_height()[::-1] + (4,))
+        img = img[..., 1:]
+        plt.close(fig)  # Close the figure to free memory
+        return img
 
     def reset(
         self,
@@ -127,39 +165,57 @@ class Dubins_Env(gym.Env):
     def select_constraints(self, in_distribution=True):
         N = np.random.randint(1, self.num_constraints + 1)
         self.constraints = []
-        in_distribution_set = [
-            [np.array([-0.5, -0.5, 0.5, 1.0])],
-            [np.array([0.5, -0.5, 0.5, 1.0])],
-            [np.array([-0.5, 0.5, 0.5, 1.0])],
-            [np.array([0.5, 0.5, 0.5, 1.0])],
-        ]
-        if in_distribution:
-            i = np.random.randint(0, len(in_distribution_set))
-            self.constraints = in_distribution_set[i]
-        else:
-            self.constraints = [np.array([0.0, 0.0, 0.5, 1.0])]
-        # for _ in range(N):
-        #     self.constraints.append(
-        #         np.array(
-        #             [
-        #                 np.random.uniform(low=-1.0, high=1.0),
-        #                 np.random.uniform(low=-1.0, high=1.0),
-        #                 np.random.uniform(low=0.1, high=0.5),
-        #                 1.0,  # This is used to say that this constraint is active
-        #             ]
-        #         )
-        #     )
-        # for _ in range(self.num_constraints - N):
-        #     self.constraints.append(
-        #         np.array(
-        #             [
-        #                 np.random.uniform(low=-1.0, high=1.0),
-        #                 np.random.uniform(low=-1.0, high=1.0),
-        #                 np.random.uniform(low=0.1, high=0.5),
-        #                 0.0,  # This is used to say that this constraint is inactive
-        #             ]
-        #         )
-        #     )
+        # in_distribution_set = [
+        #     [np.array([-0.5, -0.5, 0.5, 1.0])],
+        #     [np.array([0.5, -0.5, 0.5, 1.0])],
+        #     [np.array([-0.5, 0.5, 0.5, 1.0])],
+        #     [np.array([0.5, 0.5, 0.5, 1.0])],
+        #     [np.array([-0.5, 0.0, 0.5, 1.0])],
+        #     [np.array([0.5, 0.0, 0.5, 1.0])],
+        #     [np.array([0.0, -0.5, 0.5, 1.0])],
+        #     [np.array([0.0, 0.5, 0.5, 1.0])],
+        # ]
+        # if in_distribution:
+        #     i = np.random.randint(0, len(in_distribution_set))
+        #     self.constraints = in_distribution_set[i]
+        # else:
+        #     self.constraints = [np.array([0.0, 0.0, 0.5, 1.0])]
+        for _ in range(N):
+            if in_distribution:
+                # TODO: CHANGE THIS BACK
+                self.constraints.append(
+                    np.array(
+                        [
+                            np.random.uniform(low=-1.0, high=1.0),
+                            np.random.uniform(low=-1.0, high=1.0),
+                            np.random.uniform(low=0.3, high=0.5),
+                            1.0,  # This is used to say that this constraint is active
+                        ]
+                    )
+                )
+            else:
+                self.constraints.append(
+                    np.array(
+                        [
+                            np.random.uniform(low=-1.0, high=1.0),
+                            np.random.uniform(low=-1.0, high=1.0),
+                            np.random.uniform(low=0.1, high=0.3),
+                            1.0,  # This is used to say that this constraint is active
+                        ]
+                    )
+                )
+
+        for _ in range(self.num_constraints - N):
+            self.constraints.append(
+                np.array(
+                    [
+                        np.random.uniform(low=-1.0, high=1.0),
+                        np.random.uniform(low=-1.0, high=1.0),
+                        np.random.uniform(low=0.1, high=0.5),
+                        0.0,  # This is used to say that this constraint is inactive
+                    ]
+                )
+            )
 
         assert len(self.constraints) == self.num_constraints, (
             "Number of constraints should be {}, but got {}".format(
@@ -167,7 +223,7 @@ class Dubins_Env(gym.Env):
             )
         )
 
-        return self.constraints
+        return np.array(self.constraints)
 
     def get_eval_plot(self, policy, critic, in_distribution=True):
         nx, ny, nt = 51, 51, 51
@@ -427,27 +483,34 @@ class Dubins_Env(gym.Env):
 
         return fig1, fig2, f1
 
-    def generate_trajectory(self, policy, in_distributon=True):
+    def generate_trajectory(self, policy, in_distribution=True):
         self.reset()
+        self.select_constraints(in_distribution=in_distribution)
         obs = self.obs
-        traj = [obs["state"]]
         imgs = []
         done = False
         eps = 0.5
+        t = 0
         while not done:
-            V = evaluate_V(obs=obs, policy=policy, critic=None)
+            V = evaluate_V(obs=obs, policy=policy, critic=policy.critic1)
             if V > eps:
+                unsafe = False
                 if self.nominal_policy == "Turn Right":
-                    action = np.array([1.0], dtype=np.float32)
+                    action = np.array([-1.0], dtype=np.float32)
                 else:
                     raise ValueError(
                         "Unknown nominal policy: {}".format(self.nominal_policy)
                     )
             else:
-                action = policy(obs, model="actor").act.cpu().detach().numpy()
+                unsafe = True
+                action = find_a(obs, policy)
             obs, rew, done, _, _ = self.step(action)
-            traj.append(obs["state"])
-            imgs.append(self.render())
+            imgs.append(self.render(unsafe=unsafe, t=t))
+            t += 1
+
+        imgs = np.array(imgs)  # (T, W, H, C)
+        imgs = np.transpose(imgs, (0, 3, 1, 2))  # (T, C, W, H)
+        return imgs
 
     def get_metrics(self, rl_values, gt_values):
         assert rl_values.shape == gt_values.shape

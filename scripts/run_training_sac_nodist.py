@@ -342,6 +342,8 @@ for iter in range(args.total_episodes):
     )
     save_best_fn(policy, epoch=epoch)
 
+    wandb.log(result)
+
     in_dist_plots = env.get_eval_plot(policy, policy.critic1, in_distribution=True)
     plot1, plot2 = in_dist_plots[0], in_dist_plots[1]
     wandb.log(
@@ -367,5 +369,13 @@ for iter in range(args.total_episodes):
         metrics = out_dist_plots[2]
         metrics = {"out_dist/" + k: v for k, v in metrics.items()}
         wandb.log(metrics)
+
+    in_dist_imgs = env.generate_trajectory(policy=policy, in_distribution=True)
+    wandb.log({"in_dist/trajectory": [wandb.Video(in_dist_imgs, fps=10, format="mp4")]})
+
+    out_dist_imgs = env.generate_trajectory(policy=policy, in_distribution=False)
+    wandb.log(
+        {"out_dist/trajectory": [wandb.Video(out_dist_imgs, fps=10, format="mp4")]}
+    )
 
     plt.close()

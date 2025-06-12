@@ -11,9 +11,11 @@ from torch.distributions import Independent, Normal
 
 from PyHJ.data import Batch, ReplayBuffer
 from PyHJ.exploration import BaseNoise
-from PyHJ.policy.modelfree.ddpg_avoid_classical import avoid_DDPGPolicy_annealing as DDPGPolicy
+from PyHJ.policy.modelfree.ddpg_avoid_classical import (
+    avoid_DDPGPolicy_annealing as DDPGPolicy,
+)
 
-import warnings
+
 class avoid_SACPolicy_annealing(DDPGPolicy):
     """Implementation of Soft Actor-Critic. arXiv:1812.05905,
         for learning the classical reach-avoid value function, arXiv:2112.12288.
@@ -69,13 +71,19 @@ class avoid_SACPolicy_annealing(DDPGPolicy):
         estimation_step: int = 1,
         exploration_noise: Optional[BaseNoise] = None,
         deterministic_eval: bool = True,
-        actor1: Optional[torch.nn.Module] = None, # control policy
+        actor1: Optional[torch.nn.Module] = None,  # control policy
         actor1_optim: Optional[torch.optim.Optimizer] = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(
-            None, None, tau, gamma, exploration_noise,
-            reward_normalization, estimation_step, **kwargs
+            None,
+            None,
+            tau,
+            gamma,
+            exploration_noise,
+            reward_normalization,
+            estimation_step,
+            **kwargs,
         )
         if actor1 is not None and actor1_optim is not None:
             self.actor1: torch.nn.Module = actor1
@@ -125,7 +133,7 @@ class avoid_SACPolicy_annealing(DDPGPolicy):
         obs = batch[input]
         logits, hidden = model1(obs, state=state, info=batch.info)
 
-        hidden=None
+        hidden = None
         assert isinstance(logits, tuple)
         dist = Independent(Normal(*logits), 1)
         if self._deterministic_eval and not self.training:
@@ -137,34 +145,34 @@ class avoid_SACPolicy_annealing(DDPGPolicy):
         # You can check out the original SAC paper (arXiv 1801.01290): Eq 21.
         # in appendix C to get some understanding of this equation.
         squashed_action = torch.tanh(act)
-        log_prob = log_prob - torch.log((1 - squashed_action.pow(2)) +
-                                        self.__eps).sum(-1, keepdim=True)
+        log_prob = log_prob - torch.log((1 - squashed_action.pow(2)) + self.__eps).sum(
+            -1, keepdim=True
+        )
         return Batch(
             logits=logits,
             act=squashed_action,
             state=hidden,
             dist=dist,
-            log_prob=log_prob
+            log_prob=log_prob,
         )
 
     def _target_q(self, buffer: ReplayBuffer, indices: np.ndarray) -> torch.Tensor:
         batch = buffer[indices]  # batch.obs: s_{t+n}
         obs_next_result = self(batch, input="obs_next")
         act_ = obs_next_result.act
-        target_q = torch.min(
-            self.critic1_old(batch.obs_next, act_),
-            self.critic2_old(batch.obs_next, act_),
-        ) - self._alpha * obs_next_result.log_prob
+        target_q = (
+            torch.min(
+                self.critic1_old(batch.obs_next, act_),
+                self.critic2_old(batch.obs_next, act_),
+            )
+            - self._alpha * obs_next_result.log_prob
+        )
         return target_q
 
     def learn(self, batch: Batch, **kwargs: Any) -> Dict[str, float]:
         # critic 1&2
-        td1, critic1_loss = self._mse_optimizer(
-            batch, self.critic1, self.critic1_optim
-        )
-        td2, critic2_loss = self._mse_optimizer(
-            batch, self.critic2, self.critic2_optim
-        )
+        td1, critic1_loss = self._mse_optimizer(batch, self.critic1, self.critic1_optim)
+        td2, critic2_loss = self._mse_optimizer(batch, self.critic2, self.critic2_optim)
         batch.weight = (td1 + td2) / 2.0  # prio-buffer
 
         # actor
@@ -173,21 +181,18 @@ class avoid_SACPolicy_annealing(DDPGPolicy):
         current_q1a = self.critic1(batch.obs, act).flatten()
         current_q2a = self.critic2(batch.obs, act).flatten()
         pure_critic_value1 = torch.min(current_q1a, current_q2a)
-        
+
         rot_cost = torch.norm(act[:, 3:6], dim=1)
         actor1_loss = (
-            self._alpha * obs_result1.log_prob.flatten() -
-            pure_critic_value1
-        ).mean() + 0.1*rot_cost.mean()
+            self._alpha * obs_result1.log_prob.flatten() - pure_critic_value1
+        ).mean() + 0.1 * rot_cost.mean()
         self.actor1_optim.zero_grad()
         actor1_loss.backward(retain_graph=True)
         self.actor1_optim.step()
-        
-        
-        
+
         if self._is_auto_alpha:
             log_prob1 = obs_result1.log_prob.detach() + self._target_entropy
-            alpha_loss = -(self._log_alpha * log_prob1).mean() 
+            alpha_loss = -(self._log_alpha * log_prob1).mean()
             self._alpha_optim.zero_grad()
             alpha_loss.backward()
             self._alpha_optim.step()
@@ -197,7 +202,7 @@ class avoid_SACPolicy_annealing(DDPGPolicy):
 
         result = {
             "loss/actor1": -pure_critic_value1.mean().item(),
-            #"loss/rotation": rot_cost.mean().item(),
+            # "loss/rotation": rot_cost.mean().item(),
             "loss/critic1": critic1_loss.item(),
             "loss/critic2": critic2_loss.item(),
         }
@@ -206,10 +211,10 @@ class avoid_SACPolicy_annealing(DDPGPolicy):
             result["alpha"] = self._alpha.item()  # type: ignore
 
         return result
-    
-    def exploration_noise(self, act: Union[np.ndarray, Batch],
-                            batch: Batch, new_expl = True) -> Union[np.ndarray, Batch]:
 
+    def exploration_noise(
+        self, act: Union[np.ndarray, Batch], batch: Batch, new_expl=True
+    ) -> Union[np.ndarray, Batch]:
         if new_expl:
             rand_act = np.random.uniform(-1, 1, act.shape)
 
