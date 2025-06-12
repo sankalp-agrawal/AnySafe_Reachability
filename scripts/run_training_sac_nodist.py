@@ -93,14 +93,16 @@ def get_args():
     parser.add_argument("--alpha", default=0.2)
     parser.add_argument("--auto-alpha", type=int, default=1)
     parser.add_argument("--alpha-lr", type=float, default=3e-4)
+    parser.add_argument("--env-dist-type", type=str, default="vanilla")
     args = parser.parse_known_args()[0]
     return args
 
 
 args = get_args()
 
+env_kwargs = {"dist_type": args.env_dist_type}
 
-env = gym.make(args.task)
+env = gym.make(args.task, **env_kwargs)
 # check if the environment has control and disturbance actions:
 assert hasattr(env, "action_space")
 if isinstance(env.observation_space, gym.spaces.Dict):
@@ -118,9 +120,11 @@ args.max_action1 = env.action_space.high[0]
 
 
 train_envs = DummyVectorEnv(
-    [lambda: gym.make(args.task) for _ in range(args.training_num)]
+    [lambda: gym.make(args.task, **env_kwargs) for _ in range(args.training_num)]
 )
-test_envs = DummyVectorEnv([lambda: gym.make(args.task) for _ in range(args.test_num)])
+test_envs = DummyVectorEnv(
+    [lambda: gym.make(args.task, **env_kwargs) for _ in range(args.test_num)]
+)
 # seed
 np.random.seed(args.seed)
 torch.manual_seed(args.seed)
@@ -322,7 +326,8 @@ for iter in range(args.total_episodes):
             log_path + "/total_epochs_{}".format(epoch)
         )  # filename_suffix="_"+timestr+"_epoch_id_{}".format(epoch))
     if logger is None:
-        logger = WandbLogger(name="SAC")
+        wandb_name = f"{args.task}_SAC_dist_type_{args.env_dist_type}"
+        logger = WandbLogger(name=wandb_name)
         logger.load(writer)
 
     # import pdb; pdb.set_trace()

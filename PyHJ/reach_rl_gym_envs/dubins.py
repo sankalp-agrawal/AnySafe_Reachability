@@ -1,3 +1,4 @@
+from collections import defaultdict
 from typing import Optional
 
 import einops
@@ -8,6 +9,7 @@ import torch
 from gymnasium import spaces
 from matplotlib.patches import Circle
 from skimage import measure
+from sklearn.metrics import roc_auc_score
 
 from PyHJ.reach_rl_gym_envs.utils.dubins_gt_solver import DubinsHJSolver
 from PyHJ.utils import evaluate_V, find_a
@@ -15,7 +17,7 @@ from PyHJ.utils import evaluate_V, find_a
 
 class Dubins_Env(gym.Env):
     # TODO: 1. baseline over approximation; 2. our critic loss drop faster
-    def __init__(self):
+    def __init__(self, dist_type=None):
         self.render_mode = None
         self.dt = 0.05
         self.v = 1
@@ -39,6 +41,9 @@ class Dubins_Env(gym.Env):
                     dtype=np.float32,
                 ),
             }
+        )
+        self.distribution_type = (
+            dist_type  # What constraints are considered in distribution and OOD
         )
         self.action_space = spaces.Box(
             low=-1.0, high=1.0, shape=(1,), dtype=np.float32
@@ -162,48 +167,101 @@ class Dubins_Env(gym.Env):
         }
         return self.obs, {}
 
+    def select_one_constraint(self, in_distribution=True):
+        if self.distribution_type == "four_corners":
+            in_distribution_set = [
+                np.array([-0.5, -0.5, 0.5, 1.0]),
+                np.array([0.5, -0.5, 0.5, 1.0]),
+                np.array([-0.5, 0.5, 0.5, 1.0]),
+                np.array([0.5, 0.5, 0.5, 1.0]),
+            ]
+            if in_distribution:
+                i = np.random.randint(0, len(in_distribution_set))
+                return in_distribution_set[i]
+            else:
+                return np.array([0.0, 0.0, 0.5, 1.0])
+        elif self.distribution_type == "four_corners_four_edges":
+            in_distribution_set = [
+                np.array([-0.5, -0.5, 0.5, 1.0]),
+                np.array([0.5, -0.5, 0.5, 1.0]),
+                np.array([-0.5, 0.5, 0.5, 1.0]),
+                np.array([0.5, 0.5, 0.5, 1.0]),
+                np.array([-0.5, 0.0, 0.5, 1.0]),
+                np.array([0.5, 0.0, 0.5, 1.0]),
+                np.array([0.0, -0.5, 0.5, 1.0]),
+                np.array([0.0, 0.5, 0.5, 1.0]),
+            ]
+            if in_distribution:
+                i = np.random.randint(0, len(in_distribution_set))
+                return in_distribution_set[i]
+            else:
+                return np.array([0.0, 0.0, 0.5, 1.0])
+
+        elif self.distribution_type == "right_half":
+            if in_distribution:
+                return np.array(
+                    [
+                        np.random.uniform(low=0.0, high=1.0),
+                        np.random.uniform(low=-1.0, high=1.0),
+                        np.random.uniform(low=0.1, high=0.5),
+                        1.0,  # This is used to say that this constraint is active
+                    ]
+                )
+            else:
+                return np.array(
+                    [
+                        np.random.uniform(low=-1.0, high=0.0),
+                        np.random.uniform(low=-1.0, high=1.0),
+                        np.random.uniform(low=0.1, high=0.5),
+                        1.0,  # This is used to say that this constraint is active
+                    ]
+                )
+
+        elif self.distribution_type == "big_radii":
+            if in_distribution:
+                return np.array(
+                    [
+                        np.random.uniform(low=-1.0, high=1.0),
+                        np.random.uniform(low=-1.0, high=1.0),
+                        np.random.uniform(
+                            low=0.3, high=0.5
+                        ),  # Big radii are in distribution
+                        1.0,  # This is used to say that this constraint is active
+                    ]
+                )
+            else:
+                return np.array(
+                    [
+                        np.random.uniform(low=-1.0, high=1.0),
+                        np.random.uniform(low=-1.0, high=1.0),
+                        np.random.uniform(
+                            low=0.1, high=0.3
+                        ),  # Small radii are out of distribution
+                        1.0,  # This is used to say that this constraint is active
+                    ]
+                )
+        elif self.distribution_type == "vanilla":
+            # Eval and test set are the same here
+            return np.array(
+                [
+                    0.0,
+                    0.0,
+                    0.5,
+                    1.0,
+                ]  # This is used to say that this constraint is active
+            )
+        else:
+            raise ValueError(
+                "Unknown distribution type: {}".format(self.distribution_type)
+            )
+
     def select_constraints(self, in_distribution=True):
         N = np.random.randint(1, self.num_constraints + 1)
         self.constraints = []
-        # in_distribution_set = [
-        #     [np.array([-0.5, -0.5, 0.5, 1.0])],
-        #     [np.array([0.5, -0.5, 0.5, 1.0])],
-        #     [np.array([-0.5, 0.5, 0.5, 1.0])],
-        #     [np.array([0.5, 0.5, 0.5, 1.0])],
-        #     [np.array([-0.5, 0.0, 0.5, 1.0])],
-        #     [np.array([0.5, 0.0, 0.5, 1.0])],
-        #     [np.array([0.0, -0.5, 0.5, 1.0])],
-        #     [np.array([0.0, 0.5, 0.5, 1.0])],
-        # ]
-        # if in_distribution:
-        #     i = np.random.randint(0, len(in_distribution_set))
-        #     self.constraints = in_distribution_set[i]
-        # else:
-        #     self.constraints = [np.array([0.0, 0.0, 0.5, 1.0])]
         for _ in range(N):
-            if in_distribution:
-                # TODO: CHANGE THIS BACK
-                self.constraints.append(
-                    np.array(
-                        [
-                            np.random.uniform(low=-1.0, high=1.0),
-                            np.random.uniform(low=-1.0, high=1.0),
-                            np.random.uniform(low=0.3, high=0.5),
-                            1.0,  # This is used to say that this constraint is active
-                        ]
-                    )
-                )
-            else:
-                self.constraints.append(
-                    np.array(
-                        [
-                            np.random.uniform(low=-1.0, high=1.0),
-                            np.random.uniform(low=-1.0, high=1.0),
-                            np.random.uniform(low=0.1, high=0.3),
-                            1.0,  # This is used to say that this constraint is active
-                        ]
-                    )
-                )
+            self.constraints.append(
+                self.select_one_constraint(in_distribution=in_distribution)
+            )
 
         for _ in range(self.num_constraints - N):
             self.constraints.append(
@@ -240,7 +298,7 @@ class Dubins_Env(gym.Env):
             constraints=self.constraints, constraints_shape=self.constraints_shape
         )
 
-        TP, TN, FP, FN, Accuracy, Precision, Recall, F1 = [], [], [], [], [], [], [], []
+        all_metrics = []
 
         for i in range(len(thetas)):
             V = np.zeros_like(X)
@@ -261,14 +319,7 @@ class Dubins_Env(gym.Env):
                     V[ii, jj] = evaluate_V(obs=temp_obs, policy=policy, critic=critic)
 
             metrics = self.get_metrics(rl_values=V, gt_values=gt_values[:, :, i].T)
-            TP.append(metrics["TP"])
-            TN.append(metrics["TN"])
-            FP.append(metrics["FP"])
-            FN.append(metrics["FN"])
-            Accuracy.append(metrics["Accuracy"])
-            Precision.append(metrics["Precision"])
-            Recall.append(metrics["Recall"])
-            F1.append(metrics["F1"])
+            all_metrics.append(metrics)
 
             nt_index = int(
                 np.round((thetas[i] / (2 * np.pi)) * (nt - 1))
@@ -385,19 +436,18 @@ class Dubins_Env(gym.Env):
 
         plt.tight_layout(rect=[0, 0, 1, 0.95])  # leave space for the legend
 
+        aggregated = defaultdict(list)
+        for metrics in all_metrics:
+            for key, value in metrics.items():
+                aggregated[key].append(value)
+
+        # Compute averages
+        averaged_metrics = {key: np.mean(values) for key, values in aggregated.items()}
+
         return (
             fig1,
             fig2,
-            {
-                "TP": np.mean(TP),
-                "TN": np.mean(TN),
-                "FP": np.mean(FP),
-                "FN": np.mean(FN),
-                "Accuracy": np.mean(Accuracy),
-                "Precision": np.mean(Precision),
-                "Recall": np.mean(Recall),
-                "F1": np.mean(F1),
-            },
+            averaged_metrics,
         )
 
     def get_eval_plot_f1(self, policy, critic):
@@ -515,25 +565,37 @@ class Dubins_Env(gym.Env):
     def get_metrics(self, rl_values, gt_values):
         assert rl_values.shape == gt_values.shape
 
-        rl_values = rl_values > 0
-        gt_values = gt_values > 0
-        tp = np.sum((rl_values == 1) & (gt_values == 1))
-        fp = np.sum((rl_values == 1) & (gt_values == 0))
-        fn = np.sum((rl_values == 0) & (gt_values == 1))
-        tn = np.sum((rl_values == 0) & (gt_values == 0))
+        rl_values_subzero = rl_values > 0
+        gt_values_subzero = gt_values > 0
+        tp = np.sum((rl_values_subzero == 1) & (gt_values_subzero == 1))
+        fp = np.sum((rl_values_subzero == 1) & (gt_values_subzero == 0))
+        fn = np.sum((rl_values_subzero == 0) & (gt_values_subzero == 1))
+        tn = np.sum((rl_values_subzero == 0) & (gt_values_subzero == 0))
+        fpr = fp / (fp + tn) if (fp + tn) > 0 else 0
+        tpr = tp / (tp + fn) if (tp + fn) > 0 else 0
+        # Calculate accuracy, precision, recall, and F1 score
         accuracy = (tp + tn) / (tp + fp + fn + tn)
 
         prec = tp / (tp + fp) if (tp + fp) > 0 else 0
         rec = tp / (tp + fn) if (tp + fn) > 0 else 0
         f1 = 2 * (prec * rec) / (prec + rec) if (prec + rec) > 0 else 0
 
+        # Advanced metrics
+        # IOU
+        intersection = np.sum((rl_values_subzero == 1) & (gt_values_subzero == 1))
+        union = np.sum((rl_values_subzero == 1) | (gt_values_subzero == 1))
+        iou = intersection / union if union > 0 else 0
+
+        # Compute AUROC
+        auc = roc_auc_score(gt_values_subzero.flatten(), rl_values.flatten())
+
         return {
-            "TP": tp,
-            "FP": fp,
-            "FN": fn,
-            "TN": tn,
+            "FPR": fpr,
+            "TPR": tpr,
             "Accuracy": accuracy,
             "Precision": prec,
             "Recall": rec,
             "F1": f1,
+            "IOU": iou,
+            "AUC": auc,
         }
