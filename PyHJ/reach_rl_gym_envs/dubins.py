@@ -17,7 +17,7 @@ from PyHJ.utils import evaluate_V, find_a
 
 class Dubins_Env(gym.Env):
     # TODO: 1. baseline over approximation; 2. our critic loss drop faster
-    def __init__(self, dist_type=None):
+    def __init__(self, dist_type=None, nominal_policy=None):
         self.render_mode = None
         self.dt = 0.05
         self.v = 1
@@ -51,7 +51,7 @@ class Dubins_Env(gym.Env):
 
         self.u_max = 1.25
         self.solver = DubinsHJSolver()
-        self.nominal_policy = "Turn Right"  # Nominal policy for the agent
+        self.nominal_policy = nominal_policy  # Nominal policy for the agent
 
     def step(self, action):
         # action is in -1, 1. Scale by self.u_max
@@ -545,8 +545,10 @@ class Dubins_Env(gym.Env):
             V = evaluate_V(obs=obs, policy=policy, critic=policy.critic1)
             if V > eps:
                 unsafe = False
-                if self.nominal_policy == "Turn Right":
+                if self.nominal_policy == "turn_right":
                     action = np.array([-1.0], dtype=np.float32)
+                elif self.nominal_policy == "random":
+                    action = np.random.uniform(low=-1.0, high=1.0, size=(1,))
                 else:
                     raise ValueError(
                         "Unknown nominal policy: {}".format(self.nominal_policy)

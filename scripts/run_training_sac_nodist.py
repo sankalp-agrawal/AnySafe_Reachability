@@ -17,6 +17,9 @@ from PyHJ.utils import WandbLogger
 from PyHJ.utils.net.common import Net
 from PyHJ.utils.net.continuous import ActorProb, Critic
 
+print("CUDA_VISIBLE_DEVICES =", os.environ.get("CUDA_VISIBLE_DEVICES"))
+
+
 """
     Note that, we can pass arguments to the script by using
     For learning our new reach-avoid value function:
@@ -94,13 +97,16 @@ def get_args():
     parser.add_argument("--auto-alpha", type=int, default=1)
     parser.add_argument("--alpha-lr", type=float, default=3e-4)
     parser.add_argument("--env-dist-type", type=str, default="vanilla")
+    parser.add_argument(
+        "--nominal-policy", type=str, default="random"
+    )  # Only used for eval
     args = parser.parse_known_args()[0]
     return args
 
 
 args = get_args()
 
-env_kwargs = {"dist_type": args.env_dist_type}
+env_kwargs = {"dist_type": args.env_dist_type, "nominal_policy": args.nominal_policy}
 
 env = gym.make(args.task, **env_kwargs)
 # check if the environment has control and disturbance actions:
@@ -153,7 +159,8 @@ elif args.critic_activation == "SiLU":
 if args.critic_net is not None:
     critic_net = Net(
         args.state_shape,
-        args.action_shape,
+        obs_inputs=["state", "constraint"],
+        action_shape=args.action_shape,
         hidden_sizes=args.critic_net,
         constraint_dim=args.constraint_dim,
         constraint_embedding_dim=args.constraint_embedding_dim,
@@ -182,6 +189,7 @@ print("SAC under the Avoid annealed Bellman equation has been loaded!")
 
 actor1_net = Net(
     args.state_shape,
+    obs_inputs=["state", "constraint"],
     hidden_sizes=args.control_net,
     activation=actor_activation,
     device=args.device,
@@ -326,7 +334,8 @@ for iter in range(args.total_episodes):
             log_path + "/total_epochs_{}".format(epoch)
         )  # filename_suffix="_"+timestr+"_epoch_id_{}".format(epoch))
     if logger is None:
-        wandb_name = f"{args.task}_SAC_dist_type_{args.env_dist_type}"
+        task_name = args.task.split("-")[0]  # Take everything before the first dash
+        wandb_name = f"{task_name}_SAC_dist_type_{args.env_dist_type}"
         logger = WandbLogger(name=wandb_name)
         logger.load(writer)
 

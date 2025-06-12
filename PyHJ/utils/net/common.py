@@ -197,6 +197,7 @@ class Net(nn.Module):
     def __init__(
         self,
         state_shape: Union[int, Sequence[int]],
+        obs_inputs: Sequence[str],
         action_shape: Union[int, Sequence[int]] = 0,
         hidden_sizes: Sequence[int] = (),
         constraint_dim: Optional[Union[int, Sequence[int]]] = 0,
@@ -223,7 +224,7 @@ class Net(nn.Module):
             input_dim += action_dim
         self.use_dueling = dueling_param is not None
         output_dim = action_dim if not self.use_dueling and not concat else 0
-        self.obs_inputs = ["state", "constraint"]
+        self.obs_inputs = obs_inputs
         if "constraint" in self.obs_inputs:
             self.use_constraint = True
             assert (

@@ -5,6 +5,7 @@ experiment_script/log
 **.pth
 **/wandb/
 **/log/
+**/logs/
 **.pt
 **.pkl
 
