@@ -18,8 +18,9 @@ from torch import nn
 from PyHJ.data.batch import Batch
 
 ModuleType = Type[nn.Module]
-ArgsType = Union[Tuple[Any, ...], Dict[Any, Any], Sequence[Tuple[Any, ...]],
-                 Sequence[Dict[Any, Any]]]
+ArgsType = Union[
+    Tuple[Any, ...], Dict[Any, Any], Sequence[Tuple[Any, ...]], Sequence[Dict[Any, Any]]
+]
 
 
 def miniblock(
@@ -124,8 +125,12 @@ class MLP(nn.Module):
         hidden_sizes = [input_dim] + list(hidden_sizes)
         model = []
         for in_dim, out_dim, norm, norm_args, activ, act_args in zip(
-            hidden_sizes[:-1], hidden_sizes[1:], norm_layer_list, norm_args_list,
-            activation_list, act_args_list
+            hidden_sizes[:-1],
+            hidden_sizes[1:],
+            norm_layer_list,
+            norm_args_list,
+            activation_list,
+            act_args_list,
         ):
             model += miniblock(
                 in_dim, out_dim, norm, norm_args, activ, act_args, linear_layer
@@ -192,8 +197,12 @@ class Net(nn.Module):
     def __init__(
         self,
         state_shape: Union[int, Sequence[int]],
+        obs_inputs: Sequence[str],
         action_shape: Union[int, Sequence[int]] = 0,
         hidden_sizes: Sequence[int] = (),
+        constraint_dim: Optional[Union[int, Sequence[int]]] = 0,
+        constraint_embedding_dim: Optional[int] = 0,
+        hidden_sizes_constraint: Optional[Union[int, Sequence[int]]] = (),
         norm_layer: Optional[Union[ModuleType, Sequence[ModuleType]]] = None,
         norm_args: Optional[ArgsType] = None,
         activation: Optional[Union[ModuleType, Sequence[ModuleType]]] = nn.ReLU,
@@ -215,9 +224,41 @@ class Net(nn.Module):
             input_dim += action_dim
         self.use_dueling = dueling_param is not None
         output_dim = action_dim if not self.use_dueling and not concat else 0
+        self.obs_inputs = obs_inputs
+        if "constraint" in self.obs_inputs:
+            self.use_constraint = True
+            assert (
+                constraint_dim is not None and constraint_embedding_dim is not None
+            ), (
+                "constraint_dim and constraint_embedding_dim must be set if "
+                "constraint is used in the network."
+            )
+            self.constraint_encoder = MLP(
+                input_dim=constraint_dim,
+                output_dim=constraint_embedding_dim,
+                hidden_sizes=hidden_sizes_constraint,
+                norm_layer=norm_layer,
+                norm_args=norm_args,
+                activation=activation,
+                act_args=act_args,
+                device=device,
+                linear_layer=linear_layer,
+                flatten_input=False,
+            )
+            input_dim += constraint_embedding_dim
+        else:
+            self.use_constraint = False
+
         self.model = MLP(
-            input_dim, output_dim, hidden_sizes, norm_layer, norm_args, activation,
-            act_args, device, linear_layer
+            input_dim,
+            output_dim,
+            hidden_sizes,
+            norm_layer,
+            norm_args,
+            activation,
+            act_args,
+            device,
+            linear_layer,
         )
         self.output_dim = self.model.output_dim
         if self.use_dueling:  # dueling DQN
@@ -226,14 +267,16 @@ class Net(nn.Module):
             if not concat:
                 q_output_dim, v_output_dim = action_dim, num_atoms
             q_kwargs: Dict[str, Any] = {
-                **q_kwargs, "input_dim": self.output_dim,
+                **q_kwargs,
+                "input_dim": self.output_dim,
                 "output_dim": q_output_dim,
-                "device": self.device
+                "device": self.device,
             }
             v_kwargs: Dict[str, Any] = {
-                **v_kwargs, "input_dim": self.output_dim,
+                **v_kwargs,
+                "input_dim": self.output_dim,
                 "output_dim": v_output_dim,
-                "device": self.device
+                "device": self.device,
             }
             self.Q, self.V = MLP(**q_kwargs), MLP(**v_kwargs)
             self.output_dim = self.Q.output_dim
@@ -316,16 +359,17 @@ class Recurrent(nn.Module):
             # we store the stack data in [bsz, len, ...] format
             # but pytorch rnn needs [len, bsz, ...]
             obs, (hidden, cell) = self.nn(
-                obs, (
+                obs,
+                (
                     state["hidden"].transpose(0, 1).contiguous(),
-                    state["cell"].transpose(0, 1).contiguous()
-                )
+                    state["cell"].transpose(0, 1).contiguous(),
+                ),
             )
         obs = self.fc2(obs[:, -1])
         # please ensure the first dim is batch size: [bsz, len, ...]
         return obs, {
             "hidden": hidden.transpose(0, 1).detach(),
-            "cell": cell.transpose(0, 1).detach()
+            "cell": cell.transpose(0, 1).detach(),
         }
 
 
@@ -359,8 +403,9 @@ class DataParallelNet(nn.Module):
         super().__init__()
         self.net = nn.DataParallel(net)
 
-    def forward(self, obs: Union[np.ndarray, torch.Tensor], *args: Any,
-                **kwargs: Any) -> Tuple[Any, Any]:
+    def forward(
+        self, obs: Union[np.ndarray, torch.Tensor], *args: Any, **kwargs: Any
+    ) -> Tuple[Any, Any]:
         if not isinstance(obs, torch.Tensor):
             obs = torch.as_tensor(obs, dtype=torch.float32)
         return self.net(obs=obs.cuda(), *args, **kwargs)
@@ -385,7 +430,7 @@ class EnsembleLinear(nn.Module):
         super().__init__()
 
         # To be consistent with PyTorch default initializer
-        k = np.sqrt(1. / in_feature)
+        k = np.sqrt(1.0 / in_feature)
         weight_data = torch.rand((ensemble_size, in_feature, out_feature)) * 2 * k - k
         self.weight = nn.Parameter(weight_data, requires_grad=True)
 
@@ -454,15 +499,27 @@ class BranchingNet(nn.Module):
         common_input_dim = int(np.prod(state_shape))
         common_output_dim = 0
         self.common = MLP(
-            common_input_dim, common_output_dim, common_hidden_sizes, norm_layer,
-            norm_args, activation, act_args, device
+            common_input_dim,
+            common_output_dim,
+            common_hidden_sizes,
+            norm_layer,
+            norm_args,
+            activation,
+            act_args,
+            device,
         )
         # value network
         value_input_dim = common_hidden_sizes[-1]
         value_output_dim = 1
         self.value = MLP(
-            value_input_dim, value_output_dim, value_hidden_sizes, norm_layer,
-            norm_args, activation, act_args, device
+            value_input_dim,
+            value_output_dim,
+            value_hidden_sizes,
+            norm_layer,
+            norm_args,
+            activation,
+            act_args,
+            device,
         )
         # action branching network
         action_input_dim = common_hidden_sizes[-1]
@@ -470,9 +527,16 @@ class BranchingNet(nn.Module):
         self.branches = nn.ModuleList(
             [
                 MLP(
-                    action_input_dim, action_output_dim, action_hidden_sizes,
-                    norm_layer, norm_args, activation, act_args, device
-                ) for _ in range(self.num_branches)
+                    action_input_dim,
+                    action_output_dim,
+                    action_hidden_sizes,
+                    norm_layer,
+                    norm_args,
+                    activation,
+                    act_args,
+                    device,
+                )
+                for _ in range(self.num_branches)
             ]
         )
 
@@ -519,7 +583,7 @@ def get_dict_state_decorator(
     new_state_shape = sum(flat_state_shapes)
 
     def preprocess_obs(
-        obs: Union[Batch, dict, torch.Tensor, np.ndarray]
+        obs: Union[Batch, dict, torch.Tensor, np.ndarray],
     ) -> torch.Tensor:
         if isinstance(obs, dict) or (isinstance(obs, Batch) and keys[0] in obs):
             if original_shape[keys[0]] == obs[keys[0]].shape:
@@ -537,9 +601,7 @@ def get_dict_state_decorator(
 
     @no_type_check
     def decorator_fn(net_class):
-
         class new_net_class(net_class):
-
             def forward(
                 self,
                 obs: Union[np.ndarray, torch.Tensor],

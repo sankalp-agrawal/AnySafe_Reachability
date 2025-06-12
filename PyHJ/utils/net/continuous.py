@@ -5,6 +5,7 @@ import numpy as np
 import torch
 from torch import nn
 
+from PyHJ.data.batch import Batch
 from PyHJ.utils.net.common import MLP
 
 SIGMA_MIN = -20
@@ -53,7 +54,7 @@ class Actor(nn.Module):
             input_dim,  # type: ignore
             self.output_dim,
             hidden_sizes,
-            device=self.device
+            device=self.device,
         )
         self.max_action = max_action
 
@@ -115,6 +116,43 @@ class Critic(nn.Module):
             linear_layer=linear_layer,
             flatten_input=flatten_input,
         )
+        self.use_constraint = self.preprocess.use_constraint
+
+    def preprocess_obs(self, obs: Union[dict, Batch]):
+        """Preprocess the observation for the critic."""
+        if set(obs.keys()) != set(["state", "constraints"]):
+            raise NotImplementedError(
+                "obs beyond state and constraint is not supported yet."
+            )
+
+        constraints = torch.tensor(
+            obs["constraints"], device=self.device
+        )  # (B, N, C + 1)
+
+        encodings = self.preprocess.constraint_encoder(
+            constraints[..., :-1]  # (B, N, C)
+        )  # unmasked encodings of constraints (B, N, Z)
+
+        mask = constraints[..., -1] == 1  # (B, N)
+        mask_expanded = mask.unsqueeze(-1)  # (B, N, 1)
+
+        # Step 2: Zero out masked values and sum
+        encodings_masked = (
+            encodings * mask_expanded
+        )  # masked values are zeroed (B, N, Z)
+        sum_masked = encodings_masked.sum(dim=1)  # shape (B, Z)
+
+        # Step 3: Count number of True entries per batch
+        count = mask.sum(dim=1, keepdim=True).clamp(
+            min=1
+        )  # shape (B, 1), clamp to avoid division by zero
+
+        # Step 4: Compute mean
+        encodings_masked = sum_masked / count  # shape (B, Z)
+
+        return torch.cat(
+            [torch.tensor(obs["state"], device=self.device), encodings_masked], dim=-1
+        )
 
     def forward(
         self,
@@ -123,6 +161,16 @@ class Critic(nn.Module):
         info: Dict[str, Any] = {},
     ) -> torch.Tensor:
         """Mapping: (s, a) -> logits -> Q(s, a)."""
+        if self.use_constraint:
+            assert isinstance(obs, (dict, Batch)), (
+                "obs should be a dict or Batch when using constraint, "
+                "but got {}".format(type(obs))
+            )
+        if isinstance(obs, (dict, Batch)):
+            obs = self.preprocess_obs(obs)
+        else:
+            obs = obs
+
         obs = torch.as_tensor(
             obs,
             device=self.device,
@@ -192,7 +240,7 @@ class ActorProb(nn.Module):
             input_dim,  # type: ignore
             self.output_dim,
             hidden_sizes,
-            device=self.device
+            device=self.device,
         )
         self._c_sigma = conditioned_sigma
         if conditioned_sigma:
@@ -200,12 +248,49 @@ class ActorProb(nn.Module):
                 input_dim,  # type: ignore
                 self.output_dim,
                 hidden_sizes,
-                device=self.device
+                device=self.device,
             )
         else:
             self.sigma_param = nn.Parameter(torch.zeros(self.output_dim, 1))
         self.max_action = max_action
         self._unbounded = unbounded
+        self.use_constraint = self.preprocess.use_constraint
+
+    def preprocess_obs(self, obs: Union[dict, Batch]):
+        """Preprocess the observation for the actor."""
+        if set(obs.keys()) != set(["state", "constraints"]):
+            raise NotImplementedError(
+                "obs beyond state and constraint is not supported yet."
+            )
+
+        constraints = torch.tensor(
+            obs["constraints"], device=self.device
+        )  # (B, N, C + 1)
+
+        encodings = self.preprocess.constraint_encoder(
+            constraints[..., :-1]  # (B, N, C)
+        )  # unmasked encodings of constraints (B, N, Z)
+
+        mask = constraints[..., -1] == 1  # (B, N)
+        mask_expanded = mask.unsqueeze(-1)  # (B, N, 1)
+
+        # Step 2: Zero out masked values and sum
+        encodings_masked = (
+            encodings * mask_expanded
+        )  # masked values are zeroed (B, N, Z)
+        sum_masked = encodings_masked.sum(dim=1)  # shape (B, Z)
+
+        # Step 3: Count number of True entries per batch
+        count = mask.sum(dim=1, keepdim=True).clamp(
+            min=1
+        )  # shape (B, 1), clamp to avoid division by zero
+
+        # Step 4: Compute mean
+        encodings_masked = sum_masked / count  # shape (B, Z)
+
+        return torch.cat(
+            [torch.tensor(obs["state"], device=self.device), encodings_masked], dim=-1
+        )
 
     def forward(
         self,
@@ -214,6 +299,16 @@ class ActorProb(nn.Module):
         info: Dict[str, Any] = {},
     ) -> Tuple[Tuple[torch.Tensor, torch.Tensor], Any]:
         """Mapping: obs -> logits -> (mu, sigma)."""
+        if self.use_constraint:
+            assert isinstance(obs, (dict, Batch)), (
+                "obs should be a dict or Batch when using constraint, "
+                "but got {}".format(type(obs))
+            )
+        if isinstance(obs, (dict, Batch)):
+            obs = self.preprocess_obs(obs)
+        else:
+            obs = obs
+
         logits, hidden = self.preprocess(obs, state)
         mu = self.mu(logits)
         if not self._unbounded:
@@ -292,10 +387,11 @@ class RecurrentActorProb(nn.Module):
             # we store the stack data in [bsz, len, ...] format
             # but pytorch rnn needs [len, bsz, ...]
             obs, (hidden, cell) = self.nn(
-                obs, (
+                obs,
+                (
                     state["hidden"].transpose(0, 1).contiguous(),
-                    state["cell"].transpose(0, 1).contiguous()
-                )
+                    state["cell"].transpose(0, 1).contiguous(),
+                ),
             )
         logits = obs[:, -1]
         mu = self.mu(logits)
@@ -310,7 +406,7 @@ class RecurrentActorProb(nn.Module):
         # please ensure the first dim is batch size: [bsz, len, ...]
         return (mu, sigma), {
             "hidden": hidden.transpose(0, 1).detach(),
-            "cell": cell.transpose(0, 1).detach()
+            "cell": cell.transpose(0, 1).detach(),
         }
 
 
@@ -395,7 +491,7 @@ class Perturbation(nn.Module):
         preprocess_net: nn.Module,
         max_action: float,
         device: Union[str, int, torch.device] = "cpu",
-        phi: float = 0.05
+        phi: float = 0.05,
     ):
         # preprocess_net: input_dim=state_dim+action_dim, output_dim=action_dim
         super(Perturbation, self).__init__()
@@ -442,7 +538,7 @@ class VAE(nn.Module):
         hidden_dim: int,
         latent_dim: int,
         max_action: float,
-        device: Union[str, torch.device] = "cpu"
+        device: Union[str, torch.device] = "cpu",
     ):
         super(VAE, self).__init__()
         self.encoder = encoder
@@ -475,17 +571,19 @@ class VAE(nn.Module):
         return reconstruction, mean, std
 
     def decode(
-        self,
-        state: torch.Tensor,
-        latent_z: Union[torch.Tensor, None] = None
+        self, state: torch.Tensor, latent_z: Union[torch.Tensor, None] = None
     ) -> torch.Tensor:
         # decode(state) -> action
         if latent_z is None:
             # state.shape[0] may be batch_size
             # latent vector clipped to [-0.5, 0.5]
-            latent_z = torch.randn(state.shape[:-1] + (self.latent_dim, )) \
-                .to(self.device).clamp(-0.5, 0.5)
+            latent_z = (
+                torch.randn(state.shape[:-1] + (self.latent_dim,))
+                .to(self.device)
+                .clamp(-0.5, 0.5)
+            )
 
         # decode z with state!
-        return self.max_action * \
-            torch.tanh(self.decoder(torch.cat([state, latent_z], -1)))
+        return self.max_action * torch.tanh(
+            self.decoder(torch.cat([state, latent_z], -1))
+        )
