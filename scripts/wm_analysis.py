@@ -2,11 +2,14 @@ import argparse
 import os
 import sys
 
+import einops
 import gymnasium  # as gym
 import numpy as np
 import torch
 
 import PyHJ
+import wandb
+from PyHJ.utils import WandbLogger
 
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(parent_dir)
@@ -222,32 +225,70 @@ def get_latent(
     post, _ = wm.dynamics.observe(embed, data["action"], data["is_first"])
 
     feat = wm.dynamics.get_feat(post).detach()
-    lz = torch.tanh(wm.heads["margin"](feat))
-    return feat.squeeze().cpu().numpy(), lz.squeeze().detach().cpu().numpy()
+    stoch = post["stoch"]  # z_t
+    deter = post["deter"]  # h_t
+    return feat.squeeze().cpu().numpy(), stoch, deter
 
 
 def topographic_map(config, cache, thetas, constraint_state, similarity_metric):
-    fig, axes = plt.subplots(1, len(thetas), figsize=(3, 10))
+    fig, axes = plt.subplots(
+        1, len(thetas), figsize=(3 * len(thetas), 5), constrained_layout=True
+    )
 
     constraint_state = torch.tensor(constraint_state, dtype=torch.float32)
     constraint_img = get_frame(states=constraint_state, config=config)  # (H, W, C)
 
-    z_c = get_latent(
-        wm, thetas=np.array(constraint_state[-1].item()), imgs=[constraint_img]
+    feat_c, stoch_c, deter_c = get_latent(
+        wm, thetas=np.array([constraint_state[-1].item()]), imgs=[constraint_img]
     )
+
+    idxs, __, __ = cache[thetas[0]]
+    feat_c = einops.repeat(feat_c, "c -> b c", b=idxs.shape[0])
 
     for i in range(len(thetas)):
         theta = thetas[i]
+        axes[i].set_title(f"theta = {theta:.2f}")
         idxs, imgs_prev, thetas_prev = cache[theta]
-        feat, lz = get_latent(wm, thetas_prev, imgs_prev)
+        feat, stoch, deter = get_latent(wm, thetas_prev, imgs_prev)
+        if similarity_metric == "Cosine_Similarity":  # negative cosine similarity
+            numerator = np.sum(feat * feat_c, axis=1)
+            denominator = np.linalg.norm(feat, axis=1) * np.linalg.norm(feat_c, axis=1)
+            metric = -numerator / (denominator + 1e-8)  # (N)
+        elif similarity_metric == "Euclidean Distance":
+            metric = np.linalg.norm(feat - feat_c, axis=1)
+        else:
+            raise ValueError(
+                f"Unknown similarity metric: {similarity_metric}. Supported: ['Cosine_Similarity', 'Euclidean Distance']"
+            )
+
+        metric = metric.reshape(config.nx, config.ny).T
         # axes[i].imshow(
-        #     vals.reshape(config.nx, config.ny).T > 0,
+        #     metric,
         #     extent=(-1.1, 1.1, -1.1, 1.1),
         #     vmin=-1,
         #     vmax=1,
         #     origin="lower",
         # )
-    fig.tight_layout()
+
+        x = np.linspace(-1, 1, metric.shape[1])
+        y = np.linspace(-1, 1, metric.shape[0])
+        X, Y = np.meshgrid(x, y)
+
+        contour = axes[i].contour(X, Y, metric, levels=5, colors="black", linewidths=1)
+        axes[i].clabel(contour, inline=True, fontsize=8, fmt="%.2f")
+
+        axes[i].imshow(
+            constraint_img,
+            extent=(-1.1, 1.1, -1.1, 1.1),
+        )
+
+    # set axes limits
+    for ax in axes:
+        ax.set_xlim(-1.0, 1.0)
+        ax.set_ylim(-1.0, 1.0)
+
+    fig.suptitle(f"Topographic Map using {similarity_metric}")
+    plt.tight_layout()
     return fig
 
 
@@ -257,6 +298,9 @@ logger = None
 warmup = 1
 
 similarity_metrics = ["Cosine_Similarity", "Euclidean Distance"]
+
+logger = WandbLogger(name="WM Analysis")
+
 for metric in similarity_metrics:
     fig = topographic_map(
         config=config,
@@ -265,6 +309,11 @@ for metric in similarity_metrics:
         constraint_state=[0.0, 0.0, 0.0],
         similarity_metric=metric,
     )
-    fig.suptitle(f"Topographic Map using {metric}")
-    fig.savefig(f"{config.logdir}/topographic_map_{metric}.png")
+
+    wandb.log(
+        {
+            f"{metric}": wandb.Image(fig),
+        }
+    )
+
     plt.close(fig)
