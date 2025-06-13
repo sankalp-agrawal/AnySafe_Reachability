@@ -21,7 +21,6 @@ import io
 import pathlib
 from datetime import datetime
 
-import matplotlib.pyplot as plt
 import models
 import ruamel.yaml as yaml
 import tools
@@ -33,7 +32,7 @@ from PIL import Image
 from termcolor import cprint
 
 import wandb
-from PyHJ.data import Batch, Collector, VectorReplayBuffer
+from PyHJ.data import Collector, VectorReplayBuffer
 from PyHJ.env import DummyVectorEnv
 from PyHJ.exploration import GaussianNoise
 from PyHJ.trainer import offpolicy_trainer
@@ -357,95 +356,6 @@ def make_cache(config, thetas):
     return cache
 
 
-def get_latent(wm, thetas, imgs):
-    thetas = np.expand_dims(np.expand_dims(thetas, 1), 1)
-    imgs = np.expand_dims(imgs, 1)
-    dummy_acs = np.zeros((np.shape(thetas)[0], 1))
-    firsts = np.ones((np.shape(thetas)[0], 1))
-    lasts = np.zeros((np.shape(thetas)[0], 1))
-    cos = np.cos(thetas)
-    sin = np.sin(thetas)
-    states = np.concatenate([cos, sin], axis=-1)
-    chunks = 21
-    if np.shape(imgs)[0] > chunks:
-        bs = int(np.shape(imgs)[0] / chunks)
-    else:
-        bs = int(np.shape(imgs)[0] / chunks)
-    for i in range(chunks):
-        if i == chunks - 1:
-            data = {
-                "obs_state": states[i * bs :],
-                "image": imgs[i * bs :],
-                "action": dummy_acs[i * bs :],
-                "is_first": firsts[i * bs :],
-                "is_terminal": lasts[i * bs :],
-            }
-        else:
-            data = {
-                "obs_state": states[i * bs : (i + 1) * bs],
-                "image": imgs[i * bs : (i + 1) * bs],
-                "action": dummy_acs[i * bs : (i + 1) * bs],
-                "is_first": firsts[i * bs : (i + 1) * bs],
-                "is_terminal": lasts[i * bs : (i + 1) * bs],
-            }
-        data = wm.preprocess(data)
-        embeds = wm.encoder(data)
-        if i == 0:
-            embed = embeds
-        else:
-            embed = torch.cat([embed, embeds], dim=0)
-
-    data = {
-        "obs_state": states,
-        "image": imgs,
-        "action": dummy_acs,
-        "is_first": firsts,
-        "is_terminal": lasts,
-    }
-    data = wm.preprocess(data)
-    post, _ = wm.dynamics.observe(embed, data["action"], data["is_first"])
-
-    feat = wm.dynamics.get_feat(post).detach()
-    lz = torch.tanh(wm.heads["margin"](feat))
-    return feat.squeeze().cpu().numpy(), lz.squeeze().detach().cpu().numpy()
-
-
-def evaluate_V(state):
-    tmp_obs = np.array(state)  # .reshape(1,-1)
-    tmp_batch = Batch(obs=tmp_obs, info=Batch())
-    tmp = policy.critic(tmp_batch.obs, policy(tmp_batch, model="actor_old").act)
-    return tmp.cpu().detach().numpy().flatten()
-
-
-def get_eval_plot(cache, thetas):
-    fig1, axes1 = plt.subplots(len(thetas), 1, figsize=(3, 10))
-    fig2, axes2 = plt.subplots(len(thetas), 1, figsize=(3, 10))
-
-    for i in range(len(thetas)):
-        theta = thetas[i]
-        idxs, imgs_prev, thetas_prev = cache[theta]
-        feat, lz = get_latent(wm, thetas_prev, imgs_prev)
-        vals = evaluate_V(feat)
-        vals = np.minimum(vals, lz)
-        axes1[i].imshow(
-            vals.reshape(config.nx, config.ny).T > 0,
-            extent=(-1.1, 1.1, -1.1, 1.1),
-            vmin=-1,
-            vmax=1,
-            origin="lower",
-        )
-        axes2[i].imshow(
-            vals.reshape(config.nx, config.ny).T,
-            extent=(-1.1, 1.1, -1.1, 1.1),
-            vmin=-1,
-            vmax=1,
-            origin="lower",
-        )
-    fig1.tight_layout()
-    fig2.tight_layout()
-    return fig1, fig2
-
-
 if not os.path.exists(log_path + "/epoch_id_{}".format(epoch)):
     print("Just created the log directory!")
     # print("log_path: ", log_path+"/epoch_id_{}".format(epoch))
@@ -454,7 +364,9 @@ thetas = [3 * np.pi / 2, 7 * np.pi / 4, 0, np.pi / 4, np.pi / 2, np.pi]
 cache = make_cache(config, thetas)
 logger = None
 warmup = 1
-plot1, plot2 = get_eval_plot(cache, thetas)
+plot1, plot2 = env.get_eval_plot(
+    cache=cache, thetas=thetas, config=config, policy=policy
+)
 
 for iter in range(warmup + args.total_episodes):
     if iter < warmup:
@@ -510,7 +422,9 @@ for iter in range(warmup + args.total_episodes):
     )
 
     save_best_fn(policy, epoch=epoch)
-    plot1, plot2 = get_eval_plot(cache, thetas)
+    plot1, plot2 = env.get_eval_plot(
+        cache=cache, thetas=thetas, config=config, policy=policy
+    )
     wandb.log(
         {
             "binary_reach_avoid_plot": wandb.Image(plot1),
