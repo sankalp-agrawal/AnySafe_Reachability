@@ -324,59 +324,6 @@ if not os.path.exists(log_path + "/epoch_id_{}".format(epoch)):
     os.makedirs(log_path + "/epoch_id_{}".format(epoch))
 
 
-def get_latent(wm, thetas, imgs):
-    thetas = np.expand_dims(np.expand_dims(thetas, 1), 1)
-    imgs = np.expand_dims(imgs, 1)
-    dummy_acs = np.zeros((np.shape(thetas)[0], 1))
-    firsts = np.ones((np.shape(thetas)[0], 1))
-    lasts = np.zeros((np.shape(thetas)[0], 1))
-    cos = np.cos(thetas)
-    sin = np.sin(thetas)
-    states = np.concatenate([cos, sin], axis=-1)
-    chunks = 21
-    if np.shape(imgs)[0] > chunks:
-        bs = int(np.shape(imgs)[0] / chunks)
-    else:
-        bs = int(np.shape(imgs)[0] / chunks)
-    for i in range(chunks):
-        if i == chunks - 1:
-            data = {
-                "obs_state": states[i * bs :],
-                "image": imgs[i * bs :],
-                "action": dummy_acs[i * bs :],
-                "is_first": firsts[i * bs :],
-                "is_terminal": lasts[i * bs :],
-            }
-        else:
-            data = {
-                "obs_state": states[i * bs : (i + 1) * bs],
-                "image": imgs[i * bs : (i + 1) * bs],
-                "action": dummy_acs[i * bs : (i + 1) * bs],
-                "is_first": firsts[i * bs : (i + 1) * bs],
-                "is_terminal": lasts[i * bs : (i + 1) * bs],
-            }
-        data = wm.preprocess(data)
-        embeds = wm.encoder(data)
-        if i == 0:
-            embed = embeds
-        else:
-            embed = torch.cat([embed, embeds], dim=0)
-
-    data = {
-        "obs_state": states,
-        "image": imgs,
-        "action": dummy_acs,
-        "is_first": firsts,
-        "is_terminal": lasts,
-    }
-    data = wm.preprocess(data)
-    post, _ = wm.dynamics.observe(embed, data["action"], data["is_first"])
-
-    feat = wm.dynamics.get_feat(post).detach()
-    lz = torch.tanh(wm.heads["margin"](feat))
-    return feat.squeeze().cpu().numpy(), lz.squeeze().detach().cpu().numpy()
-
-
 def make_cache(config, thetas):
     nx, ny = config.nx, config.ny
     cache = {}
@@ -405,10 +352,6 @@ def make_cache(config, thetas):
         idxs = np.array(idxs)
         theta_prev_lin = np.array(thetas_prev)
         cache[theta] = [idxs, imgs_prev, theta_prev_lin]
-        # get the latent states
-        feat, lz = get_latent(wm, thetas, np.array(imgs_prev))
-        cache[theta].append(feat)
-        cache[theta].append(lz)
     return cache
 
 
