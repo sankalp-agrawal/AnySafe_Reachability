@@ -1,6 +1,7 @@
 from collections import defaultdict
 from typing import Optional
 
+import einops
 import gymnasium as gym
 import numpy as np
 import torch
@@ -10,9 +11,9 @@ from matplotlib import pyplot as plt
 from matplotlib.patches import Circle
 from skimage import measure
 
-from PyHJ.data.batch import Batch
 from PyHJ.reach_rl_gym_envs.utils.dubins_gt_solver import DubinsHJSolver
 from PyHJ.reach_rl_gym_envs.utils.env_eval_utils import get_metrics
+from PyHJ.utils.eval_utils import evaluate_V
 
 
 class Dubins_WM_Env(gym.Env):
@@ -171,12 +172,6 @@ class Dubins_WM_Env(gym.Env):
         )  # Append 1.0 to indicate that this constraint is active
         self.constraints = np.array(feat_c).reshape(self.num_constraints, -1)
 
-    def evaluate_V(self, state, policy):
-        tmp_obs = np.array(state)  # .reshape(1,-1)
-        tmp_batch = Batch(obs=tmp_obs, info=Batch())
-        tmp = policy.critic(tmp_batch.obs, policy(tmp_batch, model="actor_old").act)
-        return tmp.cpu().detach().numpy().flatten()
-
     def get_latent(self, wm, thetas, imgs):
         thetas = np.expand_dims(np.expand_dims(thetas, 1), 1)
         imgs = np.expand_dims(imgs, 1)
@@ -234,8 +229,10 @@ class Dubins_WM_Env(gym.Env):
         fig1, axes1 = plt.subplots(2, len(thetas))
         fig2, axes2 = plt.subplots(2, len(thetas))
 
+        constraint = np.array([0.0, 0.0, 0.5, 1.0]).reshape(1, -1)
+        self.select_constraints()
         gt_values = self.solver.solve(
-            constraints=[np.array([0.0, 0.0, 0.5, 1.0])],
+            constraints=constraint,
             constraints_shape=3,
         )
 
@@ -250,7 +247,13 @@ class Dubins_WM_Env(gym.Env):
                     thetas=thetas_prev,
                     imgs=imgs_prev,
                 )
-                V = self.evaluate_V(state=feat, policy=policy)
+                obs = {
+                    "state": feat,
+                    "constraints": einops.repeat(
+                        self.constraints, "1 C -> N 1 C", N=feat.shape[0]
+                    ),
+                }
+                V = evaluate_V(obs=obs, policy=policy, critic=policy.critic)
             V = np.minimum(V, lz)
 
             nt_index = int(

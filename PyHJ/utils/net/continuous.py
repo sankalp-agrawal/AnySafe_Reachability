@@ -65,7 +65,6 @@ class Actor(nn.Module):
             raise NotImplementedError(
                 "obs beyond state and constraint is not supported yet."
             )
-
         constraints = torch.tensor(
             obs["constraints"], device=self.device
         )  # (B, N, C + 1)
@@ -81,10 +80,10 @@ class Actor(nn.Module):
         encodings_masked = (
             encodings * mask_expanded
         )  # masked values are zeroed (B, N, Z)
-        sum_masked = encodings_masked.sum(dim=1)  # shape (B, Z)
+        sum_masked = encodings_masked.sum(dim=-2)  # shape (B, Z)
 
         # Step 3: Count number of True entries per batch
-        count = mask.sum(dim=1, keepdim=True).clamp(
+        count = mask.sum(dim=-1, keepdim=True).clamp(
             min=1
         )  # shape (B, 1), clamp to avoid division by zero
 
@@ -92,7 +91,8 @@ class Actor(nn.Module):
         encodings_masked = sum_masked / count  # shape (B, Z)
 
         return torch.cat(
-            [torch.tensor(obs["state"], device=self.device), encodings_masked], dim=-1
+            [torch.tensor(obs["state"], device=self.device), encodings_masked],
+            dim=-1,
         )
 
     def forward(
