@@ -102,14 +102,14 @@ def dubins_dynamics_tensor(
 
 
 class DubinsHJSolver:
-    def __init__(self):
+    def __init__(self, nx=51, ny=51, nt=51):
         # Define the dynamical system
         self.dyn_sys = Dubins3D()
 
         # Define the computation grid
         self.grid_min = np.array([-1.0, -1.0, 0.0])  # in meters
         self.grid_max = np.array([1.0, 1.0, 2 * np.pi])  # in meters
-        self.num_cells = (51, 51, 51)  # in cells
+        self.num_cells = (nx, ny, nt)  # in cells
         self.grid = hj.Grid.from_lattice_parameters_and_boundary_conditions(
             hj.sets.Box(self.grid_min, self.grid_max), self.num_cells, periodic_dims=2
         )

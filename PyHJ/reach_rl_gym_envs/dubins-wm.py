@@ -1,3 +1,4 @@
+from collections import defaultdict
 from typing import Optional
 
 import gymnasium as gym
@@ -5,9 +6,12 @@ import numpy as np
 import torch
 from gymnasium import spaces
 from matplotlib import pyplot as plt
+from matplotlib.patches import Circle
+from skimage import measure
 
 from PyHJ.data.batch import Batch
 from PyHJ.reach_rl_gym_envs.utils.dubins_gt_solver import DubinsHJSolver
+from PyHJ.reach_rl_gym_envs.utils.env_eval_utils import get_metrics
 
 
 class Dubins_WM_Env(gym.Env):
@@ -63,7 +67,7 @@ class Dubins_WM_Env(gym.Env):
         self.image_size = config.size[0]
         self.turnRate = config.turnRate
 
-        self.solver = DubinsHJSolver()
+        self.solver = DubinsHJSolver(nx=config.nx, ny=config.ny, nt=config.nt)
         self.nominal_policy = "turn_right"
 
     def set_wm(self, wm, past_data, config):
@@ -207,132 +211,130 @@ class Dubins_WM_Env(gym.Env):
                     thetas=thetas_prev,
                     imgs=imgs_prev,
                 )
-            V = self.evaluate_V(state=feat, policy=policy)
+                V = self.evaluate_V(state=feat, policy=policy)
             V = np.minimum(V, lz)
 
             nt_index = int(
                 np.round((thetas[i] / (2 * np.pi)) * (nt - 1))
             )  # Convert theta to index in the grid
 
-            # metrics = get_metrics(rl_values=V, gt_values=gt_values[:, :, nt_index].T)
-            # all_metrics.append(metrics)
+            V = V.reshape((nx, ny)).T  # Reshape to match the grid
+            metrics = get_metrics(rl_values=V, gt_values=gt_values[:, :, nt_index].T)
+            all_metrics.append(metrics)
 
             # Find contours for gt and rl Value functions
-            # contours_rl = measure.find_contours(
-            #     np.array(V > 0).astype(float), level=0.5
-            # )
-            # contours_gt = measure.find_contours(
-            #     np.array(gt_values[:, :, nt_index].T > 0).astype(float), level=0.5
-            # )
+            contours_rl = measure.find_contours(
+                np.array(V > 0).astype(float), level=0.5
+            )
+            contours_gt = measure.find_contours(
+                np.array(gt_values[:, :, nt_index].T > 0).astype(float), level=0.5
+            )
 
             # Show sub-zero level set
-            V = V.reshape((nx, ny)).T  # Reshape to match the grid
             axes1[0, i].imshow(V > 0, extent=(-1.0, 1.0, -1.0, 1.0), origin="lower")
-            # axes1[1, i].imshow(
-            #     gt_values[:, :, nt_index].T > 0,
-            #     extent=(-1.0, 1.0, -1.0, 1.0),
-            #     origin="lower",
-            # )
+            axes1[1, i].imshow(
+                gt_values[:, :, nt_index].T > 0,
+                extent=(-1.0, 1.0, -1.0, 1.0),
+                origin="lower",
+            )
             # Show value functions
             axes2[0, i].imshow(
                 V, extent=(-1.0, 1.0, -1.0, 1.0), vmin=-1.0, vmax=1.0, origin="lower"
             )
-            # axes2[1, i].imshow(
-            #     gt_values[:, :, nt_index].T,
-            #     extent=(-1.0, 1.0, -1.0, 1.0),
-            #     vmin=-1.0,
-            #     vmax=1.0,
-            #     origin="lower",
-            # )
+            axes2[1, i].imshow(
+                gt_values[:, :, nt_index].T,
+                extent=(-1.0, 1.0, -1.0, 1.0),
+                vmin=-1.0,
+                vmax=1.0,
+                origin="lower",
+            )
 
             # Plot contours for RL Value function
-            # for contour in contours_rl:
-            #     for axes in [axes1, axes2]:
-            #         [
-            #             ax.plot(
-            #                 contour[:, 1] * (2.0 / (nx - 1)) - 1.0,
-            #                 contour[:, 0] * (2.0 / (ny - 1)) - 1.0,
-            #                 color="blue",
-            #                 linewidth=2,
-            #                 label="RL Value Contour",
-            #             )
-            #             for ax in axes[:, i]
-            #         ]
+            for contour in contours_rl:
+                for axes in [axes1, axes2]:
+                    [
+                        ax.plot(
+                            contour[:, 1] * (2.0 / (nx - 1)) - 1.0,
+                            contour[:, 0] * (2.0 / (ny - 1)) - 1.0,
+                            color="blue",
+                            linewidth=2,
+                            label="RL Value Contour",
+                        )
+                        for ax in axes[:, i]
+                    ]
             # # Plot contours for GT Value function
-            # for contour in contours_gt:
-            #     for axes in [axes1, axes2]:
-            #         [
-            #             ax.plot(
-            #                 contour[:, 1] * (2.0 / (nx - 1)) - 1.0,
-            #                 contour[:, 0] * (2.0 / (ny - 1)) - 1.0,
-            #                 color="Green",
-            #                 linewidth=2,
-            #                 label="GT Value Contour",
-            #             )
-            #             for ax in axes[:, i]
-            #         ]
+            for contour in contours_gt:
+                for axes in [axes1, axes2]:
+                    [
+                        ax.plot(
+                            contour[:, 1] * (2.0 / (nx - 1)) - 1.0,
+                            contour[:, 0] * (2.0 / (ny - 1)) - 1.0,
+                            color="Green",
+                            linewidth=2,
+                            label="GT Value Contour",
+                        )
+                        for ax in axes[:, i]
+                    ]
 
             # Add constraint patch
-            # [
-            #     ax.add_patch(
-            #         Circle((0.0, 0.0), 0.5, color="red", fill=False, label="Fail Set")
-            #     )
-            #     for ax in axes1[:, i]
-            # ]
-            # [
-            #     ax.add_patch(
-            #         Circle((0.0, 0.0), 0.5, color="red", fill=False, label="Fail Set")
-            #     )
-            #     for ax in axes2[:, i]
-            # ]
+            [
+                ax.add_patch(
+                    Circle((0.0, 0.0), 0.5, color="red", fill=False, label="Fail Set")
+                )
+                for ax in axes1[:, i]
+            ]
+            [
+                ax.add_patch(
+                    Circle((0.0, 0.0), 0.5, color="red", fill=False, label="Fail Set")
+                )
+                for ax in axes2[:, i]
+            ]
 
-            # axes1[0, i].set_title(
-            #     "theta = {}".format(np.round(thetas[i], 2)),
-            #     fontsize=12,
-            # )
-            # axes2[0, i].set_title(
-            #     "theta = {}".format(np.round(thetas[i], 2)),
-            #     fontsize=12,
-            # )
-            # axes1[1, i].set_title(
-            #     "GT,\ntheta = {}".format(np.round(thetas[i], 2)),
-            #     fontsize=12,
-            # )
-            # axes2[1, i].set_title(
-            #     "GT,\ntheta = {}".format(np.round(thetas[i], 2)),
-            #     fontsize=12,
-            # )
+            axes1[0, i].set_title(
+                "theta = {}".format(np.round(thetas[i], 2)),
+                fontsize=12,
+            )
+            axes2[0, i].set_title(
+                "theta = {}".format(np.round(thetas[i], 2)),
+                fontsize=12,
+            )
+            axes1[1, i].set_title(
+                "GT,\ntheta = {}".format(np.round(thetas[i], 2)),
+                fontsize=12,
+            )
+            axes2[1, i].set_title(
+                "GT,\ntheta = {}".format(np.round(thetas[i], 2)),
+                fontsize=12,
+            )
 
-        # for axes in [axes1, axes2]:
-        #     for ax in axes.flat:
-        #         ax.set_xlim(-1, 1)
-        #         ax.set_ylim(-1, 1)
-        #         ax.set_aspect("equal")
+        for axes in [axes1, axes2]:
+            for ax in axes.flat:
+                ax.set_xlim(-1, 1)
+                ax.set_ylim(-1, 1)
+                ax.set_aspect("equal")
 
-        # for fig, axes in zip([fig1, fig2], [axes1, axes2]):
-        #     handles, labels = [], []
-        #     for ax in axes.flat:
-        #         h, label = ax.get_legend_handles_labels()
-        #         handles.extend(h)
-        #         labels.extend(label)
+        for fig, axes in zip([fig1, fig2], [axes1, axes2]):
+            handles, labels = [], []
+            for ax in axes.flat:
+                h, label = ax.get_legend_handles_labels()
+                handles.extend(h)
+                labels.extend(label)
 
-        #     # Remove duplicates while preserving order
-        #     unique = dict(zip(labels, handles))
+            # Remove duplicates while preserving order
+            unique = dict(zip(labels, handles))
 
-        #     # Create a single, global legend
-        #     fig.legend(unique.values(), unique.keys(), loc="upper center", ncol=3)
+            # Create a single, global legend
+            fig.legend(unique.values(), unique.keys(), loc="upper center", ncol=3)
 
-        # plt.tight_layout(rect=[0, 0, 1, 0.95])  # leave space for the legend
+        plt.tight_layout(rect=[0, 0, 1, 0.95])  # leave space for the legend
 
-        # aggregated = defaultdict(list)
-        # for metrics in all_metrics:
-        #     for key, value in metrics.items():
-        #         aggregated[key].append(value)
+        aggregated = defaultdict(list)
+        for metrics in all_metrics:
+            for key, value in metrics.items():
+                aggregated[key].append(value)
 
-        # # Compute averages
-        # averaged_metrics = {key: np.mean(values) for key, values in aggregated.items()}
-
-        averaged_metrics = {}
+        # Compute averages
+        averaged_metrics = {key: np.mean(values) for key, values in aggregated.items()}
 
         return (
             fig1,
