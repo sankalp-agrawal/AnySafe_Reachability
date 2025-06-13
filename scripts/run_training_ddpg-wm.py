@@ -377,7 +377,7 @@ thetas = [0, np.pi / 6, np.pi / 3, np.pi / 2]
 cache = make_cache(config, thetas)
 logger = None
 warmup = 1
-# plot1, plot2, metrics = env.get_eval_plot(
+# plot1, plot2, plot3, metrics = env.get_eval_plot(
 #     cache=cache, thetas=thetas, config=config, policy=policy
 # )
 
@@ -437,13 +437,14 @@ for iter in range(warmup + args.total_episodes):
     )
 
     save_best_fn(policy, epoch=epoch)
-    plot1, plot2, metrics = env.get_eval_plot(
+    plot1, plot2, plot3, metrics = env.get_eval_plot(
         cache=cache, thetas=thetas, config=config, policy=policy
     )
     wandb.log(
         {
             "binary_reach_avoid_plot": wandb.Image(plot1),
             "continuous_plot": wandb.Image(plot2),
+            "safety_margin_function": wandb.Image(plot3),
             **{f"metric/{k}": v for k, v in metrics.items()},
         }
     )

@@ -221,13 +221,14 @@ class Dubins_WM_Env(gym.Env):
         post, _ = wm.dynamics.observe(embed, data["action"], data["is_first"])
 
         feat = wm.dynamics.get_feat(post).detach()
-        lz = torch.tanh(wm.heads["margin"](feat))
+        lz = self.safety_margin(feat)  # lz is the safety margin
         return feat.squeeze().cpu().numpy(), lz.squeeze().detach().cpu().numpy()
 
     def get_eval_plot(self, cache, thetas, policy, config):
         nx, ny, nt = config.nx, config.ny, 51
         fig1, axes1 = plt.subplots(2, len(thetas))
         fig2, axes2 = plt.subplots(2, len(thetas))
+        fig3, axes3 = plt.subplots(1, len(thetas))
 
         constraint = np.array([0.0, 0.0, 0.5, 1.0]).reshape(1, -1)
         self.select_constraints()
@@ -291,6 +292,15 @@ class Dubins_WM_Env(gym.Env):
                 origin="lower",
             )
 
+            # Plot safety margin
+            axes3[i].imshow(
+                lz.reshape((nx, ny)),
+                extent=(-1.0, 1.0, -1.0, 1.0),
+                vmin=-1.0,
+                vmax=1.0,
+                origin="lower",
+            )
+
             # Plot contours for RL Value function
             for contour in contours_rl:
                 for axes in [axes1, axes2]:
@@ -348,14 +358,18 @@ class Dubins_WM_Env(gym.Env):
                 "GT,\ntheta = {}".format(np.round(thetas[i], 2)),
                 fontsize=12,
             )
+            axes3[i].set_title(
+                "theta = {}".format(np.round(thetas[i], 2)),
+                fontsize=12,
+            )
 
-        for axes in [axes1, axes2]:
+        for axes in [axes1, axes2, axes3]:
             for ax in axes.flat:
                 ax.set_xlim(-1, 1)
                 ax.set_ylim(-1, 1)
                 ax.set_aspect("equal")
 
-        for fig, axes in zip([fig1, fig2], [axes1, axes2]):
+        for fig, axes in zip([fig1, fig2, fig3], [axes1, axes2, axes3]):
             handles, labels = [], []
             for ax in axes.flat:
                 h, label = ax.get_legend_handles_labels()
@@ -381,5 +395,6 @@ class Dubins_WM_Env(gym.Env):
         return (
             fig1,
             fig2,
+            fig3,
             averaged_metrics,
         )
