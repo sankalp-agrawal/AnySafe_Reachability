@@ -5,7 +5,6 @@ import pathlib
 import pickle
 import sys
 
-import matplotlib.patches as patches
 import matplotlib.pyplot as plt
 import numpy as np
 import ruamel.yaml as yaml
@@ -30,15 +29,16 @@ def get_frame(states, config):
     plt.ylim([config.y_min, config.y_max])
     plt.axis("off")
     fig.set_size_inches(1, 1)
-    # Create the circle patch
-    circle = patches.Circle(
-        [config.obs_x, config.obs_y],
-        config.obs_r,
-        edgecolor=(1, 0, 0),
-        facecolor="none",
-    )
-    # Add the circle patch to the axis
-    ax.add_patch(circle)
+    # # Create the circle patch
+    # circle = patches.Circle(
+    #     [config.obs_x, config.obs_y],
+    #     config.obs_r,
+    #     edgecolor=(1, 0, 0),
+    #     facecolor="none",
+    # )
+    # # Add the circle patch to the axis
+    # ax.add_patch(circle)
+    agent_color = "black"
     plt.quiver(
         states[0],
         states[1],
@@ -48,11 +48,11 @@ def get_frame(states, config):
         scale_units="xy",
         minlength=0,
         width=0.1,
-        scale=0.18,
-        color=(0, 0, 1),
+        scale=0.15,
+        color=agent_color,
         zorder=3,
     )
-    plt.scatter(states[0], states[1], s=20, c=(0, 0, 1), zorder=3)
+    plt.scatter(states[0], states[1], s=20, c=agent_color, zorder=3)
     plt.subplots_adjust(left=0, right=1, top=1, bottom=0)
 
     buf = io.BytesIO()
