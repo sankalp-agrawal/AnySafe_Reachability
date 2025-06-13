@@ -1,3 +1,4 @@
+from collections import defaultdict
 from typing import Optional
 
 import gymnasium as gym
@@ -5,8 +6,12 @@ import numpy as np
 import torch
 from gymnasium import spaces
 from matplotlib import pyplot as plt
+from matplotlib.patches import Circle
+from skimage import measure
 
 from PyHJ.data.batch import Batch
+from PyHJ.reach_rl_gym_envs.utils.dubins_gt_solver import DubinsHJSolver
+from PyHJ.reach_rl_gym_envs.utils.env_eval_utils import get_metrics
 
 
 class Dubins_WM_Env(gym.Env):
@@ -61,6 +66,9 @@ class Dubins_WM_Env(gym.Env):
         )  # joint action space
         self.image_size = config.size[0]
         self.turnRate = config.turnRate
+
+        self.solver = DubinsHJSolver()
+        self.nominal_policy = "turn_right"
 
     def set_wm(self, wm, past_data, config):
         self.device = config.device
@@ -124,58 +132,6 @@ class Dubins_WM_Env(gym.Env):
 
         return safety_margin, cont.mean.squeeze().detach().cpu().numpy()
 
-    def get_latent(self, wm, thetas, imgs):
-        thetas = np.expand_dims(np.expand_dims(thetas, 1), 1)
-        imgs = np.expand_dims(imgs, 1)
-        dummy_acs = np.zeros((np.shape(thetas)[0], 1))
-        firsts = np.ones((np.shape(thetas)[0], 1))
-        lasts = np.zeros((np.shape(thetas)[0], 1))
-        cos = np.cos(thetas)
-        sin = np.sin(thetas)
-        states = np.concatenate([cos, sin], axis=-1)
-        chunks = 21
-        if np.shape(imgs)[0] > chunks:
-            bs = int(np.shape(imgs)[0] / chunks)
-        else:
-            bs = int(np.shape(imgs)[0] / chunks)
-        for i in range(chunks):
-            if i == chunks - 1:
-                data = {
-                    "obs_state": states[i * bs :],
-                    "image": imgs[i * bs :],
-                    "action": dummy_acs[i * bs :],
-                    "is_first": firsts[i * bs :],
-                    "is_terminal": lasts[i * bs :],
-                }
-            else:
-                data = {
-                    "obs_state": states[i * bs : (i + 1) * bs],
-                    "image": imgs[i * bs : (i + 1) * bs],
-                    "action": dummy_acs[i * bs : (i + 1) * bs],
-                    "is_first": firsts[i * bs : (i + 1) * bs],
-                    "is_terminal": lasts[i * bs : (i + 1) * bs],
-                }
-            data = wm.preprocess(data)
-            embeds = wm.encoder(data)
-            if i == 0:
-                embed = embeds
-            else:
-                embed = torch.cat([embed, embeds], dim=0)
-
-        data = {
-            "obs_state": states,
-            "image": imgs,
-            "action": dummy_acs,
-            "is_first": firsts,
-            "is_terminal": lasts,
-        }
-        data = wm.preprocess(data)
-        post, _ = wm.dynamics.observe(embed, data["action"], data["is_first"])
-
-        feat = wm.dynamics.get_feat(post).detach()
-        lz = torch.tanh(wm.heads["margin"](feat))
-        return feat.squeeze().cpu().numpy(), lz.squeeze().detach().cpu().numpy()
-
     def evaluate_V(self, state, policy):
         tmp_obs = np.array(state)  # .reshape(1,-1)
         tmp_batch = Batch(obs=tmp_obs, info=Batch())
@@ -183,29 +139,146 @@ class Dubins_WM_Env(gym.Env):
         return tmp.cpu().detach().numpy().flatten()
 
     def get_eval_plot(self, cache, thetas, policy, config):
-        fig1, axes1 = plt.subplots(len(thetas), 1, figsize=(3, 10))
-        fig2, axes2 = plt.subplots(len(thetas), 1, figsize=(3, 10))
+        nx, ny, nt = config.nx, config.ny, 51
+        fig1, axes1 = plt.subplots(2, len(thetas))
+        fig2, axes2 = plt.subplots(2, len(thetas))
+
+        gt_values = self.solver.solve(
+            constraints=[np.array([0.0, 0.0, 0.5, 1.0])],
+            constraints_shape=3,
+        )
+
+        all_metrics = []
 
         for i in range(len(thetas)):
             theta = thetas[i]
-            idxs, imgs_prev, thetas_prev = cache[theta]
-            feat, lz = self.get_latent(wm=self.wm, thetas=thetas_prev, imgs=imgs_prev)
-            vals = self.evaluate_V(state=feat, policy=policy)
-            vals = np.minimum(vals, lz)
-            axes1[i].imshow(
-                vals.reshape(config.nx, config.ny).T > 0,
-                extent=(-1.1, 1.1, -1.1, 1.1),
-                vmin=-1,
-                vmax=1,
+            idxs, imgs_prev, thetas_prev, feat, lz = cache[theta]
+            V = self.evaluate_V(state=feat, policy=policy)
+            V = np.minimum(V, lz)
+
+            nt_index = int(
+                np.round((thetas[i] / (2 * np.pi)) * (nt - 1))
+            )  # Convert theta to index in the grid
+
+            metrics = get_metrics(rl_values=V, gt_values=gt_values[:, :, nt_index].T)
+            all_metrics.append(metrics)
+
+            # Find contours for gt and rl Value functions
+            contours_rl = measure.find_contours(
+                np.array(V > 0).astype(float), level=0.5
+            )
+            contours_gt = measure.find_contours(
+                np.array(gt_values[:, :, nt_index].T > 0).astype(float), level=0.5
+            )
+
+            # Show sub-zero level set
+            axes1[0, i].imshow(V > 0, extent=(-1.0, 1.0, -1.0, 1.0), origin="lower")
+            axes1[1, i].imshow(
+                gt_values[:, :, nt_index].T > 0,
+                extent=(-1.0, 1.0, -1.0, 1.0),
                 origin="lower",
             )
-            axes2[i].imshow(
-                vals.reshape(config.nx, config.ny).T,
-                extent=(-1.1, 1.1, -1.1, 1.1),
-                vmin=-1,
-                vmax=1,
+            # Show value functions
+            axes2[0, i].imshow(
+                V, extent=(-1.0, 1.0, -1.0, 1.0), vmin=-1.0, vmax=1.0, origin="lower"
+            )
+            axes2[1, i].imshow(
+                gt_values[:, :, nt_index].T,
+                extent=(-1.0, 1.0, -1.0, 1.0),
+                vmin=-1.0,
+                vmax=1.0,
                 origin="lower",
             )
-        fig1.tight_layout()
-        fig2.tight_layout()
-        return fig1, fig2
+
+            # Plot contours for RL Value function
+            for contour in contours_rl:
+                for axes in [axes1, axes2]:
+                    [
+                        ax.plot(
+                            contour[:, 1] * (2.0 / (nx - 1)) - 1.0,
+                            contour[:, 0] * (2.0 / (ny - 1)) - 1.0,
+                            color="blue",
+                            linewidth=2,
+                            label="RL Value Contour",
+                        )
+                        for ax in axes[:, i]
+                    ]
+            # Plot contours for GT Value function
+            for contour in contours_gt:
+                for axes in [axes1, axes2]:
+                    [
+                        ax.plot(
+                            contour[:, 1] * (2.0 / (nx - 1)) - 1.0,
+                            contour[:, 0] * (2.0 / (ny - 1)) - 1.0,
+                            color="Green",
+                            linewidth=2,
+                            label="GT Value Contour",
+                        )
+                        for ax in axes[:, i]
+                    ]
+
+            # Add constraint patch
+            [
+                ax.add_patch(
+                    Circle((0.0, 0.0), 0.5, color="red", fill=False, label="Fail Set")
+                )
+                for ax in axes1[:, i]
+            ]
+            [
+                ax.add_patch(
+                    Circle((0.0, 0.0), 0.5, color="red", fill=False, label="Fail Set")
+                )
+                for ax in axes2[:, i]
+            ]
+
+            axes1[0, i].set_title(
+                "theta = {}".format(np.round(thetas[i], 2)),
+                fontsize=12,
+            )
+            axes2[0, i].set_title(
+                "theta = {}".format(np.round(thetas[i], 2)),
+                fontsize=12,
+            )
+            axes1[1, i].set_title(
+                "GT,\ntheta = {}".format(np.round(thetas[i], 2)),
+                fontsize=12,
+            )
+            axes2[1, i].set_title(
+                "GT,\ntheta = {}".format(np.round(thetas[i], 2)),
+                fontsize=12,
+            )
+
+        for axes in [axes1, axes2]:
+            for ax in axes.flat:
+                ax.set_xlim(-1, 1)
+                ax.set_ylim(-1, 1)
+                ax.set_aspect("equal")
+
+        for fig, axes in zip([fig1, fig2], [axes1, axes2]):
+            handles, labels = [], []
+            for ax in axes.flat:
+                h, label = ax.get_legend_handles_labels()
+                handles.extend(h)
+                labels.extend(label)
+
+            # Remove duplicates while preserving order
+            unique = dict(zip(labels, handles))
+
+            # Create a single, global legend
+            fig.legend(unique.values(), unique.keys(), loc="upper center", ncol=3)
+
+        plt.tight_layout(rect=[0, 0, 1, 0.95])  # leave space for the legend
+
+        aggregated = defaultdict(list)
+        for metrics in all_metrics:
+            for key, value in metrics.items():
+                aggregated[key].append(value)
+
+        # Compute averages
+        averaged_metrics = {key: np.mean(values) for key, values in aggregated.items()}
+
+        return (
+            fig1,
+            fig2,
+            averaged_metrics,
+        )

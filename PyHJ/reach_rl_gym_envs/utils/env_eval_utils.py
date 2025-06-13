@@ -83,12 +83,12 @@ def get_eval_plot(env, policy, critic, in_distribution=True):
                 }
                 V[ii, jj] = evaluate_V(obs=temp_obs, policy=policy, critic=critic)
 
-        metrics = get_metrics(rl_values=V, gt_values=gt_values[:, :, i].T)
-        all_metrics.append(metrics)
-
         nt_index = int(
             np.round((thetas[i] / (2 * np.pi)) * (nt - 1))
         )  # Convert theta to index in the grid
+
+        metrics = get_metrics(rl_values=V, gt_values=gt_values[:, :, nt_index].T)
+        all_metrics.append(metrics)
 
         # Find contours for gt and rl Value functions
         contours_rl = measure.find_contours(np.array(V > 0).astype(float), level=0.5)
