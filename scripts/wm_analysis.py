@@ -238,9 +238,10 @@ def topographic_map(config, cache, thetas, constraint_state, similarity_metric):
     constraint_state = torch.tensor(constraint_state, dtype=torch.float32)
     constraint_img = get_frame(states=constraint_state, config=config)  # (H, W, C)
 
-    feat_c, stoch_c, deter_c = get_latent(
-        wm, thetas=np.array([constraint_state[-1].item()]), imgs=[constraint_img]
-    )
+    with torch.no_grad():
+        feat_c, stoch_c, deter_c = get_latent(
+            wm, thetas=np.array([constraint_state[-1].item()]), imgs=[constraint_img]
+        )
 
     idxs, __, __ = cache[thetas[0]]
     feat_c = einops.repeat(feat_c, "c -> b c", b=idxs.shape[0])
@@ -249,7 +250,8 @@ def topographic_map(config, cache, thetas, constraint_state, similarity_metric):
         theta = thetas[i]
         axes[i].set_title(f"theta = {theta:.2f}")
         idxs, imgs_prev, thetas_prev = cache[theta]
-        feat, stoch, deter = get_latent(wm, thetas_prev, imgs_prev)
+        with torch.no_grad():
+            feat, stoch, deter = get_latent(wm, thetas_prev, imgs_prev)
         if similarity_metric == "Cosine_Similarity":  # negative cosine similarity
             numerator = np.sum(feat * feat_c, axis=1)
             denominator = np.linalg.norm(feat, axis=1) * np.linalg.norm(feat_c, axis=1)

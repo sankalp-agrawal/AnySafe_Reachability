@@ -558,13 +558,17 @@ def main(config):
     )
 
     obs_observation_space = gym.spaces.Box(low=-1, high=1, shape=(2,), dtype=np.float32)
-    observation_space = gym.spaces.Dict(
-        {
-            # "state": gt_observation_space,
-            # 'obs_state': obs_observation_space,
-            "image": image_observation_space,
-        }
-    )
+    dict_obs_space = {}
+    for key in ["obs_state", "image", "state"]:
+        if key in config.encoder["mlp_keys"] or key in config.encoder["cnn_keys"]:
+            if key == "obs_state":
+                dict_obs_space[key] = obs_observation_space
+            elif key == "image":
+                dict_obs_space[key] = image_observation_space
+            elif key == "state":
+                dict_obs_space[key] = gt_observation_space
+
+    observation_space = gym.spaces.Dict(dict_obs_space)
 
     print("Action Space", action_space)
     config.num_actions = (
