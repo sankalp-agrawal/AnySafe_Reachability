@@ -4,6 +4,7 @@ from typing import Optional
 import gymnasium as gym
 import numpy as np
 import torch
+from generate_data_traj_cont import get_frame
 from gymnasium import spaces
 from matplotlib import pyplot as plt
 from matplotlib.patches import Circle
@@ -25,6 +26,8 @@ class Dubins_WM_Env(gym.Env):
             config = params[2]
             self.set_wm(wm, past_data, config)
 
+        self.config = config
+
         self.render_mode = None
         self.time_step = 0.05
         self.high = np.array(
@@ -36,16 +39,28 @@ class Dubins_WM_Env(gym.Env):
         )
         self.low = np.array([-1.1, -1.1, -np.pi])
         self.device = "cuda:0"
-        self.observation_space = spaces.Box(
-            low=-np.inf,
-            high=np.inf,
-            shape=(
-                1,
-                1,
-                544,
-            ),
-            dtype=np.float32,
+        self.num_constraints = 1
+        self.constraints_shape = 544
+        self.observation_space = spaces.Dict(
+            {
+                "state": spaces.Box(
+                    low=-np.inf,
+                    high=np.inf,
+                    shape=(544,),
+                    dtype=np.float32,
+                ),
+                "constraints": spaces.Box(
+                    low=-np.inf,
+                    high=np.inf,
+                    shape=(
+                        self.num_constraints,
+                        self.constraints_shape + 1,
+                    ),
+                    dtype=np.float32,
+                ),
+            }
         )
+
         image_size = config.size[0]  # 128
         img_obs_space = gym.spaces.Box(
             low=0, high=255, shape=(image_size, image_size, 3), dtype=np.uint8
@@ -72,6 +87,8 @@ class Dubins_WM_Env(gym.Env):
 
         self.solver = DubinsHJSolver(nx=config.nx, ny=config.ny, nt=config.nt)
         self.nominal_policy = "turn_right"
+        if hasattr(self, "wm"):
+            self.select_constraints()
 
     def set_wm(self, wm, past_data, config):
         self.device = config.device
@@ -100,8 +117,12 @@ class Dubins_WM_Env(gym.Env):
         else:
             terminated = False
         truncated = False
+        self.obs = {
+            "state": self.feat.flatten(),
+            "constraints": self.constraints,
+        }
         info = {"is_first": False, "is_terminal": terminated}
-        return np.copy(self.feat), rew, terminated, truncated, info
+        return self.obs, rew, terminated, truncated, info
 
     def reset(
         self,
@@ -121,7 +142,11 @@ class Dubins_WM_Env(gym.Env):
         for k, v in self.latent.items():
             self.latent[k] = v[:, [-1]]
         self.feat = self.wm.dynamics.get_feat(self.latent).detach().cpu().numpy()
-        return np.copy(self.feat), {"is_first": True, "is_terminal": False}
+        self.obs = {
+            "state": self.feat.flatten(),
+            "constraints": self.constraints,
+        }
+        return self.obs, {"is_first": True, "is_terminal": False}
 
     def safety_margin(self, feat):
         g_xList = []
@@ -134,6 +159,17 @@ class Dubins_WM_Env(gym.Env):
         safety_margin = np.array(g_xList).squeeze()
 
         return safety_margin, cont.mean.squeeze().detach().cpu().numpy()
+
+    def select_constraints(self):
+        constraint = torch.tensor([0.0, 0.0, 0.0])
+        img = get_frame(states=constraint, config=self.config)
+        feat_c, __ = self.get_latent(
+            wm=self.wm, thetas=constraint[-1].reshape(-1), imgs=[img]
+        )
+        feat_c = np.append(
+            feat_c, 1.0
+        )  # Append 1.0 to indicate that this constraint is active
+        self.constraints = np.array(feat_c).reshape(self.num_constraints, -1)
 
     def evaluate_V(self, state, policy):
         tmp_obs = np.array(state)  # .reshape(1,-1)

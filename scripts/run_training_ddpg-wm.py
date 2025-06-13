@@ -141,7 +141,13 @@ env.set_wm(wm, offline_dataset, config)
 assert hasattr(
     env, "action_space"
 )  # and hasattr(env, 'action2_space'), "The environment does not have control and disturbance actions!"
-args.state_shape = env.observation_space.shape or env.observation_space.n
+if isinstance(env.observation_space, gymnasium.spaces.Dict):
+    args.state_shape = (
+        env.observation_space["state"].shape or env.observation_space["state"].n
+    )
+else:
+    args.state_shape = env.observation_space.shape or env.observation_space.n
+args.constraint_dim = env.constraints_shape
 args.action_shape = env.action_space.shape or env.action_space.n
 args.max_action = env.action_space.high[0]
 
@@ -188,9 +194,12 @@ elif args.critic_activation == "SiLU":
 if args.critic_net is not None:
     critic_net = Net(
         args.state_shape,
-        obs_inputs=["state"],
+        obs_inputs=["state", "constraint"],
         action_shape=args.action_shape,
         hidden_sizes=args.critic_net,
+        constraint_dim=args.constraint_dim,
+        constraint_embedding_dim=args.constraint_embedding_dim,
+        hidden_sizes_constraint=args.control_net_const,
         activation=critic_activation,
         concat=True,
         device=args.device,
@@ -214,10 +223,13 @@ print(
 
 actor_net = Net(
     args.state_shape,
-    obs_inputs=["state"],
+    obs_inputs=["state", "constraint"],
     hidden_sizes=args.control_net,
     activation=actor_activation,
     device=args.device,
+    constraint_dim=args.constraint_dim,
+    constraint_embedding_dim=args.constraint_embedding_dim,
+    hidden_sizes_constraint=args.control_net_const,
 )
 actor = Actor(
     actor_net, args.action_shape, max_action=args.max_action, device=args.device

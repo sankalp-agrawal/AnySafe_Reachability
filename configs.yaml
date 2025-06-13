@@ -147,6 +147,8 @@ defaults:
   batch_size-pyhj: 512 # type=int, default=512)
   control-net: [128, 128, 128] # type=int, nargs='*', default=None) # for control policy
   critic-net: [128, 128, 128]  # type=int, nargs='*', default=None) # for critic net
+  constraint-embedding-dim: 20
+  control-net-const: [128, 128] # type=int, nargs='*', default=(128, 128)
   training-num: 1 # type=int, default=8)
   test-num: 1 # type=int, default=100)
   render: 0. # type=float, default=0.)

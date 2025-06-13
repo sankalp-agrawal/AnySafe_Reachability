@@ -57,6 +57,43 @@ class Actor(nn.Module):
             device=self.device,
         )
         self.max_action = max_action
+        self.use_constraint = self.preprocess.use_constraint
+
+    def preprocess_obs(self, obs: Union[dict, Batch]):
+        """Preprocess the observation for the critic."""
+        if set(obs.keys()) != set(["state", "constraints"]):
+            raise NotImplementedError(
+                "obs beyond state and constraint is not supported yet."
+            )
+
+        constraints = torch.tensor(
+            obs["constraints"], device=self.device
+        )  # (B, N, C + 1)
+
+        encodings = self.preprocess.constraint_encoder(
+            constraints[..., :-1]  # (B, N, C)
+        )  # unmasked encodings of constraints (B, N, Z)
+
+        mask = constraints[..., -1] == 1  # (B, N)
+        mask_expanded = mask.unsqueeze(-1)  # (B, N, 1)
+
+        # Step 2: Zero out masked values and sum
+        encodings_masked = (
+            encodings * mask_expanded
+        )  # masked values are zeroed (B, N, Z)
+        sum_masked = encodings_masked.sum(dim=1)  # shape (B, Z)
+
+        # Step 3: Count number of True entries per batch
+        count = mask.sum(dim=1, keepdim=True).clamp(
+            min=1
+        )  # shape (B, 1), clamp to avoid division by zero
+
+        # Step 4: Compute mean
+        encodings_masked = sum_masked / count  # shape (B, Z)
+
+        return torch.cat(
+            [torch.tensor(obs["state"], device=self.device), encodings_masked], dim=-1
+        )
 
     def forward(
         self,
@@ -65,6 +102,16 @@ class Actor(nn.Module):
         info: Dict[str, Any] = {},
     ) -> Tuple[torch.Tensor, Any]:
         """Mapping: obs -> logits -> action."""
+        if self.use_constraint:
+            assert isinstance(obs, (dict, Batch)), (
+                "obs should be a dict or Batch when using constraint, "
+                "but got {}".format(type(obs))
+            )
+        if isinstance(obs, (dict, Batch)):
+            obs = self.preprocess_obs(obs)
+        else:
+            obs = obs
+
         logits, hidden = self.preprocess(obs, state)
         logits = self.max_action * torch.tanh(self.last(logits))
         return logits, hidden

@@ -118,7 +118,7 @@ wm = models.WorldModel(env.observation_space_full, env.action_space, 0, config)
 config = tools.set_wm_name(config)
 
 ckpt_path = config.rssm_ckpt_path
-checkpoint = torch.load(ckpt_path)
+checkpoint = torch.load(ckpt_path, weights_only=True)
 state_dict = {
     k[14:]: v for k, v in checkpoint["agent_state_dict"].items() if "_wm" in k
 }
