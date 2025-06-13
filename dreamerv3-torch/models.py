@@ -1,9 +1,9 @@
 import copy
-import torch
-from torch import nn
 
 import networks
 import tools
+import torch
+from torch import nn
 
 to_np = lambda x: x.detach().cpu().numpy()
 from torch.nn.utils import spectral_norm
@@ -71,7 +71,7 @@ class WorldModel(nn.Module):
             device=config.device,
             name="Margin",
         )
-        '''self.heads["reward"] = networks.MLP(
+        """self.heads["reward"] = networks.MLP(
             feat_size,
             (255,) if config.reward_head["dist"] == "symlog_disc" else (),
             config.reward_head["layers"],
@@ -83,7 +83,7 @@ class WorldModel(nn.Module):
             device=config.device,
             name="Reward",
         )
-        '''
+        """
         self.heads["cont"] = networks.MLP(
             feat_size,
             (),
@@ -96,7 +96,7 @@ class WorldModel(nn.Module):
             device=config.device,
             name="Cont",
         )
-        
+
         for name in config.grad_heads:
             assert name in self.heads, name
         self._model_opt = tools.Optimizer(
@@ -114,11 +114,10 @@ class WorldModel(nn.Module):
         )
         # other losses are scaled by 1.0.
         self._scales = dict(
-            #reward=config.reward_head["loss_scale"],
+            # reward=config.reward_head["loss_scale"],
             cont=config.cont_head["loss_scale"],
             margin=config.margin_head["loss_scale"],
         )
-
 
     def _init_obs_mlp(self, config, obs_shape):
         if config.dyn_discrete:
@@ -130,7 +129,7 @@ class WorldModel(nn.Module):
             nn.ReLU(),
             nn.Linear(config.units, obs_shape),
         )
-        
+
         obs_mlp.to(config.device)
         standard_kwargs = {
             "lr": config.obs_lr,
@@ -144,7 +143,7 @@ class WorldModel(nn.Module):
             "obs_mlp", obs_mlp.parameters(), **standard_kwargs
         )
         return obs_mlp, obs_recon_opt
-    
+
     def _init_lx_mlp(self, config, obs_shape):
         if config.dyn_discrete:
             feat_size = config.dyn_stoch * config.dyn_discrete + config.dyn_deter
@@ -155,7 +154,7 @@ class WorldModel(nn.Module):
             nn.ReLU(),
             spectral_norm(nn.Linear(16, obs_shape)),
         )
-        
+
         lx_mlp.to(config.device)
         standard_kwargs = {
             "lr": config.lx_lr,
@@ -165,11 +164,9 @@ class WorldModel(nn.Module):
             "opt": config.opt,
             "use_amp": self._use_amp,
         }
-        lx_recon_opt = tools.Optimizer(
-            "lx_mlp", lx_mlp.parameters(), **standard_kwargs
-        )
+        lx_recon_opt = tools.Optimizer("lx_mlp", lx_mlp.parameters(), **standard_kwargs)
         return lx_mlp, lx_recon_opt
-    
+
     def _train(self, data):
         # action (batch_size, batch_length, act_dim)
         # image (batch_size, batch_length, h, w, ch)
@@ -263,11 +260,11 @@ class WorldModel(nn.Module):
         recon = self.heads["decoder"](self.dynamics.get_feat(states))["image"].mode()[
             :6
         ]
-        #reward_post = self.heads["reward"](self.dynamics.get_feat(states)).mode()[:6]
+        # reward_post = self.heads["reward"](self.dynamics.get_feat(states)).mode()[:6]
         init = {k: v[:, -1] for k, v in states.items()}
         prior = self.dynamics.imagine_with_action(data["action"][:6, 5:], init)
         openl = self.heads["decoder"](self.dynamics.get_feat(prior))["image"].mode()
-        #reward_prior = self.heads["reward"](self.dynamics.get_feat(prior)).mode()
+        # reward_prior = self.heads["reward"](self.dynamics.get_feat(prior)).mode()
         # observed image is given until 5 steps
         model = torch.cat([recon[:, :5], openl], 1)
         truth = data["image"][:6]

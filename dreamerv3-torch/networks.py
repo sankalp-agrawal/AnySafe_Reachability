@@ -1,13 +1,12 @@
 import math
-import numpy as np
 import re
 
+import numpy as np
+import tools
 import torch
-from torch import nn
 import torch.nn.functional as F
 from torch import distributions as torchd
-
-import tools
+from torch import nn
 
 
 class RSSM(nn.Module):
@@ -636,9 +635,9 @@ class MLP(nn.Module):
 
         if name == "Margin":
             self.layers.add_module(
-                f"{name}_linear{i+1}", nn.Linear(units, 1, bias=False)
+                f"{name}_linear{i + 1}", nn.Linear(units, 1, bias=False)
             )
-            
+
         self.layers.apply(tools.weight_init)
 
         if isinstance(self._shape, dict):
