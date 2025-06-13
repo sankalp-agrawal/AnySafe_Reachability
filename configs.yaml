@@ -91,9 +91,9 @@ defaults:
   initial: 'learned'
 
   # Dataset generation
-  show_constraint: False
+  show_constraint: True
   constraint_color: "red"
-  arrow_size: 0.15 # Smaller is bigger here
+  arrow_size: 0.18 # Smaller is bigger here
 
   # Training
   batch_size: 16

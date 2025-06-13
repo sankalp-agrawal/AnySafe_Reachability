@@ -1,27 +1,23 @@
-import datetime
 import collections
 import io
 import os
-import json
 import pathlib
-import re
-import time
-import random
-
-import numpy as np
-
-import torch
-from torch import nn
-from torch.nn import functional as F
-from torch import distributions as torchd
-from torch.utils.tensorboard import SummaryWriter
-
-from termcolor import cprint
 import pickle
-from tqdm import tqdm
+import random
+import time
 from collections import defaultdict
 from typing import Any, Callable, Union
+
+import numpy as np
+import torch
+from termcolor import cprint
+from torch import distributions as torchd
+from torch import nn
+from torch.nn import functional as F
+from tqdm import tqdm
+
 import wandb
+
 to_np = lambda x: x.detach().cpu().numpy()
 
 
@@ -69,7 +65,7 @@ class Logger:
         self._videos = {}
         self.step = step
 
-        name = str(logdir).split('/')[-2] + '_' + str(logdir).split('/')[-1]
+        name = str(logdir).split("/")[-2] + "_" + str(logdir).split("/")[-1]
         # Initialize WandB
         wandb.init(project="eaishw2", config={"logdir": str(logdir)}, name=name)
 
@@ -103,7 +99,7 @@ class Logger:
         # Log metrics to WandB
         metrics = {"step": step, **dict(scalars)}
         wandb.log(metrics, step=step)
-        
+
         for name, value in self._images.items():
             # Log images to WandB
             if np.shape(value)[0] == 3:
@@ -145,8 +141,6 @@ class Logger:
         value = value.transpose(1, 4, 2, 0, 3).reshape((1, T, C, H, B * W))
         # Log videos to WandB
         wandb.log({name: wandb.Video(value, fps=16, format="mp4")}, step=step)
-
-
 
 
 def save_checkpoint(
@@ -196,17 +190,17 @@ def save_checkpoint(
 
     return best_score
 
+
 def fill_expert_dataset_dubins(config, cache, is_val_set=False):
     dataset_path = config.dataset_path
-    
-    with open(dataset_path, 'rb') as f:
+
+    with open(dataset_path, "rb") as f:
         demos = pickle.load(f)
-        
+
     num_train = config.num_train_trajs
-    
-    
-    pixel_keys = sorted(['image'])
-    state_keys = sorted(['state'])
+
+    pixel_keys = sorted(["image"])
+    state_keys = sorted(["state"])
 
     for i, demo in tqdm(
         enumerate(demos),
@@ -227,25 +221,31 @@ def fill_expert_dataset_dubins(config, cache, is_val_set=False):
                 transition[obs_key] = traj["obs"][obs_key][t]
 
             if len(state_keys) != 0:
-                curr_obs_state_vec = [
-                    traj["obs"][obs_key][t] for obs_key in state_keys
-                ]
+                curr_obs_state_vec = [traj["obs"][obs_key][t] for obs_key in state_keys]
                 transition["state"] = curr_obs_state_vec
-                
-            transition["privileged_state"] = traj['obs']['priv_state'][t]
-            transition["obs_state"] = [np.cos(traj['obs']['state'][t]), np.sin(traj['obs']['state'][t])]
-            transition["reward"] = np.array(
-                0, dtype=np.float32
-            )
+
+            transition["privileged_state"] = traj["obs"]["priv_state"][t]
+            transition["obs_state"] = [
+                np.cos(traj["obs"]["state"][t]),
+                np.sin(traj["obs"]["state"][t]),
+            ]
+            transition["reward"] = np.array(0, dtype=np.float32)
 
             # check if state is in obstacle
-            transition["failure"] = np.array(np.linalg.norm(traj['obs']['priv_state'][t][:2] - np.array([config.obs_x, config.obs_y])) < config.obs_r, dtype=np.float32)
+            transition["failure"] = np.array(
+                np.linalg.norm(
+                    traj["obs"]["priv_state"][t][:2]
+                    - np.array([config.obs_x, config.obs_y])
+                )
+                < config.obs_r,
+                dtype=np.float32,
+            )
             transition["is_first"] = np.array(t == 0, dtype=np.bool_)
             transition["is_last"] = np.array(traj["dones"][t], dtype=np.bool_)
             transition["is_terminal"] = np.array(traj["dones"][t], dtype=np.bool_)
             transition["discount"] = np.array(1, dtype=np.float32)
             transition["action"] = np.array(traj["actions"][t], dtype=np.float32)
-            
+
             add_to_cache(cache, f"exp_traj_{i}", transition)
     if not is_val_set:
         cprint(
@@ -260,8 +260,8 @@ def fill_expert_dataset_dubins(config, cache, is_val_set=False):
             attrs=["bold"],
         )
 
-
     return 0
+
 
 def simulate(
     agent,
@@ -355,13 +355,13 @@ def simulate(
 
                 if not is_eval:
                     step_in_dataset = erase_over_episodes(cache, limit)
-                    logger.scalar(f"dataset_size", step_in_dataset)
-                    logger.scalar(f"train_return", score)
-                    logger.scalar(f"train_length", length)
-                    logger.scalar(f"train_episodes", len(cache))
+                    logger.scalar("dataset_size", step_in_dataset)
+                    logger.scalar("train_return", score)
+                    logger.scalar("train_length", length)
+                    logger.scalar("train_episodes", len(cache))
                     logger.write(step=logger.step)
                 else:
-                    if not "eval_lengths" in locals():
+                    if "eval_lengths" not in locals():
                         eval_lengths = []
                         eval_scores = []
                         eval_done = False
@@ -371,12 +371,12 @@ def simulate(
 
                     score = sum(eval_scores) / len(eval_scores)
                     length = sum(eval_lengths) / len(eval_lengths)
-                    logger.video(f"eval_policy", np.array(video)[None])
+                    logger.video("eval_policy", np.array(video)[None])
 
                     if len(eval_scores) >= episodes and not eval_done:
-                        logger.scalar(f"eval_return", score)
-                        logger.scalar(f"eval_length", length)
-                        logger.scalar(f"eval_episodes", len(eval_scores))
+                        logger.scalar("eval_return", score)
+                        logger.scalar("eval_length", length)
+                        logger.scalar("eval_episodes", len(eval_scores))
                         logger.write(step=logger.step)
                         eval_done = True
     if is_eval:
@@ -1136,3 +1136,14 @@ def recursively_load_optim_state_dict(obj, optimizers_state_dicts):
         for key in keys:
             obj_now = getattr(obj_now, key)
         obj_now.load_state_dict(state_dict)
+
+
+def set_wm_name(config):
+    wm_name = f"dubins_mlp_{'None' if config.encoder['mlp_keys'] == '' else config.encoder['mlp_keys']}_cnn_{'None' if config.encoder['cnn_keys'] == '' else config.encoder['cnn_keys']}_sc_{'T' if config.show_constraint else 'F'}_arrow_{config.arrow_size}"
+    config.wm_name = wm_name
+    config.dataset_path = f"wm_demos_{wm_name}_{config.size[0]}.pkl"
+    config.rssm_ckpt_path = (
+        f"logs/dreamer_dubins/{wm_name}/rssm_ckpt.pt"  # for saving the RSSM checkpoint
+    )
+    config.logdir = f"logs/dreamer_dubins/{wm_name}"
+    return config

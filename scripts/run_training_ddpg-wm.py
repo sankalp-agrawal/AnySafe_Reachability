@@ -118,15 +118,7 @@ config.num_actions = (
 )
 wm = models.WorldModel(env.observation_space_full, env.action_space, 0, config)
 
-wm_name = (
-    f"dubins_sc_{'T' if config.show_constraint else 'F'}_arrow_{config.arrow_size}"
-)
-
-config.wm_name = wm_name
-config.dataset_path = f"wm_demos_{wm_name}_{config.size[0]}.pkl"
-config.rssm_ckpt_path = (
-    f"logs/dreamer_dubins/{wm_name}/rssm_ckpt.pt"  # for saving the RSSM checkpoint
-)
+config = tools.set_wm_name(config)
 
 ckpt_path = config.rssm_ckpt_path
 checkpoint = torch.load(ckpt_path)

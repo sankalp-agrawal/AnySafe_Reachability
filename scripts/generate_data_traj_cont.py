@@ -175,12 +175,6 @@ if __name__ == "__main__":
         parser.add_argument(f"--{key}", type=arg_type, default=arg_type(value))
     final_config = parser.parse_args(remaining)
 
-    wm_name = f"dubins_sc_{'T' if final_config.show_constraint else 'F'}_arrow_{final_config.arrow_size}"
-
-    final_config.wm_name = wm_name
-    final_config.dataset_path = f"wm_demos_{wm_name}_{final_config.size[0]}.pkl"
-    final_config.rssm_ckpt_path = (
-        f"logs/dreamer_dubins/{wm_name}/rssm_ckpt.pt"  # for saving the RSSM checkpoint
-    )
+    final_config = tools.set_wm_name(final_config)
 
     demos = generate_trajs(final_config)

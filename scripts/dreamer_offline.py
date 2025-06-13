@@ -518,6 +518,7 @@ def make_dataset(episodes, config):
 
 def main(config):
     tools.set_seed_everywhere(config.seed)
+    config = tools.set_wm_name(config)
     if config.deterministic_run:
         tools.enable_deterministic_run()
     logdir = pathlib.Path(config.logdir).expanduser()
@@ -527,13 +528,6 @@ def main(config):
     config.eval_every //= config.action_repeat
     config.log_every //= config.action_repeat
     config.time_limit //= config.action_repeat
-
-    wm_name = (
-        f"dubins_sc_{'T' if config.show_constraint else 'F'}_arrow_{config.arrow_size}"
-    )
-    config.wm_name = wm_name
-    config.dataset_path = f"wm_demos_{wm_name}_{config.size[0]}.pkl"
-    config.rssm_ckpt_path = f"rssm_ckpt_{wm_name}.pt"  # for saving the RSSM checkpoint
 
     print("Logdir", logdir)
     logdir.mkdir(parents=True, exist_ok=True)
@@ -581,6 +575,8 @@ def main(config):
     config.num_actions = (
         action_space.n if hasattr(action_space, "n") else action_space.shape[0]
     )
+
+    config = tools.set_wm_name(config)
 
     expert_eps = collections.OrderedDict()
     print(expert_eps)
@@ -673,7 +669,7 @@ def main(config):
             color="cyan",
             attrs=["bold"],
         )
-        ckpt_name = f"rssm_ckpt_{config.wm_name}"
+        ckpt_name = "rssm_ckpt"
         best_pretrain_success = float("inf")
         for step in trange(
             total_train_steps,
@@ -718,6 +714,7 @@ if __name__ == "__main__":
     defaults = {}
     for name in name_list:
         recursive_update(defaults, configs[name])
+
     parser = argparse.ArgumentParser()
     for key, value in sorted(defaults.items(), key=lambda x: x[0]):
         arg_type = tools.args_type(value)

@@ -60,7 +60,7 @@ class Dubins_WM_Env(gym.Env):
         if "image" in config.encoder["cnn_keys"]:
             obs_dict["image"] = img_obs_space
 
-        if "obs_state" in config.encoder["cnn_keys"]:
+        if "obs_state" in config.encoder["mlp_keys"]:
             obs_dict["obs_state"] = obs_space
 
         self.observation_space_full = gym.spaces.Dict(obs_dict)
