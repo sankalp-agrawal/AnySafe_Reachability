@@ -52,15 +52,18 @@ class Dubins_WM_Env(gym.Env):
         )
         obs_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32)
         bool_space = gym.spaces.Box(low=0.0, high=1.0, shape=(1,))
-        self.observation_space_full = gym.spaces.Dict(
-            {
-                "image": img_obs_space,
-                # "obs_state": obs_space, # Don't use obs_state (sin, cos)
-                "is_first": bool_space,
-                "is_last": bool_space,
-                "is_terminal": bool_space,
-            }
-        )
+        obs_dict = {
+            "is_first": bool_space,
+            "is_last": bool_space,
+            "is_terminal": bool_space,
+        }
+        if "image" in config.encoder["cnn_keys"]:
+            obs_dict["image"] = img_obs_space
+
+        if "obs_state" in config.encoder["cnn_keys"]:
+            obs_dict["obs_state"] = obs_space
+
+        self.observation_space_full = gym.spaces.Dict(obs_dict)
         self.action_space = spaces.Box(
             low=-1, high=1, shape=(1,), dtype=np.float32
         )  # joint action space

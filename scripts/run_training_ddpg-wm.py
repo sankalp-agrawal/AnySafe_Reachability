@@ -400,7 +400,9 @@ for iter in range(warmup + args.total_episodes):
             log_path + "/total_epochs_{}".format(epoch)
         )  # filename_suffix="_"+timestr+"_epoch_id_{}".format(epoch))
     if logger is None:
-        logger = WandbLogger()
+        task_name = args.task.split("-")[-1]  # Take everything before the last dash
+        wandb_name = f"{task_name}_SAC_dist_type"
+        logger = WandbLogger(name=wandb_name)
         logger.load(writer)
     logger = TensorboardLogger(writer)
 
