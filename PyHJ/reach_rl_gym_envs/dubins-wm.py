@@ -91,6 +91,8 @@ class Dubins_WM_Env(gym.Env):
         if hasattr(self, "wm"):
             self.select_constraints()
 
+        self.safety_margin_type = config.safety_margin_type
+
     def set_wm(self, wm, past_data, config):
         self.device = config.device
         self.encoder = wm.encoder.to(self.device)
@@ -153,11 +155,22 @@ class Dubins_WM_Env(gym.Env):
         g_xList = []
 
         cont = self.wm.heads["cont"](feat)
-        with torch.no_grad():  # Disable gradient calculation
-            outputs = torch.tanh(self.wm.heads["margin"](feat))
-            g_xList.append(outputs.detach().cpu().numpy())
 
-        safety_margin = np.array(g_xList).squeeze()
+        if self.safety_margin_type == "learned":
+            with torch.no_grad():  # Disable gradient calculation
+                outputs = torch.tanh(self.wm.heads["margin"](feat))
+                g_xList.append(outputs.detach().cpu().numpy())
+
+            safety_margin = np.array(g_xList).squeeze()
+        elif self.safety_margin_type == "cosine_similarity":
+            with torch.no_grad():
+                for constraint in self.constraints:
+                    similarity = -(
+                        torch.nn.functional.cosine_similarity(feat, constraint) - 0.5
+                    )
+                    g_xList.append(similarity.detach().cpu().numpy())
+
+            safety_margin = np.min(np.array(g_xList))
 
         return safety_margin, cont.mean.squeeze().detach().cpu().numpy()
 
@@ -171,6 +184,9 @@ class Dubins_WM_Env(gym.Env):
             feat_c, 1.0
         )  # Append 1.0 to indicate that this constraint is active
         self.constraints = np.array(feat_c).reshape(self.num_constraints, -1)
+        self.gt_constraints = np.array(constraint).reshape(
+            self.num_constraints, -1
+        )  # Store the ground truth constraints
 
     def get_latent(self, wm, thetas, imgs):
         thetas = np.expand_dims(np.expand_dims(thetas, 1), 1)
@@ -329,19 +345,35 @@ class Dubins_WM_Env(gym.Env):
                     ]
 
             # Add constraint patch
-            [
-                ax.add_patch(
-                    Circle((0.0, 0.0), 0.5, color="red", fill=False, label="Fail Set")
-                )
-                for ax in axes1[:, i]
-            ]
-            [
-                ax.add_patch(
-                    Circle((0.0, 0.0), 0.5, color="red", fill=False, label="Fail Set")
-                )
-                for ax in axes2[:, i]
-            ]
-
+            for constraint in self.gt_constraints:
+                x_c, y_c, theta, u = constraint
+                radius = 0.5
+                if u == 0.0:
+                    break
+                [
+                    ax.add_patch(
+                        Circle(
+                            (x_c, y_c),
+                            radius,
+                            color="red",
+                            fill=False,
+                            label="Fail Set",
+                        )
+                    )
+                    for ax in axes1[:, i]
+                ]
+                [
+                    ax.add_patch(
+                        Circle(
+                            (x_c, y_c),
+                            radius,
+                            color="red",
+                            fill=False,
+                            label="Fail Set",
+                        )
+                    )
+                    for ax in axes2[:, i]
+                ]
             axes1[0, i].set_title(
                 "theta = {}".format(np.round(thetas[i], 2)),
                 fontsize=12,
