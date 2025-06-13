@@ -115,6 +115,15 @@ config.num_actions = (
 )
 wm = models.WorldModel(env.observation_space_full, env.action_space, 0, config)
 
+wm_name = (
+    f"dubins_sc_{'T' if config.show_constraint else 'F'}_arrow_{config.arrow_size}"
+)
+config.wm_name = wm_name
+config.dataset_path = f"wm_demos_{wm_name}_{config.size[0]}.pkl"
+config.rssm_ckpt_path = (
+    f"logs/dreamer_dubins/{wm_name}/rssm_ckpt.pt"  # for saving the RSSM checkpoint
+)
+
 ckpt_path = config.rssm_ckpt_path
 checkpoint = torch.load(ckpt_path)
 state_dict = {
@@ -304,18 +313,31 @@ similarity_metrics = ["Cosine_Similarity", "Euclidean Distance"]
 logger = WandbLogger(name="WM Analysis")
 
 for metric in similarity_metrics:
-    fig = topographic_map(
-        config=config,
-        cache=cache,
-        thetas=thetas,
-        constraint_state=[0.0, 0.0, 0.0],
-        similarity_metric=metric,
-    )
+    constraint_list = [
+        [0.0, 0.0, 0.0],  # x, y, theta
+        [0.5, 0.5, np.pi / 2],
+        [-0.5, -0.5, -np.pi / 2],
+        [0.5, -0.5, np.pi / 2],
+        [-0.5, 0.5, -np.pi / 2],
+    ]
+    for constraint_state in constraint_list:
+        cprint(
+            f"Running topographic map for constraint state: {constraint_state}",
+            "green",
+            attrs=["bold"],
+        )
+        fig = topographic_map(
+            config=config,
+            cache=cache,
+            thetas=thetas,
+            constraint_state=constraint_state,
+            similarity_metric=metric,
+        )
 
-    wandb.log(
-        {
-            f"{metric}": wandb.Image(fig),
-        }
-    )
+        wandb.log(
+            {
+                f"{metric}_constraint/{constraint_state}": wandb.Image(fig),
+            }
+        )
 
-    plt.close(fig)
+        plt.close(fig)

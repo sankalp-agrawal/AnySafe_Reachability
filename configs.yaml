@@ -20,6 +20,7 @@ defaults:
   dataset_path: 'wm_demos128.pkl' # '128' should be the same as the size above
   
   # offline dreamer parameters, these are from https://github.com/NM512/dreamerv3-torch
+  wm_name: ''
   logdir: 'logs/dreamer_dubins' 
   rssm_ckpt_path: logs/dreamer_dubins/rssm_ckpt.pt # change this to whatever the path to your rssm checkpoint is
   traindir: null
@@ -66,10 +67,10 @@ defaults:
   norm: True
   encoder:
     # {mlp_keys: 'obs_state', cnn_keys: 'image', act: 'SiLU', norm: True, cnn_depth: 32, kernel_size: 4, minres: 4, mlp_layers: 5, mlp_units: 1024, symlog_inputs: True}
-    {mlp_keys: '', cnn_keys: 'image', act: 'SiLU', norm: True, cnn_depth: 32, kernel_size: 4, minres: 4, mlp_layers: 5, mlp_units: 1024, symlog_inputs: True}
+    {mlp_keys: 'obs_state', cnn_keys: 'image', act: 'SiLU', norm: True, cnn_depth: 32, kernel_size: 4, minres: 4, mlp_layers: 5, mlp_units: 1024, symlog_inputs: True}
   decoder:
     # {mlp_keys: "obs_state", cnn_keys: "image", act: "SiLU", norm: True, cnn_depth: 32, kernel_size: 4, minres: 4, mlp_layers: 5, mlp_units: 1024, cnn_sigmoid: False, image_dist: mse, vector_dist: symlog_mse, outscale: 1.0}
-    {mlp_keys: "", cnn_keys: "image", act: "SiLU", norm: True, cnn_depth: 32, kernel_size: 4, minres: 4, mlp_layers: 5, mlp_units: 1024, cnn_sigmoid: False, image_dist: mse, vector_dist: symlog_mse, outscale: 1.0}
+    {mlp_keys: "obs_state", cnn_keys: "image", act: "SiLU", norm: True, cnn_depth: 32, kernel_size: 4, minres: 4, mlp_layers: 5, mlp_units: 1024, cnn_sigmoid: False, image_dist: mse, vector_dist: symlog_mse, outscale: 1.0}
   actor:
     {layers: 2, dist: 'normal', entropy: 3e-4, unimix_ratio: 0.01, std: 'learned', min_std: 0.1, max_std: 1.0, temp: 0.1, lr: 3e-5, eps: 1e-5, grad_clip: 100.0, outscale: 1.0}
   critic:
@@ -88,6 +89,11 @@ defaults:
   weight_decay: 0.0
   unimix_ratio: 0.01
   initial: 'learned'
+
+  # Dataset generation
+  show_constraint: False
+  constraint_color: "red"
+  arrow_size: 0.15 # Smaller is bigger here
 
   # Training
   batch_size: 16

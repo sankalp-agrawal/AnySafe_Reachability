@@ -528,6 +528,13 @@ def main(config):
     config.log_every //= config.action_repeat
     config.time_limit //= config.action_repeat
 
+    wm_name = (
+        f"dubins_sc_{'T' if config.show_constraint else 'F'}_arrow_{config.arrow_size}"
+    )
+    config.wm_name = wm_name
+    config.dataset_path = f"wm_demos_{wm_name}_{config.size[0]}.pkl"
+    config.rssm_ckpt_path = f"rssm_ckpt_{wm_name}.pt"  # for saving the RSSM checkpoint
+
     print("Logdir", logdir)
     logdir.mkdir(parents=True, exist_ok=True)
     config.traindir.mkdir(parents=True, exist_ok=True)
@@ -666,7 +673,7 @@ def main(config):
             color="cyan",
             attrs=["bold"],
         )
-        ckpt_name = "rssm_ckpt"
+        ckpt_name = f"rssm_ckpt_{config.wm_name}"
         best_pretrain_success = float("inf")
         for step in trange(
             total_train_steps,

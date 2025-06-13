@@ -5,6 +5,7 @@ import pathlib
 import pickle
 import sys
 
+import matplotlib.patches as patches
 import matplotlib.pyplot as plt
 import numpy as np
 import ruamel.yaml as yaml
@@ -29,15 +30,16 @@ def get_frame(states, config):
     plt.ylim([config.y_min, config.y_max])
     plt.axis("off")
     fig.set_size_inches(1, 1)
-    # # Create the circle patch
-    # circle = patches.Circle(
-    #     [config.obs_x, config.obs_y],
-    #     config.obs_r,
-    #     edgecolor=(1, 0, 0),
-    #     facecolor="none",
-    # )
-    # # Add the circle patch to the axis
-    # ax.add_patch(circle)
+    # Create the circle patch
+    if config.show_constraint:
+        circle = patches.Circle(
+            [config.obs_x, config.obs_y],
+            config.obs_r,
+            edgecolor=config.constraint_color,
+            facecolor="none",
+        )
+        # Add the circle patch to the axis
+        ax.add_patch(circle)
     agent_color = "black"
     plt.quiver(
         states[0],
@@ -48,7 +50,7 @@ def get_frame(states, config):
         scale_units="xy",
         minlength=0,
         width=0.1,
-        scale=0.15,
+        scale=config.arrow_size,
         color=agent_color,
         zorder=3,
     )
@@ -140,7 +142,7 @@ def generate_trajs(config):
         demos.append(demo)
         # print('demo: ', i, "timesteps: ", len(state_obs))
 
-    with open("wm_demos" + str(config.size[0]) + ".pkl", "wb") as f:
+    with open(config.dataset_path, "wb") as f:
         pickle.dump(demos, f)
 
 
@@ -172,5 +174,13 @@ if __name__ == "__main__":
         arg_type = tools.args_type(value)
         parser.add_argument(f"--{key}", type=arg_type, default=arg_type(value))
     final_config = parser.parse_args(remaining)
+
+    wm_name = f"dubins_sc_{'T' if final_config.show_constraint else 'F'}_arrow_{final_config.arrow_size}"
+
+    final_config.wm_name = wm_name
+    final_config.dataset_path = f"wm_demos_{wm_name}_{final_config.size[0]}.pkl"
+    final_config.rssm_ckpt_path = (
+        f"logs/dreamer_dubins/{wm_name}/rssm_ckpt.pt"  # for saving the RSSM checkpoint
+    )
 
     demos = generate_trajs(final_config)

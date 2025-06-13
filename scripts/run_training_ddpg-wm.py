@@ -118,6 +118,16 @@ config.num_actions = (
 )
 wm = models.WorldModel(env.observation_space_full, env.action_space, 0, config)
 
+wm_name = (
+    f"dubins_sc_{'T' if config.show_constraint else 'F'}_arrow_{config.arrow_size}"
+)
+
+config.wm_name = wm_name
+config.dataset_path = f"wm_demos_{wm_name}_{config.size[0]}.pkl"
+config.rssm_ckpt_path = (
+    f"logs/dreamer_dubins/{wm_name}/rssm_ckpt.pt"  # for saving the RSSM checkpoint
+)
+
 ckpt_path = config.rssm_ckpt_path
 checkpoint = torch.load(ckpt_path)
 state_dict = {
@@ -401,7 +411,7 @@ for iter in range(warmup + args.total_episodes):
         )  # filename_suffix="_"+timestr+"_epoch_id_{}".format(epoch))
     if logger is None:
         task_name = args.task.split("-")[-1]  # Take everything before the last dash
-        wandb_name = f"{task_name}_SAC_dist_type"
+        wandb_name = f"{task_name}_DDPG_{config.wm_name}"
         logger = WandbLogger(name=wandb_name)
         logger.load(writer)
     logger = TensorboardLogger(writer)
