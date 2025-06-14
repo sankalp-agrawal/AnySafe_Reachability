@@ -181,6 +181,7 @@ class Dubins_WM_Env(gym.Env):
                     constraints, axis=-1
                 )
                 metric = -numerator / (denominator + 1e-8)  # (B N)
+                metric = metric + self.config.safety_margin_threshold
                 safety_margin = np.min(metric, axis=-1)  # (B)
 
         else:
@@ -432,6 +433,11 @@ class Dubins_WM_Env(gym.Env):
 
             # Create a single, global legend
             fig.legend(unique.values(), unique.keys(), loc="upper center", ncol=3)
+
+        fig3.suptitle(
+            f"Safety Margin: {self.safety_margin_type} for Different Thetas, Threshold = {self.config.safety_margin_threshold}",
+            fontsize=16,
+        )
 
         plt.tight_layout(rect=[0, 0, 1, 0.95])  # leave space for the legend
 
