@@ -61,7 +61,7 @@ class WorldModel(nn.Module):
         self.heads["decoder"] = networks.MultiDecoder(
             feat_size, shapes, **config.decoder
         )
-        if ["margin"] in config.grad_heads:
+        if "margin" in config.grad_heads:
             self.heads["margin"] = networks.MLP(
                 feat_size,
                 None,

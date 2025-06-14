@@ -462,7 +462,7 @@ class Dubins_WM_Env(gym.Env):
 
     def nominal_policy(self):
         if self.nominal_policy_type == "turn_right":
-            return np.array([1.0], dtype=np.float32)
+            return np.array([-1.0], dtype=np.float32)
         else:
             raise ValueError(f"Unknown nominal policy type: {self.nominal_policy_type}")
 

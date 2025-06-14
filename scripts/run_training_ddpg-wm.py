@@ -417,8 +417,9 @@ for iter in range(warmup + args.total_episodes):
         task_name = (
             args.task
         )  # .split("-")[:-1]  # Take everything before the last dash
-        wandb_name = f"{task_name}_DDPG_{config.wm_name}"
-        logger = WandbLogger(name=wandb_name, project="Dubins")
+
+        wandb_name = f"{task_name}_DDPG_sim_{config.safety_margin_type}_{config.safety_margin_threshold}_{config.wm_name}"
+        logger = WandbLogger(name=wandb_name, project="Dubins", config=config)
         logger.load(writer)
     logger = TensorboardLogger(writer)
 

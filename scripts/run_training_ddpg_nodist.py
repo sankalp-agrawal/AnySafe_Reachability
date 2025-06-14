@@ -290,9 +290,9 @@ for iter in range(args.total_episodes):
 
     if logger is None:
         if not args.new_expl:
-            logger = WandbLogger(name="DDPG_old", project="Dubins")
+            logger = WandbLogger(name="DDPG_old", project="Dubins", config=args)
         else:
-            logger = WandbLogger(name="DDPG_new", project="Dubins")
+            logger = WandbLogger(name="DDPG_new", project="Dubins", config=args)
             policy.new_expl = True
 
         logger.load(writer)
