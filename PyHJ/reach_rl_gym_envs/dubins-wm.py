@@ -11,9 +11,10 @@ from matplotlib import pyplot as plt
 from matplotlib.patches import Circle
 from skimage import measure
 
+from PyHJ.reach_rl_gym_envs.dubins import Dubins_Env
 from PyHJ.reach_rl_gym_envs.utils.dubins_gt_solver import DubinsHJSolver
 from PyHJ.reach_rl_gym_envs.utils.env_eval_utils import get_metrics
-from PyHJ.utils.eval_utils import evaluate_V
+from PyHJ.utils.eval_utils import evaluate_V, find_a
 
 
 class Dubins_WM_Env(gym.Env):
@@ -87,11 +88,11 @@ class Dubins_WM_Env(gym.Env):
         self.turnRate = config.turnRate
 
         self.solver = DubinsHJSolver(nx=config.nx, ny=config.ny, nt=config.nt)
-        self.nominal_policy = "turn_right"
         if hasattr(self, "wm"):
             self.select_constraints()
 
         self.safety_margin_type = config.safety_margin_type
+        self.nominal_policy_type = "turn_right"
 
     def set_wm(self, wm, past_data, config):
         self.device = config.device
@@ -156,7 +157,12 @@ class Dubins_WM_Env(gym.Env):
 
         cont = self.wm.heads["cont"](feat)
 
+        feat = feat.detach().cpu().numpy()
+
+        self.safety_margin_type = self.config.safety_margin_type
+
         if self.safety_margin_type == "learned":
+            raise NotImplementedError("Learned safety margin not implemented")
             with torch.no_grad():  # Disable gradient calculation
                 outputs = torch.tanh(self.wm.heads["margin"](feat))
                 g_xList.append(outputs.detach().cpu().numpy())
@@ -164,31 +170,41 @@ class Dubins_WM_Env(gym.Env):
             safety_margin = np.array(g_xList).squeeze()
         elif self.safety_margin_type == "cosine_similarity":
             with torch.no_grad():
-                for constraint in self.constraints:
-                    similarity = -(
-                        torch.nn.functional.cosine_similarity(feat, constraint) - 0.5
-                    )
-                    g_xList.append(similarity.detach().cpu().numpy())
+                constraints = self.constraints[..., :-1]  # (N Z)
+                constraints = einops.repeat(
+                    constraints, "N Z -> B N Z", B=feat.shape[0]
+                )
+                feat = feat.reshape(constraints.shape)  # (B N Z)
 
-            safety_margin = np.min(np.array(g_xList))
+                numerator = np.sum(feat * constraints, axis=-1)  # (B N)
+                denominator = np.linalg.norm(feat, axis=-1) * np.linalg.norm(  # (B N)
+                    constraints, axis=-1
+                )
+                metric = -numerator / (denominator + 1e-8)  # (B N)
+                safety_margin = np.min(metric, axis=-1)  # (B)
+
+        else:
+            raise ValueError(
+                "Unknown safety margin type: {}".format(self.safety_margin_type)
+            )
 
         return safety_margin, cont.mean.squeeze().detach().cpu().numpy()
 
     def select_constraints(self):
         constraint = torch.tensor([0.0, 0.0, 0.0])
         img = get_frame(states=constraint, config=self.config)
-        feat_c, __ = self.get_latent(
-            wm=self.wm, thetas=constraint[-1].reshape(-1), imgs=[img]
+        feat_c = self.get_latent(
+            wm=self.wm, thetas=constraint[-1].reshape(-1), imgs=[img], compute_lz=False
         )
         feat_c = np.append(
             feat_c, 1.0
         )  # Append 1.0 to indicate that this constraint is active
         self.constraints = np.array(feat_c).reshape(self.num_constraints, -1)
-        self.gt_constraints = np.array(constraint).reshape(
+        self.gt_constraints = np.array(np.append(constraint, 1.0)).reshape(
             self.num_constraints, -1
         )  # Store the ground truth constraints
 
-    def get_latent(self, wm, thetas, imgs):
+    def get_latent(self, wm, thetas, imgs, compute_lz=True):
         thetas = np.expand_dims(np.expand_dims(thetas, 1), 1)
         imgs = np.expand_dims(imgs, 1)
         dummy_acs = np.zeros((np.shape(thetas)[0], 1))
@@ -237,8 +253,11 @@ class Dubins_WM_Env(gym.Env):
         post, _ = wm.dynamics.observe(embed, data["action"], data["is_first"])
 
         feat = wm.dynamics.get_feat(post).detach()
-        lz = self.safety_margin(feat)  # lz is the safety margin
-        return feat.squeeze().cpu().numpy(), lz.squeeze().detach().cpu().numpy()
+        if compute_lz:
+            lz, __ = self.safety_margin(feat)  # lz is the safety margin
+            return feat.squeeze().cpu().numpy(), np.array(lz)
+        else:
+            return feat.squeeze().cpu().numpy()
 
     def get_eval_plot(self, cache, thetas, policy, config):
         nx, ny, nt = config.nx, config.ny, 51
@@ -430,3 +449,50 @@ class Dubins_WM_Env(gym.Env):
             fig3,
             averaged_metrics,
         )
+
+    def nominal_policy(self):
+        if self.nominal_policy_type == "turn_right":
+            return np.array([-1.0], dtype=np.float32)
+        else:
+            raise ValueError(f"Unknown nominal policy type: {self.nominal_policy_type}")
+
+    def get_trajectory(self, policy):
+        gt_env = Dubins_Env(
+            nominal_policy=self.nominal_policy_type, dist_type="right_half"
+        )
+        obs, __ = self.reset()
+        obs_gt, _ = gt_env.reset()
+        done = False
+        imgs_traj = []
+        eps = 0.5
+        t = 0
+
+        while not done:  # Rollout trajectory with safety filtering
+            theta = np.arctan2(obs["state"][2], obs["state"][3])
+            state = torch.tensor([obs["state"][0], obs["state"][1], theta])
+            frame = get_frame(states=state, config=self.config)
+            feat, lz = self.get_latent(
+                wm=self.wm,
+                thetas=torch.tensor([0.0], dtype=torch.float32),
+                imgs=[frame],
+            )
+            V, _ = self.safety_margin(torch.tensor([feat], device=self.device))
+            V = V[0]
+            if V < eps:
+                unsafe = True
+                action = find_a(obs=obs, policy=policy)
+            else:
+                unsafe = False
+                action = self.nominal_policy()
+
+            obs, rew, done, _, info = self.step(action)
+            obs_gt, _, done_gt, _, _ = gt_env.step(action)
+            img = gt_env.render(unsafe=unsafe, t=t)
+
+            t += 1
+
+            imgs_traj.append(img)
+
+        imgs = np.array(imgs_traj)
+        imgs = einops.rearrange(imgs, "T H W C -> T C H W")
+        return imgs

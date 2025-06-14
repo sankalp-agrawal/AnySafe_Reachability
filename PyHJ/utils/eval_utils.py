@@ -3,7 +3,10 @@ from PyHJ.data import Batch
 
 def find_a(obs, policy):
     assert isinstance(obs, dict), "Observation must be a dictionary."
-    tmp_obs = {k: v.reshape((1,) + v.shape) for k, v in obs.items()}
+    if obs["state"].ndim == 1:  # Unbatched observation
+        tmp_obs = {k: v.reshape((1,) + v.shape) for k, v in obs.items()}
+    else:  # Batched observation
+        tmp_obs = obs
     tmp_batch = Batch(obs=tmp_obs, info=Batch())
     tmp = policy(tmp_batch, model="actor_old").act
     act = policy.map_action(tmp).cpu().detach().numpy().flatten()

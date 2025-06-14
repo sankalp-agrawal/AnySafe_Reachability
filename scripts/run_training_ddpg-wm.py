@@ -448,3 +448,14 @@ for iter in range(warmup + args.total_episodes):
             **{f"metric/{k}": v for k, v in metrics.items()},
         }
     )
+
+    traj_imgs = env.get_trajectory(policy=policy)
+    wandb.log(
+        {
+            "trajectory": wandb.Video(
+                np.array(traj_imgs),
+                fps=10,
+                format="mp4",
+            )
+        }
+    )

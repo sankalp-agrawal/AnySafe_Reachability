@@ -259,21 +259,20 @@ class Dreamer(nn.Module):
                     unsafe_data = torch.where(failure_data == 1.0)
                     safe_dataset = feat[safe_data]
                     unsafe_dataset = feat[unsafe_data]
-                    pos = wm.heads["margin"](safe_dataset)
-                    neg = wm.heads["margin"](unsafe_dataset)
+                    # pos = wm.heads["margin"](safe_dataset)
+                    # neg = wm.heads["margin"](unsafe_dataset)
 
                     gamma = self._config.gamma_lx
                     lx_loss = 0.0
-                    if pos.numel() > 0:
-                        lx_loss += torch.relu(gamma - pos).mean()
-                    if neg.numel() > 0:
-                        lx_loss += torch.relu(gamma + neg).mean()
+                    # if pos.numel() > 0:
+                    #     lx_loss += torch.relu(gamma - pos).mean()
+                    # if neg.numel() > 0:
+                    #     lx_loss += torch.relu(gamma + neg).mean()
 
                     lx_loss *= self._config.margin_head["loss_scale"]
                     if step < 3000:
-                        lx_loss *= 0
                         cont_loss *= 0
-
+                lx_loss *= 0
                 model_loss = kl_loss + recon_loss + lx_loss + cont_loss
                 metrics = self.pretrain_opt(
                     torch.mean(model_loss), self.pretrain_params
@@ -283,7 +282,7 @@ class Dreamer(nn.Module):
         metrics["dyn_loss"] = to_np(dyn_loss)
         metrics["rep_loss"] = to_np(rep_loss)
         metrics["kl_value"] = to_np(torch.mean(kl_value))
-        metrics["lx_loss"] = to_np(lx_loss)
+        # metrics["lx_loss"] = to_np(lx_loss)
         metrics["cont_loss"] = to_np(cont_loss)
 
         with torch.amp.autocast("cuda", enabled=wm._use_amp):
@@ -388,7 +387,8 @@ class Dreamer(nn.Module):
         post, prior = self._wm.dynamics.observe(embed, data["action"], data["is_first"])
         feat = self._wm.dynamics.get_feat(post).detach()
         with torch.no_grad():  # Disable gradient calculation
-            g_x = self._wm.heads["margin"](feat).detach().cpu().numpy().squeeze()
+            # g_x = self._wm.heads["margin"](feat).detach().cpu().numpy().squeeze()
+            g_x = torch.ones(feat.shape[0], device=self._config.device)
         feat = self._wm.dynamics.get_feat(post).detach().cpu().numpy().squeeze()
 
         return g_x, feat, post

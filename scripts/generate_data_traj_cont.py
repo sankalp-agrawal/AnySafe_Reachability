@@ -23,6 +23,8 @@ from tqdm import tqdm
 
 
 def get_frame(states, config):
+    if states.shape[-1] != 3:
+        raise ValueError("States must have shape (3,) for x, y, theta.")
     dt = config.dt
     v = config.speed
     fig, ax = plt.subplots()
