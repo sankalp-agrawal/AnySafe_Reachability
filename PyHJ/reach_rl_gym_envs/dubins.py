@@ -92,12 +92,18 @@ class Dubins_Env(gym.Env):
         }
         return self.obs, rew, terminated, truncated, info
 
-    def render(self, mode="human", unsafe=False, t=None):
+    def render(self, mode="human", unsafe=False, title_kwargs=None):
         fig, ax = plt.subplots(figsize=(6, 6))
         ax.set_xlim(-1.0, 1.0)
         ax.set_ylim(-1.0, 1.0)
         ax.set_aspect("equal")
-        ax.set_title(f"Nominal Policy: {self.nominal_policy}, 'time': {t}")
+        title = ""
+        if title_kwargs is not None:
+            for key, value in title_kwargs.items():
+                title += f"{key}: {value}, "
+
+        title = title.rstrip(", ")
+        ax.set_title(title)
         for constraint in self.constraints:
             x, y, r, u = constraint
             if u == 0.0:

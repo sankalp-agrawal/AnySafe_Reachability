@@ -296,14 +296,16 @@ def topographic_map(config, cache, thetas, constraint_state, similarity_metric):
     return fig
 
 
-thetas = [3 * np.pi / 2, 7 * np.pi / 4, 0, np.pi / 4, np.pi / 2, np.pi]
+thetas = [0, np.pi / 6, np.pi / 3, np.pi / 2, np.pi, 3 * np.pi / 2]
 cache = make_cache(config, thetas)
 logger = None
 warmup = 1
 
 similarity_metrics = ["Cosine_Similarity", "Euclidean Distance"]
 
-logger = WandbLogger(name=f"WM_Analysis_{config.wm_name}", config=config)
+logger = WandbLogger(
+    name=f"wm_Analysis_{config.wm_name}", config=config, project="WM Analysis"
+)
 
 for metric in similarity_metrics:
     constraint_list = [

@@ -336,7 +336,7 @@ for iter in range(args.total_episodes):
     if logger is None:
         task_name = args.task.split("-")[-1]  # Take everything before the last dash
         wandb_name = f"{task_name}_SAC_dist_type_{args.env_dist_type}"
-        logger = WandbLogger(name=wandb_name)
+        logger = WandbLogger(name=wandb_name, project="Dubins")
         logger.load(writer)
 
     # import pdb; pdb.set_trace()

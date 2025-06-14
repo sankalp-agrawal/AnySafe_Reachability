@@ -463,7 +463,7 @@ class Dubins_WM_Env(gym.Env):
 
     def nominal_policy(self):
         if self.nominal_policy_type == "turn_right":
-            return np.array([-1.0], dtype=np.float32)
+            return np.array([1.0], dtype=np.float32)
         else:
             raise ValueError(f"Unknown nominal policy type: {self.nominal_policy_type}")
 
@@ -475,7 +475,6 @@ class Dubins_WM_Env(gym.Env):
         obs_gt, _ = gt_env.reset()
         done = False
         imgs_traj = []
-        eps = 0.5
         t = 0
 
         while not done:  # Rollout trajectory with safety filtering
@@ -489,7 +488,7 @@ class Dubins_WM_Env(gym.Env):
             )
             V, _ = self.safety_margin(torch.tensor([feat], device=self.device))
             V = V[0]
-            if V < eps:
+            if V < self.config.safety_filter_eps:
                 unsafe = True
                 action = find_a(obs=obs, policy=policy)
             else:
@@ -498,7 +497,12 @@ class Dubins_WM_Env(gym.Env):
 
             obs, rew, done, _, info = self.step(action)
             obs_gt, _, done_gt, _, _ = gt_env.step(action)
-            img = gt_env.render(unsafe=unsafe, t=t)
+            title_kwargs = {
+                "Nominal Policy": self.nominal_policy_type,
+                "Epsilon": self.config.safety_filter_eps,
+                "Time": t,
+            }
+            img = gt_env.render(unsafe=unsafe, title_kwargs=title_kwargs)
 
             t += 1
 

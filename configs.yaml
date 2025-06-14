@@ -166,6 +166,8 @@ defaults:
 
   safety-margin-type: "cosine_similarity" # cosine_similarity, learned
   safety-margin-threshold: -0.5 # type=float, default=0.5)
+
+  safety_filter_eps: 0.0
   
   actor-activation: 'ReLU' #type=str, default='ReLU')
   critic-activation: 'ReLU' # type=str, default='ReLU')
