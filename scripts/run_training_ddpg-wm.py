@@ -373,7 +373,7 @@ if not os.path.exists(log_path + "/epoch_id_{}".format(epoch)):
     print("Just created the log directory!")
     # print("log_path: ", log_path+"/epoch_id_{}".format(epoch))
     os.makedirs(log_path + "/epoch_id_{}".format(epoch))
-thetas = [0, np.pi / 6, np.pi / 3, np.pi / 2]
+thetas = [0, np.pi / 6, np.pi / 3, np.pi / 2, np.pi, 3 * np.pi / 2]
 cache = make_cache(config, thetas)
 logger = None
 warmup = 1

@@ -181,7 +181,7 @@ class Dubins_WM_Env(gym.Env):
                     constraints, axis=-1
                 )
                 metric = -numerator / (denominator + 1e-8)  # (B N)
-                metric = metric + self.config.safety_margin_threshold
+                metric = metric - self.config.safety_margin_threshold
                 safety_margin = np.min(metric, axis=-1)  # (B)
 
         else:
@@ -261,10 +261,10 @@ class Dubins_WM_Env(gym.Env):
             return feat.squeeze().cpu().numpy()
 
     def get_eval_plot(self, cache, thetas, policy, config):
-        nx, ny, nt = config.nx, config.ny, 51
-        fig1, axes1 = plt.subplots(2, len(thetas))
-        fig2, axes2 = plt.subplots(2, len(thetas))
-        fig3, axes3 = plt.subplots(1, len(thetas))
+        nx, ny, nt = config.nx, config.ny, config.nt
+        fig1, axes1 = plt.subplots(2, len(thetas), figsize=(3 * len(thetas), 10))
+        fig2, axes2 = plt.subplots(2, len(thetas), figsize=(3 * len(thetas), 10))
+        fig3, axes3 = plt.subplots(2, len(thetas), figsize=(3 * len(thetas), 10))
 
         constraint = np.array([0.0, 0.0, 0.5, 1.0]).reshape(1, -1)
         self.select_constraints()
@@ -308,6 +308,9 @@ class Dubins_WM_Env(gym.Env):
             contours_gt = measure.find_contours(
                 np.array(gt_values[:, :, nt_index].T > 0).astype(float), level=0.5
             )
+            contours_safety_margin = measure.find_contours(
+                np.array(lz.reshape((nx, ny)) > 0).astype(float), level=0.5
+            )
 
             # Show sub-zero level set
             axes1[0, i].imshow(V > 0, extent=(-1.0, 1.0, -1.0, 1.0), origin="lower")
@@ -329,8 +332,16 @@ class Dubins_WM_Env(gym.Env):
             )
 
             # Plot safety margin
-            axes3[i].imshow(
+            axes3[0, i].imshow(
                 lz.reshape((nx, ny)),
+                extent=(-1.0, 1.0, -1.0, 1.0),
+                vmin=-1.0,
+                vmax=1.0,
+                origin="lower",
+            )
+            # GT safety margin
+            axes3[1, i].imshow(
+                self.solver.failure_lx[:, :, nt_index].T,
                 extent=(-1.0, 1.0, -1.0, 1.0),
                 vmin=-1.0,
                 vmax=1.0,
@@ -350,7 +361,7 @@ class Dubins_WM_Env(gym.Env):
                         )
                         for ax in axes[:, i]
                     ]
-            # # Plot contours for GT Value function
+            # Plot contours for GT Value function
             for contour in contours_gt:
                 for axes in [axes1, axes2]:
                     [
@@ -364,56 +375,50 @@ class Dubins_WM_Env(gym.Env):
                         for ax in axes[:, i]
                     ]
 
+            for contour in contours_safety_margin:
+                for axes in [axes3]:
+                    [
+                        ax.plot(
+                            contour[:, 1] * (2.0 / (nx - 1)) - 1.0,
+                            contour[:, 0] * (2.0 / (ny - 1)) - 1.0,
+                            color="orange",
+                            linewidth=2,
+                            label=f"Safety Margin Contour, (eps={self.config.safety_margin_threshold:.2f})",
+                        )
+                        for ax in axes[:, i]
+                    ]
+
             # Add constraint patch
             for constraint in self.gt_constraints:
                 x_c, y_c, theta, u = constraint
                 radius = 0.5
                 if u == 0.0:
                     break
-                [
-                    ax.add_patch(
-                        Circle(
-                            (x_c, y_c),
-                            radius,
-                            color="red",
-                            fill=False,
-                            label="Fail Set",
+                for axes in [axes1, axes2, axes3]:
+                    [
+                        ax.add_patch(
+                            Circle(
+                                (x_c, y_c),
+                                radius,
+                                color="red",
+                                fill=False,
+                                label="Constraint",
+                            )
                         )
+                        for ax in axes[:, i]
+                    ]
+
+            for axes in [axes1, axes2, axes3]:
+                for j in range(2):
+                    label = (
+                        rf"$\theta$={thetas[i]:.2f}"
+                        if j == 0
+                        else rf"$GT, \theta$={thetas[i]:.2f}"
                     )
-                    for ax in axes1[:, i]
-                ]
-                [
-                    ax.add_patch(
-                        Circle(
-                            (x_c, y_c),
-                            radius,
-                            color="red",
-                            fill=False,
-                            label="Fail Set",
-                        )
+                    axes[j, i].set_title(
+                        label,
+                        fontsize=12,
                     )
-                    for ax in axes2[:, i]
-                ]
-            axes1[0, i].set_title(
-                "theta = {}".format(np.round(thetas[i], 2)),
-                fontsize=12,
-            )
-            axes2[0, i].set_title(
-                "theta = {}".format(np.round(thetas[i], 2)),
-                fontsize=12,
-            )
-            axes1[1, i].set_title(
-                "GT,\ntheta = {}".format(np.round(thetas[i], 2)),
-                fontsize=12,
-            )
-            axes2[1, i].set_title(
-                "GT,\ntheta = {}".format(np.round(thetas[i], 2)),
-                fontsize=12,
-            )
-            axes3[i].set_title(
-                "theta = {}".format(np.round(thetas[i], 2)),
-                fontsize=12,
-            )
 
         for axes in [axes1, axes2, axes3]:
             for ax in axes.flat:
@@ -434,10 +439,10 @@ class Dubins_WM_Env(gym.Env):
             # Create a single, global legend
             fig.legend(unique.values(), unique.keys(), loc="upper center", ncol=3)
 
-        fig3.suptitle(
-            f"Safety Margin: {self.safety_margin_type} for Different Thetas, Threshold = {self.config.safety_margin_threshold}",
-            fontsize=16,
-        )
+            fig.tight_layout(pad=0.5)  # Adjust spacing between subplots
+
+            # If still overlapping, fine-tune spacing:
+            fig.subplots_adjust(hspace=0.05)
 
         plt.tight_layout(rect=[0, 0, 1, 0.95])  # leave space for the legend
 
@@ -464,7 +469,7 @@ class Dubins_WM_Env(gym.Env):
 
     def get_trajectory(self, policy):
         gt_env = Dubins_Env(
-            nominal_policy=self.nominal_policy_type, dist_type="right_half"
+            nominal_policy=self.nominal_policy_type, dist_type="vanilla"
         )
         obs, __ = self.reset()
         obs_gt, _ = gt_env.reset()

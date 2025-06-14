@@ -152,9 +152,14 @@ class DubinsHJSolver:
             )
             failure_lx = failure_lx.at[..., i].set(obstacle_lx)
 
-        failure_lx = jnp.min(failure_lx, axis=-1)
+        self.failure_lx = jnp.min(failure_lx, axis=-1)
 
         target_values = hj.step(
-            self.solver_settings, self.dyn_sys, self.grid, time, failure_lx, target_time
+            self.solver_settings,
+            self.dyn_sys,
+            self.grid,
+            time,
+            self.failure_lx,
+            target_time,
         )
         return target_values

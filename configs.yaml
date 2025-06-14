@@ -165,7 +165,7 @@ defaults:
   weight-decay-pyhj: 0.001
 
   safety-margin-type: "cosine_similarity" # cosine_similarity, learned
-  safety-margin-threshold: 0.5 # type=float, default=0.5)
+  safety-margin-threshold: -0.5 # type=float, default=0.5)
   
   actor-activation: 'ReLU' #type=str, default='ReLU')
   critic-activation: 'ReLU' # type=str, default='ReLU')
