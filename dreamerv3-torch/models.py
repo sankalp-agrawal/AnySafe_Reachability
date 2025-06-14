@@ -61,16 +61,17 @@ class WorldModel(nn.Module):
         self.heads["decoder"] = networks.MultiDecoder(
             feat_size, shapes, **config.decoder
         )
-        # self.heads["margin"] = networks.MLP(
-        #     feat_size,
-        #     None,
-        #     config.margin_head["layers"],
-        #     config.units,
-        #     config.act,
-        #     config.norm,
-        #     device=config.device,
-        #     name="Margin",
-        # )
+        if ["margin"] in config.grad_heads:
+            self.heads["margin"] = networks.MLP(
+                feat_size,
+                None,
+                config.margin_head["layers"],
+                config.units,
+                config.act,
+                config.norm,
+                device=config.device,
+                name="Margin",
+            )
         """self.heads["reward"] = networks.MLP(
             feat_size,
             (255,) if config.reward_head["dist"] == "symlog_disc" else (),

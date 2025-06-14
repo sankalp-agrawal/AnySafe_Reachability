@@ -253,26 +253,29 @@ class Dreamer(nn.Module):
                             losses[name] = loss
 
                     recon_loss = sum(losses.values())
-                    # failure margin
-                    failure_data = data["failure"]
-                    safe_data = torch.where(failure_data == 0.0)
-                    unsafe_data = torch.where(failure_data == 1.0)
-                    safe_dataset = feat[safe_data]
-                    unsafe_dataset = feat[unsafe_data]
-                    # pos = wm.heads["margin"](safe_dataset)
-                    # neg = wm.heads["margin"](unsafe_dataset)
 
-                    gamma = self._config.gamma_lx
-                    lx_loss = 0.0
-                    # if pos.numel() > 0:
-                    #     lx_loss += torch.relu(gamma - pos).mean()
-                    # if neg.numel() > 0:
-                    #     lx_loss += torch.relu(gamma + neg).mean()
+                    # failure margin
+                    if "margin" in wm.heads.keys():
+                        failure_data = data["failure"]
+                        safe_data = torch.where(failure_data == 0.0)
+                        unsafe_data = torch.where(failure_data == 1.0)
+                        safe_dataset = feat[safe_data]
+                        unsafe_dataset = feat[unsafe_data]
+                        pos = wm.heads["margin"](safe_dataset)
+                        neg = wm.heads["margin"](unsafe_dataset)
+
+                        gamma = self._config.gamma_lx
+                        lx_loss = 0.0
+                        if pos.numel() > 0:
+                            lx_loss += torch.relu(gamma - pos).mean()
+                        if neg.numel() > 0:
+                            lx_loss += torch.relu(gamma + neg).mean()
 
                     lx_loss *= self._config.margin_head["loss_scale"]
                     if step < 3000:
                         cont_loss *= 0
-                lx_loss *= 0
+                if "margin" not in wm.heads.keys():
+                    lx_loss = 0.0
                 model_loss = kl_loss + recon_loss + lx_loss + cont_loss
                 metrics = self.pretrain_opt(
                     torch.mean(model_loss), self.pretrain_params

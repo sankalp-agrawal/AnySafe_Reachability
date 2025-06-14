@@ -162,7 +162,6 @@ class Dubins_WM_Env(gym.Env):
         self.safety_margin_type = self.config.safety_margin_type
 
         if self.safety_margin_type == "learned":
-            raise NotImplementedError("Learned safety margin not implemented")
             with torch.no_grad():  # Disable gradient calculation
                 outputs = torch.tanh(self.wm.heads["margin"](feat))
                 g_xList.append(outputs.detach().cpu().numpy())

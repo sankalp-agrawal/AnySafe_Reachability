@@ -234,14 +234,15 @@ def fill_expert_dataset_dubins(config, cache, is_val_set=False):
             transition["reward"] = np.array(0, dtype=np.float32)
 
             # check if state is in obstacle
-            transition["failure"] = np.array(
-                np.linalg.norm(
-                    traj["obs"]["priv_state"][t][:2]
-                    - np.array([config.obs_x, config.obs_y])
+            if "margin" in config.grad_heads:
+                transition["failure"] = np.array(
+                    np.linalg.norm(
+                        traj["obs"]["priv_state"][t][:2]
+                        - np.array([config.obs_x, config.obs_y])
+                    )
+                    < config.obs_r,
+                    dtype=np.float32,
                 )
-                < config.obs_r,
-                dtype=np.float32,
-            )
             transition["is_first"] = np.array(t == 0, dtype=np.bool_)
             transition["is_last"] = np.array(traj["dones"][t], dtype=np.bool_)
             transition["is_terminal"] = np.array(traj["dones"][t], dtype=np.bool_)
@@ -1141,7 +1142,8 @@ def recursively_load_optim_state_dict(obj, optimizers_state_dicts):
 
 
 def set_wm_name(config):
-    wm_name = f"dubins_mlp_{'None' if config.encoder['mlp_keys'] == '' else config.encoder['mlp_keys']}_cnn_{'None' if config.encoder['cnn_keys'] == '' else config.encoder['cnn_keys']}_sc_{'T' if config.show_constraint else 'F'}_arrow_{config.arrow_size}"
+    use_learned_margin = "margin" in config.grad_heads
+    wm_name = f"dubins_mlp_{'None' if config.encoder['mlp_keys'] == '' else config.encoder['mlp_keys']}_cnn_{'None' if config.encoder['cnn_keys'] == '' else config.encoder['cnn_keys']}_lz_{'T' if use_learned_margin else 'F'}_sc_{'T' if config.show_constraint else 'F'}_arrow_{config.arrow_size}"
     config.wm_name = wm_name
     config.dataset_path = f"wm_demos_{wm_name}_{config.size[0]}.pkl"
     config.rssm_ckpt_path = (
