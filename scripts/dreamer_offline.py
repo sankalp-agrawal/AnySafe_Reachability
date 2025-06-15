@@ -255,6 +255,7 @@ class Dreamer(nn.Module):
                     recon_loss = sum(losses.values())
 
                     # failure margin
+                    lx_loss = 0.0
                     if "margin" in wm.heads.keys():
                         failure_data = data["failure"]
                         safe_data = torch.where(failure_data == 0.0)
@@ -265,7 +266,6 @@ class Dreamer(nn.Module):
                         neg = wm.heads["margin"](unsafe_dataset)
 
                         gamma = self._config.gamma_lx
-                        lx_loss = 0.0
                         if pos.numel() > 0:
                             lx_loss += torch.relu(gamma - pos).mean()
                         if neg.numel() > 0:

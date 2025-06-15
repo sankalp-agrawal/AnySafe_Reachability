@@ -69,6 +69,7 @@ def get_args():
     parser.add_argument("--configs", nargs="+")
     parser.add_argument("--expt_name", type=str, default=None)
     parser.add_argument("--resume_run", type=bool, default=False)
+    parser.add_argument("--debug", action="store_true", default=False)
     # environment parameters
     config, remaining = parser.parse_known_args()
 
@@ -374,6 +375,10 @@ if not os.path.exists(log_path + "/epoch_id_{}".format(epoch)):
     # print("log_path: ", log_path+"/epoch_id_{}".format(epoch))
     os.makedirs(log_path + "/epoch_id_{}".format(epoch))
 thetas = [0, np.pi / 6, np.pi / 3, np.pi / 2, np.pi, 3 * np.pi / 2]
+if args.debug:
+    thetas = [0, np.pi / 6]
+    print("Debug mode: using fewer thetas for debugging purposes.")
+    args.step_per_epoch = 10
 cache = make_cache(config, thetas)
 logger = None
 warmup = 1

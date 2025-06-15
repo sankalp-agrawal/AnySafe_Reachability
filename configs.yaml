@@ -61,7 +61,7 @@ defaults:
   dyn_mean_act: 'none'
   dyn_std_act: 'sigmoid2'
   dyn_min_std: 0.1
-  grad_heads: ['decoder', "cont", "margin"]
+  grad_heads: ['decoder', "cont",  "margin"]
   units: 512
   act: 'SiLU'
   norm: True
@@ -164,8 +164,8 @@ defaults:
   alpha: 0.2 
   weight-decay-pyhj: 0.001
 
-  safety-margin-type: "cosine_similarity" # cosine_similarity, learned
-  safety-margin-threshold: -0.5 # type=float, default=0.5)
+  safety-margin-type: "learned" # cosine_similarity, learned
+  safety-margin-threshold: -0.0 # type=float, default=0.5)
 
   safety_filter_eps: 0.0
   

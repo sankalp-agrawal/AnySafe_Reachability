@@ -283,7 +283,7 @@ def topographic_map(config, cache, thetas, constraint_state, similarity_metric):
 
         axes[i].imshow(
             constraint_img,
-            extent=(-1.1, 1.1, -1.1, 1.1),
+            extent=(config.x_min, config.x_max, config.y_min, config.y_max),
         )
 
     # set axes limits
@@ -304,7 +304,7 @@ warmup = 1
 similarity_metrics = ["Cosine_Similarity", "Euclidean Distance"]
 
 logger = WandbLogger(
-    name=f"wm_Analysis_{config.wm_name}", config=config, project="WM Analysis"
+    name=f"wm_Analysis_{config.wm_name}", config=config, project="Dubins"
 )
 
 for metric in similarity_metrics:

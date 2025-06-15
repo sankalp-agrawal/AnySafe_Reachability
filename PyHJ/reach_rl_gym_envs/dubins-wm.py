@@ -157,8 +157,6 @@ class Dubins_WM_Env(gym.Env):
 
         cont = self.wm.heads["cont"](feat)
 
-        feat = feat.detach().cpu().numpy()
-
         self.safety_margin_type = self.config.safety_margin_type
 
         if self.safety_margin_type == "learned":
@@ -166,8 +164,9 @@ class Dubins_WM_Env(gym.Env):
                 outputs = torch.tanh(self.wm.heads["margin"](feat))
                 g_xList.append(outputs.detach().cpu().numpy())
 
-            safety_margin = np.array(g_xList).squeeze()
+            safety_margin = np.array(g_xList).reshape(-1)
         elif self.safety_margin_type == "cosine_similarity":
+            feat = feat.detach().cpu().numpy()
             with torch.no_grad():
                 constraints = self.constraints[..., :-1]  # (N Z)
                 constraints = einops.repeat(
@@ -472,11 +471,11 @@ class Dubins_WM_Env(gym.Env):
         )
         obs, __ = self.reset()
         obs_gt, _ = gt_env.reset()
-        done = False
+        done_gt = False
         imgs_traj = []
         t = 0
 
-        while not done:  # Rollout trajectory with safety filtering
+        while not done_gt:  # Rollout trajectory with safety filtering
             theta = np.arctan2(obs["state"][2], obs["state"][3])
             state = torch.tensor([obs["state"][0], obs["state"][1], theta])
             frame = get_frame(states=state, config=self.config)
