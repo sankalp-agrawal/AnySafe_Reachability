@@ -93,7 +93,7 @@ defaults:
   # Dataset generation
   show_constraint: False
   constraint_color: "red"
-  arrow_size: 0.15 # Smaller is bigger here
+  arrow_size: 0.18 # Smaller is bigger here
 
   # Training
   batch_size: 16

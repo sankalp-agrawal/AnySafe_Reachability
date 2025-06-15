@@ -257,11 +257,28 @@ class Dreamer(nn.Module):
                     # failure margin
                     lx_loss = 0.0
                     if "margin" in wm.heads.keys():
+                        import ipdb
+
+                        ipdb.set_trace()
+                        thetas = data["constraint_state_gt"][..., -1]
+                        # TODO: Find a more principled way to do this
+                        __, feat_c, __ = self.get_latent(
+                            thetas=thetas.cpu().numpy(),
+                            imgs=[img for img in data["constraint_img"].cpu().numpy()],
+                            # detach=False,
+                        )
+                        assert feat_c.requires_grad is True, (
+                            "feat_c should require grad"
+                        )
                         failure_data = data["failure"]
                         safe_data = torch.where(failure_data == 0.0)
                         unsafe_data = torch.where(failure_data == 1.0)
-                        safe_dataset = feat[safe_data]
-                        unsafe_dataset = feat[unsafe_data]
+                        safe_dataset = torch.concat(
+                            [feat[safe_data], feat_c[safe_data]], dim=0
+                        )
+                        unsafe_dataset = torch.concat(
+                            [feat[unsafe_data], feat_c[unsafe_data]], dim=0
+                        )
                         pos = wm.heads["margin"](safe_dataset)
                         neg = wm.heads["margin"](unsafe_dataset)
 
@@ -365,7 +382,7 @@ class Dreamer(nn.Module):
         self.imgs = imgs
         print("done!")
 
-    def get_latent(self, thetas, imgs):
+    def get_latent(self, thetas, imgs, detach=True):
         states = np.expand_dims(np.expand_dims(thetas, 1), 1)
         imgs = np.expand_dims(imgs, 1)
         dummy_acs = np.zeros((np.shape(thetas)[0], 1))
@@ -392,7 +409,11 @@ class Dreamer(nn.Module):
         with torch.no_grad():  # Disable gradient calculation
             # g_x = self._wm.heads["margin"](feat).detach().cpu().numpy().squeeze()
             g_x = torch.ones(feat.shape[0], device=self._config.device)
-        feat = self._wm.dynamics.get_feat(post).detach().cpu().numpy().squeeze()
+
+        if detach:
+            feat = self._wm.dynamics.get_feat(post).detach().cpu().numpy().squeeze()
+        else:
+            feat = self._wm.dynamics.get_feat(post)
 
         return g_x, feat, post
 

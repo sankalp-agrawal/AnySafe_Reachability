@@ -63,12 +63,12 @@ class WorldModel(nn.Module):
         )
         if "margin" in config.grad_heads:
             self.heads["margin"] = networks.MLP(
-                feat_size,
-                None,
-                config.margin_head["layers"],
-                config.units,
-                config.act,
-                config.norm,
+                inp_dim=feat_size + feat_size,  # Feature + constraint encoding
+                shape=None,
+                layers=config.margin_head["layers"],
+                units=config.units,
+                act=config.act,
+                norm=config.norm,
                 device=config.device,
                 name="Margin",
             )

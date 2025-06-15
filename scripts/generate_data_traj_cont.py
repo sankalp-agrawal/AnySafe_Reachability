@@ -97,11 +97,17 @@ def gen_one_traj_img(config):
     state_gt = []
     dones = []
     acs = []
+    failures = []
+    constraints = []
+    img_constraints = []
     u_max = final_config.turnRate
     dt = config.dt
     v = config.speed
 
-    for t in range(config.data_length):
+    failure_state = generate_constraint_state(config)
+    failure_radius = 0.5  # TODO: make this variable according to config
+
+    for t in range(config.data_length):  # trajectory length
         # random between -u_max and u_max
         ac = torch.rand(1) * 2 * u_max - u_max
 
@@ -126,21 +132,63 @@ def gen_one_traj_img(config):
         acs.append(ac)
         img_array = get_frame(states, config)
         img_obs.append(img_array)
+        failures.append(check_failure(states, failure_state, failure_radius, config))
+        constraints.append(failure_state)
+        img_constraints.append(get_frame(failure_state, config))
         states = states_next
         if dones[-1] == 1:
             break
-    return state_obs, acs, state_gt, img_obs, dones
+    return (
+        state_obs,
+        acs,
+        state_gt,
+        img_obs,
+        dones,
+        failures,
+        constraints,
+        img_constraints,
+    )
+
+
+def generate_constraint_state(config):
+    constraint_set = [
+        torch.tensor([-0.5, 0.0, 0.0]),  # left
+        torch.tensor([0.5, 0.0, np.pi]),  # right
+    ]
+    i = np.random.randint(len(constraint_set))
+    return constraint_set[i]
+
+
+def check_failure(states, failure_state, failure_radius, config):
+    if torch.norm(states[:2] - failure_state[:2]) < failure_radius:
+        return -1.0  # in the failure set
+    else:
+        return 1.0  # not in the failure set
 
 
 def generate_trajs(config):
     demos = []
     # use tqdm
     for i in tqdm(range(config.num_trajs), desc="Generating trajectories"):
-        state_obs, acs, state_gt, img_obs, dones = gen_one_traj_img(config)
+        (
+            state_obs,
+            acs,
+            state_gt,
+            img_obs,
+            dones,
+            failures,
+            constraints,
+            img_constraints,
+        ) = gen_one_traj_img(config)
         demo = {}
         demo["obs"] = {"image": img_obs, "state": state_obs, "priv_state": state_gt}
         demo["actions"] = acs
         demo["dones"] = dones
+        demo["failures"] = failures
+        demo["constraints"] = {
+            "constraint_state_gt": constraints,
+            "constraint_img": img_constraints,
+        }
         demos.append(demo)
         # print('demo: ', i, "timesteps: ", len(state_obs))
 
