@@ -1143,9 +1143,32 @@ def recursively_load_optim_state_dict(obj, optimizers_state_dicts):
 
 def set_wm_name(config):
     use_learned_margin = "margin" in config.grad_heads
-    wm_name = f"dubins_mlp_{'None' if config.encoder['mlp_keys'] == '' else config.encoder['mlp_keys']}_cnn_{'None' if config.encoder['cnn_keys'] == '' else config.encoder['cnn_keys']}_lz_{'T' if use_learned_margin else 'F'}_sc_{'T' if config.show_constraint else 'F'}_arrow_{config.arrow_size}"
+
+    names = {
+        "mlp": "None"
+        if config.encoder["mlp_keys"] == ""
+        else config.encoder["mlp_keys"],
+        "cnn": "None"
+        if config.encoder["cnn_keys"] == ""
+        else config.encoder["cnn_keys"],
+        "lz": "T" if use_learned_margin else "F",
+        "sc": "T" if config.show_constraint else "F",
+        "arrow": config.arrow_size,
+    }
+    wm_name = "dubins"
+    for key, value in names.items():
+        wm_name += f"_{key}_{value}"
     config.wm_name = wm_name
-    config.dataset_path = f"wm_demos_{wm_name}_{config.size[0]}.pkl"
+
+    dataset_name = "dubins"
+    dataset_keys = [
+        "sc",
+        "arrow",
+    ]  # We only care about show constraints and arrow, the other keys are dataset agnostic
+    for key, value in names.items():
+        if key in dataset_keys:
+            dataset_name += f"_{key}_{value}"
+    config.dataset_path = f"wm_demos_{dataset_name}_{config.size[0]}.pkl"
     config.rssm_ckpt_path = (
         f"logs/dreamer_dubins/{wm_name}/rssm_ckpt.pt"  # for saving the RSSM checkpoint
     )
