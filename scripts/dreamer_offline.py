@@ -64,7 +64,7 @@ class Dreamer(nn.Module):
         )[config.expl_behavior]().to(self._config.device)
 
         self._make_pretrain_opt()
-        self.fill_cache()
+        # self.fill_cache()
 
     def __call__(self, obs, reset, state=None, training=True):
         step = self._step
@@ -684,9 +684,9 @@ def main(config):
                 score, success = evaluate(
                     other_dataset=expert_dataset, eval_prefix="pretrain"
                 )
-                lx_plot, tp, fn, fp, tn = agent.get_eval_plot()
+                # lx_plot, tp, fn, fp, tn = agent.get_eval_plot()
 
-                logger.image("pretrain/lx_plot", np.transpose(lx_plot, (2, 0, 1)))
+                # logger.image("pretrain/lx_plot", np.transpose(lx_plot, (2, 0, 1)))
 
                 best_pretrain_success = tools.save_checkpoint(
                     ckpt_name, step, success, best_pretrain_success, agent, logdir

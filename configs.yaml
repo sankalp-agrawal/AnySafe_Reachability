@@ -41,7 +41,7 @@ defaults:
   debug: False
   video_pred_log: True
 
-  rssm_train_steps: 10000 # 100000 in paper
+  rssm_train_steps: 30000 # 100000 in paper
   
   # Environment
   task: 'dubins-wm'
@@ -61,7 +61,7 @@ defaults:
   dyn_mean_act: 'none'
   dyn_std_act: 'sigmoid2'
   dyn_min_std: 0.1
-  grad_heads: ['decoder', "cont",  "margin"]
+  grad_heads: ['decoder', "cont"] # ,  "margin"]
   units: 512
   act: 'SiLU'
   norm: True
@@ -95,6 +95,7 @@ defaults:
   constraint_color: "red"
   arrow_size: 0.15 # Smaller is bigger here
 
+  env-dist-type: 'v' # 'v' - vanilla, 'fc' - four corners, 'fcfe' - four corners four edges, 'rh' - right half, 'br' - big radii
   # Training
   batch_size: 16
   batch_length: 64

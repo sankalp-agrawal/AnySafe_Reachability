@@ -189,17 +189,113 @@ class Dubins_WM_Env(gym.Env):
 
         return safety_margin, cont.mean.squeeze().detach().cpu().numpy()
 
-    def select_constraints(self):
-        constraint = torch.tensor([0.0, 0.0, 0.0])
-        img = get_frame(states=constraint, config=self.config)
+    def select_one_constraint(self, in_distribution=True):
+        dist_type = self.config.env_dist_type
+        if dist_type == "fc":
+            in_distribution_set = [
+                np.array([-0.5, -0.5, 0.5, 1.0]),
+                np.array([0.5, -0.5, 0.5, 1.0]),
+                np.array([-0.5, 0.5, 0.5, 1.0]),
+                np.array([0.5, 0.5, 0.5, 1.0]),
+            ]
+            if in_distribution:
+                i = np.random.randint(0, len(in_distribution_set))
+                return in_distribution_set[i]
+            else:
+                return np.array([0.0, 0.0, 0.5, 1.0])
+        elif dist_type == "fcfe":
+            in_distribution_set = [
+                np.array([-0.5, -0.5, 0.5, 1.0]),
+                np.array([0.5, -0.5, 0.5, 1.0]),
+                np.array([-0.5, 0.5, 0.5, 1.0]),
+                np.array([0.5, 0.5, 0.5, 1.0]),
+                np.array([-0.5, 0.0, 0.5, 1.0]),
+                np.array([0.5, 0.0, 0.5, 1.0]),
+                np.array([0.0, -0.5, 0.5, 1.0]),
+                np.array([0.0, 0.5, 0.5, 1.0]),
+            ]
+            if in_distribution:
+                i = np.random.randint(0, len(in_distribution_set))
+                return in_distribution_set[i]
+            else:
+                return np.array([0.0, 0.0, 0.5, 1.0])
+
+        elif dist_type == "rh":
+            if in_distribution:
+                return np.array(
+                    [
+                        np.random.uniform(low=0.0, high=1.0),
+                        np.random.uniform(low=-1.0, high=1.0),
+                        np.random.uniform(low=0.1, high=0.5),
+                        1.0,  # This is used to say that this constraint is active
+                    ]
+                )
+            else:
+                return np.array(
+                    [
+                        np.random.uniform(low=-1.0, high=0.0),
+                        np.random.uniform(low=-1.0, high=1.0),
+                        np.random.uniform(low=0.1, high=0.5),
+                        1.0,  # This is used to say that this constraint is active
+                    ]
+                )
+
+        elif dist_type == "br":
+            if in_distribution:
+                return np.array(
+                    [
+                        np.random.uniform(low=-1.0, high=1.0),
+                        np.random.uniform(low=-1.0, high=1.0),
+                        np.random.uniform(
+                            low=0.3, high=0.5
+                        ),  # Big radii are in distribution
+                        1.0,  # This is used to say that this constraint is active
+                    ]
+                )
+            else:
+                return np.array(
+                    [
+                        np.random.uniform(low=-1.0, high=1.0),
+                        np.random.uniform(low=-1.0, high=1.0),
+                        np.random.uniform(
+                            low=0.1, high=0.3
+                        ),  # Small radii are out of distribution
+                        1.0,  # This is used to say that this constraint is active
+                    ]
+                )
+        elif dist_type == "v":
+            # Eval and test set are the same here
+            return np.array(
+                [
+                    0.0,
+                    0.0,
+                    0.5,
+                    1.0,
+                ]  # This is used to say that this constraint is active
+            )
+        else:
+            raise ValueError(
+                "Unknown distribution type: {}".format(self.distribution_type)
+            )
+
+    def select_constraints(self, in_distribution=True):
+        constraint = self.select_one_constraint(in_distribution=in_distribution)
+        # constraint = torch.tensor([0.0, 0.0, 0.0])
+        x, y = constraint[:2]
+        theta = np.random.uniform(low=0, high=2 * np.pi)
+        constraint_state = torch.tensor([x, y, theta])
+        img = get_frame(states=constraint_state[:3], config=self.config)
         feat_c = self.get_latent(
-            wm=self.wm, thetas=constraint[-1].reshape(-1), imgs=[img], compute_lz=False
+            wm=self.wm,
+            thetas=constraint_state[-1].reshape(-1),
+            imgs=[img],
+            compute_lz=False,
         )
         feat_c = np.append(
             feat_c, 1.0
         )  # Append 1.0 to indicate that this constraint is active
         self.constraints = np.array(feat_c).reshape(self.num_constraints, -1)
-        self.gt_constraints = np.array(np.append(constraint, 1.0)).reshape(
+        self.gt_constraints = np.array(np.append(constraint_state, 1.0)).reshape(
             self.num_constraints, -1
         )  # Store the ground truth constraints
 
@@ -234,8 +330,9 @@ class Dubins_WM_Env(gym.Env):
                     "is_first": firsts[i * bs : (i + 1) * bs],
                     "is_terminal": lasts[i * bs : (i + 1) * bs],
                 }
-            data = wm.preprocess(data)
-            embeds = wm.encoder(data)
+            with torch.no_grad():
+                data = wm.preprocess(data)
+                embeds = wm.encoder(data)
             if i == 0:
                 embed = embeds
             else:
@@ -248,10 +345,11 @@ class Dubins_WM_Env(gym.Env):
             "is_first": firsts,
             "is_terminal": lasts,
         }
-        data = wm.preprocess(data)
-        post, _ = wm.dynamics.observe(embed, data["action"], data["is_first"])
+        with torch.no_grad():
+            data = wm.preprocess(data)
+            post, _ = wm.dynamics.observe(embed, data["action"], data["is_first"])
 
-        feat = wm.dynamics.get_feat(post).detach()
+            feat = wm.dynamics.get_feat(post).detach()
         if compute_lz:
             lz, __ = self.safety_margin(feat)  # lz is the safety margin
             return feat.squeeze().cpu().numpy(), np.array(lz)
@@ -264,8 +362,10 @@ class Dubins_WM_Env(gym.Env):
         fig2, axes2 = plt.subplots(2, len(thetas), figsize=(3 * len(thetas), 10))
         fig3, axes3 = plt.subplots(2, len(thetas), figsize=(3 * len(thetas), 10))
 
-        constraint = np.array([0.0, 0.0, 0.5, 1.0]).reshape(1, -1)
+        # constraint = np.array([0.0, 0.0, 0.5, 1.0]).reshape(1, -1)
         self.select_constraints()
+        constraint = self.gt_constraints
+        constraint[:, 2] = 0.5  # Force radius to 0.5
         gt_values = self.solver.solve(
             constraints=constraint,
             constraints_shape=3,
@@ -307,7 +407,7 @@ class Dubins_WM_Env(gym.Env):
                 np.array(gt_values[:, :, nt_index].T > 0).astype(float), level=0.5
             )
             contours_safety_margin = measure.find_contours(
-                np.array(lz.reshape((nx, ny)) > 0).astype(float), level=0.5
+                np.array(lz.reshape((nx, ny)).T > 0).astype(float), level=0.5
             )
 
             # Show sub-zero level set
@@ -331,7 +431,7 @@ class Dubins_WM_Env(gym.Env):
 
             # Plot safety margin
             axes3[0, i].imshow(
-                lz.reshape((nx, ny)),
+                lz.reshape((nx, ny)).T,
                 extent=(-1.0, 1.0, -1.0, 1.0),
                 vmin=-1.0,
                 vmax=1.0,
@@ -467,7 +567,7 @@ class Dubins_WM_Env(gym.Env):
 
     def get_trajectory(self, policy):
         gt_env = Dubins_Env(
-            nominal_policy=self.nominal_policy_type, dist_type="vanilla"
+            nominal_policy=self.nominal_policy_type, dist_type=self.config.env_dist_type
         )
         obs, __ = self.reset()
         obs_gt, _ = gt_env.reset()
@@ -479,13 +579,14 @@ class Dubins_WM_Env(gym.Env):
             theta = np.arctan2(obs["state"][2], obs["state"][3])
             state = torch.tensor([obs["state"][0], obs["state"][1], theta])
             frame = get_frame(states=state, config=self.config)
-            feat, lz = self.get_latent(
-                wm=self.wm,
-                thetas=torch.tensor([0.0], dtype=torch.float32),
-                imgs=[frame],
-            )
-            V, _ = self.safety_margin(torch.tensor([feat], device=self.device))
-            V = V[0]
+            with torch.no_grad():
+                feat, lz = self.get_latent(
+                    wm=self.wm,
+                    thetas=torch.tensor([0.0], dtype=torch.float32),
+                    imgs=[frame],
+                )
+                V, _ = self.safety_margin(torch.tensor([feat], device=self.device))
+                V = V[0]
             if V < self.config.safety_filter_eps:
                 unsafe = True
                 action = find_a(obs=obs, policy=policy)

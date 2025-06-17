@@ -176,8 +176,8 @@ def save_checkpoint(
     ckpt_name_str = ckpt_name(step) if callable(ckpt_name) else ckpt_name
     # Always save the last model
     torch.save(items_to_save, logdir / f"{ckpt_name_str}.pt")
-    ckpt_name_str += f"_{step}"
-    torch.save(items_to_save, logdir / f"{ckpt_name_str}.pt")
+    # ckpt_name_str += f"_{step}"
+    # torch.save(items_to_save, logdir / f"{ckpt_name_str}.pt")
 
     print("Saved last model to ", logdir / f"{ckpt_name_str}.pt")
 
@@ -1151,7 +1151,7 @@ def set_wm_name(config):
         "cnn": "None"
         if config.encoder["cnn_keys"] == ""
         else config.encoder["cnn_keys"],
-        "lz": "T" if use_learned_margin else "F",
+        "lz": config.env_dist_type if use_learned_margin else "None",
         "sc": "T" if config.show_constraint else "F",
         "arrow": config.arrow_size,
     }
