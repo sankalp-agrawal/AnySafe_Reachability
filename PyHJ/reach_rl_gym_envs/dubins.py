@@ -172,7 +172,7 @@ class Dubins_Env(gym.Env):
         return self.obs, {}
 
     def select_one_constraint(self, in_distribution=True):
-        if self.distribution_type == "four_corners":
+        if self.distribution_type == "fc":
             in_distribution_set = [
                 np.array([-0.5, -0.5, 0.5, 1.0]),
                 np.array([0.5, -0.5, 0.5, 1.0]),
@@ -184,7 +184,7 @@ class Dubins_Env(gym.Env):
                 return in_distribution_set[i]
             else:
                 return np.array([0.0, 0.0, 0.5, 1.0])
-        elif self.distribution_type == "four_corners_four_edges":
+        elif self.distribution_type == "fcfe":
             in_distribution_set = [
                 np.array([-0.5, -0.5, 0.5, 1.0]),
                 np.array([0.5, -0.5, 0.5, 1.0]),
@@ -201,7 +201,7 @@ class Dubins_Env(gym.Env):
             else:
                 return np.array([0.0, 0.0, 0.5, 1.0])
 
-        elif self.distribution_type == "right_half":
+        elif self.distribution_type == "rh":
             if in_distribution:
                 return np.array(
                     [
@@ -221,7 +221,7 @@ class Dubins_Env(gym.Env):
                     ]
                 )
 
-        elif self.distribution_type == "big_radii":
+        elif self.distribution_type == "br":
             if in_distribution:
                 return np.array(
                     [
@@ -244,7 +244,7 @@ class Dubins_Env(gym.Env):
                         1.0,  # This is used to say that this constraint is active
                     ]
                 )
-        elif self.distribution_type == "vanilla":
+        elif self.distribution_type == "v":
             # Eval and test set are the same here
             return np.array(
                 [

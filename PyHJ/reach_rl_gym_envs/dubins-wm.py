@@ -114,6 +114,7 @@ class Dubins_WM_Env(gym.Env):
         self.latent = self.wm.dynamics.imagine_with_action(ac_torch, init)
 
         self.feat = self.wm.dynamics.get_feat(self.latent)
+
         rew, cont = self.safety_margin(self.feat)  # rew is negative if unsafe
         self.feat = self.feat.detach().cpu().numpy()
         if cont < 0.75:
@@ -282,7 +283,8 @@ class Dubins_WM_Env(gym.Env):
         constraint = self.select_one_constraint(in_distribution=in_distribution)
         # constraint = torch.tensor([0.0, 0.0, 0.0])
         x, y = constraint[:2]
-        theta = np.random.uniform(low=0, high=2 * np.pi)
+        # theta = np.random.uniform(low=0, high=2 * np.pi)
+        theta = 0.0
         constraint_state = torch.tensor([x, y, theta])
         img = get_frame(states=constraint_state[:3], config=self.config)
         feat_c = self.get_latent(
@@ -600,6 +602,7 @@ class Dubins_WM_Env(gym.Env):
                 "Nominal Policy": self.nominal_policy_type,
                 "Epsilon": self.config.safety_filter_eps,
                 "Time": t,
+                "V": f"{V:.2f}",
             }
             img = gt_env.render(unsafe=unsafe, title_kwargs=title_kwargs)
 

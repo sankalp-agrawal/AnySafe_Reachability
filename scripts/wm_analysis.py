@@ -233,20 +233,36 @@ def get_latent(
 
 
 def topographic_map(config, cache, thetas, constraint_state, similarity_metric):
-    fig, axes = plt.subplots(
-        1, len(thetas), figsize=(3 * len(thetas), 5), constrained_layout=True
-    )
+    if constraint_state[-1] is None:
+        constraint_states = [
+            np.array(constraint_state[0], constraint_state[1], t)
+            for t in np.linspace(0, 2 * np.pi, 5)
+        ]
+        constraint_states = torch.tensor(constraint_states, dtype=torch.float32)
+    else:
+        constraint_states = torch.tensor([constraint_state], dtype=torch.float32)
 
-    constraint_state = torch.tensor(constraint_state, dtype=torch.float32)
-    constraint_img = get_frame(states=constraint_state, config=config)  # (H, W, C)
+    constraint_imgs = []
+    for constraint_state in constraint_states:
+        constraint_state = torch.tensor(constraint_state, dtype=torch.float32)
+        constraint_img = get_frame(states=constraint_state, config=config)  # (H, W, C)
+        constraint_imgs.append(constraint_img)
+
+    import ipdb
+
+    ipdb.set_trace()
 
     with torch.no_grad():
         feat_c, stoch_c, deter_c = get_latent(
-            wm, thetas=np.array([constraint_state[-1].item()]), imgs=[constraint_img]
+            wm, thetas=np.array(constraint_states[:, -1]), imgs=constraint_imgs
         )
 
     idxs, __, __ = cache[thetas[0]]
-    feat_c = einops.repeat(feat_c, "c -> b c", b=idxs.shape[0])
+    feat_c = einops.repeat(feat_c, "N C -> B N C", B=idxs.shape[0])
+
+    fig, axes = plt.subplots(
+        1, len(thetas), figsize=(3 * len(thetas), 5), constrained_layout=True
+    )
 
     for i in range(len(thetas)):
         theta = thetas[i]
@@ -309,7 +325,7 @@ logger = WandbLogger(
 
 for metric in similarity_metrics:
     constraint_list = [
-        [0.0, 0.0, 0.0],  # x, y, theta
+        [0.0, 0.0, None],  # x, y, theta
         [0.5, 0.5, np.pi / 2],
         [-0.5, -0.5, -np.pi / 2],
         [0.5, -0.5, np.pi / 2],

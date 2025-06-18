@@ -41,7 +41,7 @@ defaults:
   debug: False
   video_pred_log: True
 
-  rssm_train_steps: 30000 # 100000 in paper
+  rssm_train_steps: 10000 # 100000 in paper
   
   # Environment
   task: 'dubins-wm'
@@ -165,8 +165,8 @@ defaults:
   alpha: 0.2 
   weight-decay-pyhj: 0.001
 
-  safety-margin-type: "learned" # cosine_similarity, learned
-  safety-margin-threshold: -0.0 # type=float, default=0.5)
+  safety-margin-type: "cosine_similarity" # cosine_similarity, learned
+  safety-margin-threshold: -0.5 # type=float, default=0.5)
 
   safety_filter_eps: 0.0
   

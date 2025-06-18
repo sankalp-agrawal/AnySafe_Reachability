@@ -3,6 +3,7 @@ import os
 import sys
 
 import gymnasium  # as gym
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from torch.utils.tensorboard import SummaryWriter
@@ -467,3 +468,5 @@ for iter in range(warmup + args.total_episodes):
             )
         }
     )
+
+    plt.close()
