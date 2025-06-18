@@ -182,6 +182,9 @@ class Dubins_WM_Env(gym.Env):
                 metric = -numerator / (denominator + 1e-8)  # (B N)
                 metric = metric - self.config.safety_margin_threshold
                 safety_margin = np.min(metric, axis=-1)  # (B)
+                if self.config.safety_margin_hard_threshold:
+                    safety_margin[safety_margin > 0] = 1.0
+                    safety_margin[safety_margin <= 0] = -1.0
 
         else:
             raise ValueError(

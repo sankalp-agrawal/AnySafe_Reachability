@@ -234,15 +234,14 @@ def fill_expert_dataset_dubins(config, cache, is_val_set=False):
             transition["reward"] = np.array(0, dtype=np.float32)
 
             # check if state is in obstacle
-            if "margin" in config.grad_heads:
-                transition["failure"] = np.array(
-                    np.linalg.norm(
-                        traj["obs"]["priv_state"][t][:2]
-                        - np.array([config.obs_x, config.obs_y])
-                    )
-                    < config.obs_r,
-                    dtype=np.float32,
+            transition["failure"] = np.array(
+                np.linalg.norm(
+                    traj["obs"]["priv_state"][t][:2]
+                    - np.array([config.obs_x, config.obs_y])
                 )
+                < config.obs_r,
+                dtype=np.float32,
+            )
             transition["is_first"] = np.array(t == 0, dtype=np.bool_)
             transition["is_last"] = np.array(traj["dones"][t], dtype=np.bool_)
             transition["is_terminal"] = np.array(traj["dones"][t], dtype=np.bool_)

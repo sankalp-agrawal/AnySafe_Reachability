@@ -235,8 +235,8 @@ def get_latent(
 def topographic_map(config, cache, thetas, constraint_state, similarity_metric):
     if constraint_state[-1] is None:
         constraint_states = [
-            np.array(constraint_state[0], constraint_state[1], t)
-            for t in np.linspace(0, 2 * np.pi, 5)
+            np.array([constraint_state[0], constraint_state[1], t])
+            for t in np.linspace(0, 2 * np.pi, 9)
         ]
         constraint_states = torch.tensor(constraint_states, dtype=torch.float32)
     else:
@@ -248,17 +248,15 @@ def topographic_map(config, cache, thetas, constraint_state, similarity_metric):
         constraint_img = get_frame(states=constraint_state, config=config)  # (H, W, C)
         constraint_imgs.append(constraint_img)
 
-    import ipdb
-
-    ipdb.set_trace()
-
     with torch.no_grad():
-        feat_c, stoch_c, deter_c = get_latent(
+        feat_c, stoch_c, deter_c = get_latent(  # [N, Z]
             wm, thetas=np.array(constraint_states[:, -1]), imgs=constraint_imgs
         )
+        if feat_c.ndim == 1:
+            feat_c = feat_c.reshape(1, -1)  # [1, Z]
 
     idxs, __, __ = cache[thetas[0]]
-    feat_c = einops.repeat(feat_c, "N C -> B N C", B=idxs.shape[0])
+    feat_c = einops.repeat(feat_c, "N C -> B N C", B=idxs.shape[0])  # [B, N, Z]
 
     fig, axes = plt.subplots(
         1, len(thetas), figsize=(3 * len(thetas), 5), constrained_layout=True
@@ -269,13 +267,18 @@ def topographic_map(config, cache, thetas, constraint_state, similarity_metric):
         axes[i].set_title(f"theta = {theta:.2f}")
         idxs, imgs_prev, thetas_prev = cache[theta]
         with torch.no_grad():
-            feat, stoch, deter = get_latent(wm, thetas_prev, imgs_prev)
+            feat, stoch, deter = get_latent(wm, thetas_prev, imgs_prev)  # [B, Z]
+            feat = einops.repeat(feat, "B C -> B N C", N=feat_c.shape[1])  # [B, N, Z]
         if similarity_metric == "Cosine_Similarity":  # negative cosine similarity
-            numerator = np.sum(feat * feat_c, axis=1)
-            denominator = np.linalg.norm(feat, axis=1) * np.linalg.norm(feat_c, axis=1)
-            metric = -numerator / (denominator + 1e-8)  # (N)
+            numerator = np.sum(feat * feat_c, axis=-1)  # (B, N)
+            denominator = np.linalg.norm(feat, axis=-1) * np.linalg.norm(  # (B, N)
+                feat_c, axis=-1
+            )
+            metric = -numerator / (denominator + 1e-8)  # (B, N)
+            metric = np.min(metric, axis=-1)  # (B,)
         elif similarity_metric == "Euclidean Distance":
-            metric = np.linalg.norm(feat - feat_c, axis=1)
+            metric = -np.linalg.norm(feat - feat_c, axis=-1)  # (B, N)
+            metric = np.min(metric, axis=-1)  # (B,)
         else:
             raise ValueError(
                 f"Unknown similarity metric: {similarity_metric}. Supported: ['Cosine_Similarity', 'Euclidean Distance']"
@@ -297,10 +300,12 @@ def topographic_map(config, cache, thetas, constraint_state, similarity_metric):
         contour = axes[i].contour(X, Y, metric, levels=5, colors="black", linewidths=1)
         axes[i].clabel(contour, inline=True, fontsize=8, fmt="%.2f")
 
-        axes[i].imshow(
-            constraint_img,
-            extent=(config.x_min, config.x_max, config.y_min, config.y_max),
-        )
+        for constraint_img in constraint_imgs:
+            # Show the constraint image on the topographic map
+            axes[i].imshow(
+                constraint_img,
+                extent=(config.x_min, config.x_max, config.y_min, config.y_max),
+            )
 
     # set axes limits
     for ax in axes:
@@ -325,7 +330,7 @@ logger = WandbLogger(
 
 for metric in similarity_metrics:
     constraint_list = [
-        [0.0, 0.0, None],  # x, y, theta
+        [0.0, 0.0, 0.0],  # x, y, theta
         [0.5, 0.5, np.pi / 2],
         [-0.5, -0.5, -np.pi / 2],
         [0.5, -0.5, np.pi / 2],

@@ -66,11 +66,11 @@ defaults:
   act: 'SiLU'
   norm: True
   encoder:
-    # {mlp_keys: 'obs_state', cnn_keys: 'image', act: 'SiLU', norm: True, cnn_depth: 32, kernel_size: 4, minres: 4, mlp_layers: 5, mlp_units: 1024, symlog_inputs: True}
-    {mlp_keys: '', cnn_keys: 'image', act: 'SiLU', norm: True, cnn_depth: 32, kernel_size: 4, minres: 4, mlp_layers: 5, mlp_units: 1024, symlog_inputs: True}
+    {mlp_keys: 'obs_state', cnn_keys: 'image', act: 'SiLU', norm: True, cnn_depth: 32, kernel_size: 4, minres: 4, mlp_layers: 5, mlp_units: 1024, symlog_inputs: True}
+    # {mlp_keys: '', cnn_keys: 'image', act: 'SiLU', norm: True, cnn_depth: 32, kernel_size: 4, minres: 4, mlp_layers: 5, mlp_units: 1024, symlog_inputs: True}
   decoder:
-    # {mlp_keys: "obs_state", cnn_keys: "image", act: "SiLU", norm: True, cnn_depth: 32, kernel_size: 4, minres: 4, mlp_layers: 5, mlp_units: 1024, cnn_sigmoid: False, image_dist: mse, vector_dist: symlog_mse, outscale: 1.0}
-    {mlp_keys: "", cnn_keys: "image", act: "SiLU", norm: True, cnn_depth: 32, kernel_size: 4, minres: 4, mlp_layers: 5, mlp_units: 1024, cnn_sigmoid: False, image_dist: mse, vector_dist: symlog_mse, outscale: 1.0}
+    {mlp_keys: "obs_state", cnn_keys: "image", act: "SiLU", norm: True, cnn_depth: 32, kernel_size: 4, minres: 4, mlp_layers: 5, mlp_units: 1024, cnn_sigmoid: False, image_dist: mse, vector_dist: symlog_mse, outscale: 1.0}
+    # {mlp_keys: "", cnn_keys: "image", act: "SiLU", norm: True, cnn_depth: 32, kernel_size: 4, minres: 4, mlp_layers: 5, mlp_units: 1024, cnn_sigmoid: False, image_dist: mse, vector_dist: symlog_mse, outscale: 1.0}
   actor:
     {layers: 2, dist: 'normal', entropy: 3e-4, unimix_ratio: 0.01, std: 'learned', min_std: 0.1, max_std: 1.0, temp: 0.1, lr: 3e-5, eps: 1e-5, grad_clip: 100.0, outscale: 1.0}
   critic:
@@ -95,7 +95,7 @@ defaults:
   constraint_color: "red"
   arrow_size: 0.15 # Smaller is bigger here
 
-  env-dist-type: 'v' # 'v' - vanilla, 'fc' - four corners, 'fcfe' - four corners four edges, 'rh' - right half, 'br' - big radii
+  env-dist-type: 'fc' # 'v' - vanilla, 'fc' - four corners, 'fcfe' - four corners four edges, 'rh' - right half, 'br' - big radii
   # Training
   batch_size: 16
   batch_length: 64
@@ -148,7 +148,7 @@ defaults:
   batch_size-pyhj: 512 # type=int, default=512)
   control-net: [128, 128, 128] # type=int, nargs='*', default=None) # for control policy
   critic-net: [128, 128, 128]  # type=int, nargs='*', default=None) # for critic net
-  constraint-embedding-dim: 20
+  constraint-embedding-dim: 512
   control-net-const: [128, 128] # type=int, nargs='*', default=(128, 128)
   training-num: 1 # type=int, default=8)
   test-num: 1 # type=int, default=100)
@@ -167,6 +167,7 @@ defaults:
 
   safety-margin-type: "cosine_similarity" # cosine_similarity, learned
   safety-margin-threshold: -0.5 # type=float, default=0.5)
+  safety-margin-hard-threshold: False # type=bool, default=False)
 
   safety_filter_eps: 0.0
   

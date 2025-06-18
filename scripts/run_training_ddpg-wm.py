@@ -424,7 +424,16 @@ for iter in range(warmup + args.total_episodes):
             args.task
         )  # .split("-")[:-1]  # Take everything before the last dash
 
-        wandb_name = f"{task_name}_DDPG_sim_{config.safety_margin_type}_{config.safety_margin_threshold}_{config.wm_name}"
+        wb_name_args = [
+            f"{task_name}",
+            f"DDPGdist_type_{config.env_dist_type}",
+            f"sim_{config.safety_margin_type}_{config.safety_margin_threshold}{'*' if config.safety_margin_hard_threshold else ''}",
+            f"{config.wm_name}",
+        ]
+        wandb_name = ""
+        for arg in wb_name_args:
+            wandb_name += f"{arg}_"
+        wandb_name = wandb_name[:-1]  # Remove the last underscore
         logger = WandbLogger(name=wandb_name, project="Dubins", config=config)
         logger.load(writer)
     logger = TensorboardLogger(writer)
