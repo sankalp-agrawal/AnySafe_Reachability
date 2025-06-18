@@ -2,11 +2,14 @@ import argparse
 import os
 import sys
 
+import einops
 import gymnasium  # as gym
 import numpy as np
 import torch
 
 import PyHJ
+import wandb
+from PyHJ.utils import WandbLogger
 
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(parent_dir)
@@ -112,8 +115,10 @@ config.num_actions = (
 )
 wm = models.WorldModel(env.observation_space_full, env.action_space, 0, config)
 
+config = tools.set_wm_name(config)
+
 ckpt_path = config.rssm_ckpt_path
-checkpoint = torch.load(ckpt_path)
+checkpoint = torch.load(ckpt_path, weights_only=True)
 state_dict = {
     k[14:]: v for k, v in checkpoint["agent_state_dict"].items() if "_wm" in k
 }
@@ -222,49 +227,128 @@ def get_latent(
     post, _ = wm.dynamics.observe(embed, data["action"], data["is_first"])
 
     feat = wm.dynamics.get_feat(post).detach()
-    lz = torch.tanh(wm.heads["margin"](feat))
-    return feat.squeeze().cpu().numpy(), lz.squeeze().detach().cpu().numpy()
+    stoch = post["stoch"]  # z_t
+    deter = post["deter"]  # h_t
+    return feat.squeeze().cpu().numpy(), stoch, deter
 
 
 def topographic_map(config, cache, thetas, constraint_state, similarity_metric):
-    fig, axes = plt.subplots(1, len(thetas), figsize=(3, 10))
+    if constraint_state[-1] is None:
+        constraint_states = [
+            np.array(constraint_state[0], constraint_state[1], t)
+            for t in np.linspace(0, 2 * np.pi, 5)
+        ]
+        constraint_states = torch.tensor(constraint_states, dtype=torch.float32)
+    else:
+        constraint_states = torch.tensor([constraint_state], dtype=torch.float32)
 
-    constraint_state = torch.tensor(constraint_state, dtype=torch.float32)
-    constraint_img = get_frame(states=constraint_state, config=config)  # (H, W, C)
+    constraint_imgs = []
+    for constraint_state in constraint_states:
+        constraint_state = torch.tensor(constraint_state, dtype=torch.float32)
+        constraint_img = get_frame(states=constraint_state, config=config)  # (H, W, C)
+        constraint_imgs.append(constraint_img)
 
-    z_c = get_latent(
-        wm, thetas=np.array(constraint_state[-1].item()), imgs=[constraint_img]
+    import ipdb
+
+    ipdb.set_trace()
+
+    with torch.no_grad():
+        feat_c, stoch_c, deter_c = get_latent(
+            wm, thetas=np.array(constraint_states[:, -1]), imgs=constraint_imgs
+        )
+
+    idxs, __, __ = cache[thetas[0]]
+    feat_c = einops.repeat(feat_c, "N C -> B N C", B=idxs.shape[0])
+
+    fig, axes = plt.subplots(
+        1, len(thetas), figsize=(3 * len(thetas), 5), constrained_layout=True
     )
 
     for i in range(len(thetas)):
         theta = thetas[i]
+        axes[i].set_title(f"theta = {theta:.2f}")
         idxs, imgs_prev, thetas_prev = cache[theta]
-        feat, lz = get_latent(wm, thetas_prev, imgs_prev)
+        with torch.no_grad():
+            feat, stoch, deter = get_latent(wm, thetas_prev, imgs_prev)
+        if similarity_metric == "Cosine_Similarity":  # negative cosine similarity
+            numerator = np.sum(feat * feat_c, axis=1)
+            denominator = np.linalg.norm(feat, axis=1) * np.linalg.norm(feat_c, axis=1)
+            metric = -numerator / (denominator + 1e-8)  # (N)
+        elif similarity_metric == "Euclidean Distance":
+            metric = np.linalg.norm(feat - feat_c, axis=1)
+        else:
+            raise ValueError(
+                f"Unknown similarity metric: {similarity_metric}. Supported: ['Cosine_Similarity', 'Euclidean Distance']"
+            )
+
+        metric = metric.reshape(config.nx, config.ny).T
         # axes[i].imshow(
-        #     vals.reshape(config.nx, config.ny).T > 0,
+        #     metric,
         #     extent=(-1.1, 1.1, -1.1, 1.1),
         #     vmin=-1,
         #     vmax=1,
         #     origin="lower",
         # )
-    fig.tight_layout()
+
+        x = np.linspace(-1, 1, metric.shape[1])
+        y = np.linspace(-1, 1, metric.shape[0])
+        X, Y = np.meshgrid(x, y)
+
+        contour = axes[i].contour(X, Y, metric, levels=5, colors="black", linewidths=1)
+        axes[i].clabel(contour, inline=True, fontsize=8, fmt="%.2f")
+
+        axes[i].imshow(
+            constraint_img,
+            extent=(config.x_min, config.x_max, config.y_min, config.y_max),
+        )
+
+    # set axes limits
+    for ax in axes:
+        ax.set_xlim(-1.0, 1.0)
+        ax.set_ylim(-1.0, 1.0)
+
+    fig.suptitle(f"Topographic Map using {similarity_metric}")
+    plt.tight_layout()
     return fig
 
 
-thetas = [3 * np.pi / 2, 7 * np.pi / 4, 0, np.pi / 4, np.pi / 2, np.pi]
+thetas = [0, np.pi / 6, np.pi / 3, np.pi / 2, np.pi, 3 * np.pi / 2]
 cache = make_cache(config, thetas)
 logger = None
 warmup = 1
 
 similarity_metrics = ["Cosine_Similarity", "Euclidean Distance"]
+
+logger = WandbLogger(
+    name=f"wm_Analysis_{config.wm_name}", config=config, project="Dubins"
+)
+
 for metric in similarity_metrics:
-    fig = topographic_map(
-        config=config,
-        cache=cache,
-        thetas=thetas,
-        constraint_state=[0.0, 0.0, 0.0],
-        similarity_metric=metric,
-    )
-    fig.suptitle(f"Topographic Map using {metric}")
-    fig.savefig(f"{config.logdir}/topographic_map_{metric}.png")
-    plt.close(fig)
+    constraint_list = [
+        [0.0, 0.0, None],  # x, y, theta
+        [0.5, 0.5, np.pi / 2],
+        [-0.5, -0.5, -np.pi / 2],
+        [0.5, -0.5, np.pi / 2],
+        [-0.5, 0.5, -np.pi / 2],
+    ]
+    for constraint_state in constraint_list:
+        cprint(
+            f"Running topographic map for constraint state: {constraint_state}",
+            "green",
+            attrs=["bold"],
+        )
+        fig = topographic_map(
+            config=config,
+            cache=cache,
+            thetas=thetas,
+            constraint_state=constraint_state,
+            similarity_metric=metric,
+        )
+
+        wandb.log(
+            {
+                f"{metric}_constraint/{constraint_state}": wandb.Image(fig),
+            }
+        )
+
+        plt.close(fig)

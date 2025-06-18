@@ -3,6 +3,7 @@ import os
 import sys
 
 import gymnasium  # as gym
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from torch.utils.tensorboard import SummaryWriter
@@ -21,7 +22,6 @@ import io
 import pathlib
 from datetime import datetime
 
-import matplotlib.pyplot as plt
 import models
 import ruamel.yaml as yaml
 import tools
@@ -33,7 +33,7 @@ from PIL import Image
 from termcolor import cprint
 
 import wandb
-from PyHJ.data import Batch, Collector, VectorReplayBuffer
+from PyHJ.data import Collector, VectorReplayBuffer
 from PyHJ.env import DummyVectorEnv
 from PyHJ.exploration import GaussianNoise
 from PyHJ.trainer import offpolicy_trainer
@@ -70,6 +70,7 @@ def get_args():
     parser.add_argument("--configs", nargs="+")
     parser.add_argument("--expt_name", type=str, default=None)
     parser.add_argument("--resume_run", type=bool, default=False)
+    parser.add_argument("--debug", action="store_true", default=False)
     # environment parameters
     config, remaining = parser.parse_known_args()
 
@@ -119,6 +120,8 @@ config.num_actions = (
 )
 wm = models.WorldModel(env.observation_space_full, env.action_space, 0, config)
 
+config = tools.set_wm_name(config)
+
 ckpt_path = config.rssm_ckpt_path
 checkpoint = torch.load(ckpt_path)
 state_dict = {
@@ -140,7 +143,13 @@ env.set_wm(wm, offline_dataset, config)
 assert hasattr(
     env, "action_space"
 )  # and hasattr(env, 'action2_space'), "The environment does not have control and disturbance actions!"
-args.state_shape = env.observation_space.shape or env.observation_space.n
+if isinstance(env.observation_space, gymnasium.spaces.Dict):
+    args.state_shape = (
+        env.observation_space["state"].shape or env.observation_space["state"].n
+    )
+else:
+    args.state_shape = env.observation_space.shape or env.observation_space.n
+args.constraint_dim = env.constraints_shape
 args.action_shape = env.action_space.shape or env.action_space.n
 args.max_action = env.action_space.high[0]
 
@@ -187,9 +196,12 @@ elif args.critic_activation == "SiLU":
 if args.critic_net is not None:
     critic_net = Net(
         args.state_shape,
-        obs_inputs=["state"],
+        obs_inputs=["state", "constraint"],
         action_shape=args.action_shape,
         hidden_sizes=args.critic_net,
+        constraint_dim=args.constraint_dim,
+        constraint_embedding_dim=args.constraint_embedding_dim,
+        hidden_sizes_constraint=args.control_net_const,
         activation=critic_activation,
         concat=True,
         device=args.device,
@@ -213,10 +225,13 @@ print(
 
 actor_net = Net(
     args.state_shape,
-    obs_inputs=["state"],
+    obs_inputs=["state", "constraint"],
     hidden_sizes=args.control_net,
     activation=actor_activation,
     device=args.device,
+    constraint_dim=args.constraint_dim,
+    constraint_embedding_dim=args.constraint_embedding_dim,
+    hidden_sizes_constraint=args.control_net_const,
 )
 actor = Actor(
     actor_net, args.action_shape, max_action=args.max_action, device=args.device
@@ -353,108 +368,24 @@ def make_cache(config, thetas):
         idxs = np.array(idxs)
         theta_prev_lin = np.array(thetas_prev)
         cache[theta] = [idxs, imgs_prev, theta_prev_lin]
-
     return cache
-
-
-def get_latent(wm, thetas, imgs):
-    thetas = np.expand_dims(np.expand_dims(thetas, 1), 1)
-    imgs = np.expand_dims(imgs, 1)
-    dummy_acs = np.zeros((np.shape(thetas)[0], 1))
-    firsts = np.ones((np.shape(thetas)[0], 1))
-    lasts = np.zeros((np.shape(thetas)[0], 1))
-    cos = np.cos(thetas)
-    sin = np.sin(thetas)
-    states = np.concatenate([cos, sin], axis=-1)
-    chunks = 21
-    if np.shape(imgs)[0] > chunks:
-        bs = int(np.shape(imgs)[0] / chunks)
-    else:
-        bs = int(np.shape(imgs)[0] / chunks)
-    for i in range(chunks):
-        if i == chunks - 1:
-            data = {
-                "obs_state": states[i * bs :],
-                "image": imgs[i * bs :],
-                "action": dummy_acs[i * bs :],
-                "is_first": firsts[i * bs :],
-                "is_terminal": lasts[i * bs :],
-            }
-        else:
-            data = {
-                "obs_state": states[i * bs : (i + 1) * bs],
-                "image": imgs[i * bs : (i + 1) * bs],
-                "action": dummy_acs[i * bs : (i + 1) * bs],
-                "is_first": firsts[i * bs : (i + 1) * bs],
-                "is_terminal": lasts[i * bs : (i + 1) * bs],
-            }
-        data = wm.preprocess(data)
-        embeds = wm.encoder(data)
-        if i == 0:
-            embed = embeds
-        else:
-            embed = torch.cat([embed, embeds], dim=0)
-
-    data = {
-        "obs_state": states,
-        "image": imgs,
-        "action": dummy_acs,
-        "is_first": firsts,
-        "is_terminal": lasts,
-    }
-    data = wm.preprocess(data)
-    post, _ = wm.dynamics.observe(embed, data["action"], data["is_first"])
-
-    feat = wm.dynamics.get_feat(post).detach()
-    lz = torch.tanh(wm.heads["margin"](feat))
-    return feat.squeeze().cpu().numpy(), lz.squeeze().detach().cpu().numpy()
-
-
-def evaluate_V(state):
-    tmp_obs = np.array(state)  # .reshape(1,-1)
-    tmp_batch = Batch(obs=tmp_obs, info=Batch())
-    tmp = policy.critic(tmp_batch.obs, policy(tmp_batch, model="actor_old").act)
-    return tmp.cpu().detach().numpy().flatten()
-
-
-def get_eval_plot(cache, thetas):
-    fig1, axes1 = plt.subplots(len(thetas), 1, figsize=(3, 10))
-    fig2, axes2 = plt.subplots(len(thetas), 1, figsize=(3, 10))
-
-    for i in range(len(thetas)):
-        theta = thetas[i]
-        idxs, imgs_prev, thetas_prev = cache[theta]
-        feat, lz = get_latent(wm, thetas_prev, imgs_prev)
-        vals = evaluate_V(feat)
-        vals = np.minimum(vals, lz)
-        axes1[i].imshow(
-            vals.reshape(config.nx, config.ny).T > 0,
-            extent=(-1.1, 1.1, -1.1, 1.1),
-            vmin=-1,
-            vmax=1,
-            origin="lower",
-        )
-        axes2[i].imshow(
-            vals.reshape(config.nx, config.ny).T,
-            extent=(-1.1, 1.1, -1.1, 1.1),
-            vmin=-1,
-            vmax=1,
-            origin="lower",
-        )
-    fig1.tight_layout()
-    fig2.tight_layout()
-    return fig1, fig2
 
 
 if not os.path.exists(log_path + "/epoch_id_{}".format(epoch)):
     print("Just created the log directory!")
     # print("log_path: ", log_path+"/epoch_id_{}".format(epoch))
     os.makedirs(log_path + "/epoch_id_{}".format(epoch))
-thetas = [3 * np.pi / 2, 7 * np.pi / 4, 0, np.pi / 4, np.pi / 2, np.pi]
+thetas = [0, np.pi / 6, np.pi / 3, np.pi / 2, np.pi, 3 * np.pi / 2]
+if args.debug:
+    thetas = [0, np.pi / 6]
+    print("Debug mode: using fewer thetas for debugging purposes.")
+    args.step_per_epoch = 10
 cache = make_cache(config, thetas)
 logger = None
 warmup = 1
-plot1, plot2 = get_eval_plot(cache, thetas)
+# plot1, plot2, plot3, metrics = env.get_eval_plot(
+#     cache=cache, thetas=thetas, config=config, policy=policy
+# )
 
 for iter in range(warmup + args.total_episodes):
     if iter < warmup:
@@ -489,7 +420,12 @@ for iter in range(warmup + args.total_episodes):
             log_path + "/total_epochs_{}".format(epoch)
         )  # filename_suffix="_"+timestr+"_epoch_id_{}".format(epoch))
     if logger is None:
-        logger = WandbLogger()
+        task_name = (
+            args.task
+        )  # .split("-")[:-1]  # Take everything before the last dash
+
+        wandb_name = f"{task_name}_DDPG_sim_{config.safety_margin_type}_{config.safety_margin_threshold}_{config.wm_name}"
+        logger = WandbLogger(name=wandb_name, project="Dubins", config=config)
         logger.load(writer)
     logger = TensorboardLogger(writer)
 
@@ -510,10 +446,27 @@ for iter in range(warmup + args.total_episodes):
     )
 
     save_best_fn(policy, epoch=epoch)
-    plot1, plot2 = get_eval_plot(cache, thetas)
+    plot1, plot2, plot3, metrics = env.get_eval_plot(
+        cache=cache, thetas=thetas, config=config, policy=policy
+    )
     wandb.log(
         {
             "binary_reach_avoid_plot": wandb.Image(plot1),
             "continuous_plot": wandb.Image(plot2),
+            "safety_margin_function": wandb.Image(plot3),
+            **{f"metric/{k}": v for k, v in metrics.items()},
         }
     )
+
+    traj_imgs = env.get_trajectory(policy=policy)
+    wandb.log(
+        {
+            "trajectory": wandb.Video(
+                np.array(traj_imgs),
+                fps=10,
+                format="mp4",
+            )
+        }
+    )
+
+    plt.close()

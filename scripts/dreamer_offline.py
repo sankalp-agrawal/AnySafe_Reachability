@@ -9,35 +9,29 @@ os.environ["MUJOCO_GL"] = "osmesa"
 import numpy as np
 import ruamel.yaml as yaml
 
-
-parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(parent_dir)
-dreamer = os.path.abspath(os.path.join(os.path.dirname(__file__), '../dreamerv3-torch'))
+dreamer = os.path.abspath(os.path.join(os.path.dirname(__file__), "../dreamerv3-torch"))
 sys.path.append(dreamer)
 sys.path.append(str(pathlib.Path(__file__).parent))
 
+import collections
+from io import BytesIO
+
 import exploration as expl
+import gym
+import matplotlib.pyplot as plt
 import models
 import tools
-import envs.wrappers as wrappers
-from parallel import Parallel, Damy
-
 import torch
-from torch import nn
-from torch import distributions as torchd
-import collections
-
-from tqdm import trange
-from termcolor import cprint
-import matplotlib.pyplot as plt
-import gym
-from io import BytesIO
 from PIL import Image
-import matplotlib.patches as patches
-import io
+from termcolor import cprint
+from torch import nn
+from tqdm import trange
 
 to_np = lambda x: x.detach().cpu().numpy()
 from generate_data_traj_cont import get_frame
+
 
 class Dreamer(nn.Module):
     def __init__(self, obs_space, act_space, config, logger, dataset):
@@ -70,7 +64,7 @@ class Dreamer(nn.Module):
         )[config.expl_behavior]().to(self._config.device)
 
         self._make_pretrain_opt()
-        self.fill_cache()
+        # self.fill_cache()
 
     def __call__(self, obs, reset, state=None, training=True):
         step = self._step
@@ -144,7 +138,7 @@ class Dreamer(nn.Module):
             mets = self._expl_behavior.train(start, context, data)[-1]
             metrics.update({"expl_" + key: value for key, value in mets.items()})
         for name, value in metrics.items():
-            if not name in self._metrics.keys():
+            if name not in self._metrics.keys():
                 self._metrics[name] = [value]
             else:
                 self._metrics[name].append(value)
@@ -152,10 +146,7 @@ class Dreamer(nn.Module):
     def _make_pretrain_opt(self):
         config = self._config
         use_amp = True if config.precision == 16 else False
-        if (
-            config.rssm_train_steps > 0
-            or config.from_ckpt is not None
-        ):
+        if config.rssm_train_steps > 0 or config.from_ckpt is not None:
             # have separate lrs/eps/clips for actor and model
             # https://pytorch.org/docs/master/optim.html#per-parameter-options
             standard_kwargs = {
@@ -184,7 +175,7 @@ class Dreamer(nn.Module):
                 "pretrain_opt", [model_params, actor_params], **standard_kwargs
             )
             self.actor_params = list(self._task_behavior.actor.parameters())
-            
+
             print(
                 f"Optimizer pretrain has {sum(param.numel() for param in self.pretrain_params)} variables."
             )
@@ -220,7 +211,7 @@ class Dreamer(nn.Module):
         wm = self._wm
         actor = self._task_behavior.actor
         data = wm.preprocess(data)
-        
+
         with tools.RequiresGrad(wm), tools.RequiresGrad(actor):
             with torch.amp.autocast("cuda", enabled=wm._use_amp):
                 embed = wm.encoder(data)
@@ -240,9 +231,7 @@ class Dreamer(nn.Module):
                 losses = {}
                 feat = wm.dynamics.get_feat(post)
 
-                
-
-                if (step <= self._config.rssm_train_steps):
+                if step <= self._config.rssm_train_steps:
                     preds = {}
                     for name, head in wm.heads.items():
                         if name != "margin":
@@ -262,30 +251,31 @@ class Dreamer(nn.Module):
                             loss = -pred.log_prob(data[name])
                             assert loss.shape == embed.shape[:2], (name, loss.shape)
                             losses[name] = loss
-                        
+
                     recon_loss = sum(losses.values())
+
                     # failure margin
-                    failure_data = data["failure"]
-                    safe_data = torch.where(failure_data == 0.)
-                    unsafe_data = torch.where(failure_data == 1.)
-                    safe_dataset = feat[safe_data]
-                    unsafe_dataset = feat[unsafe_data]
-                    pos = wm.heads["margin"](safe_dataset)
-                    neg = wm.heads["margin"](unsafe_dataset)
-                    
-                    gamma = self._config.gamma_lx
                     lx_loss = 0.0
-                    if pos.numel() > 0:
-                        lx_loss += torch.relu(gamma - pos).mean()
-                    if neg.numel() > 0:
-                        lx_loss += torch.relu(gamma + neg).mean()
+                    if "margin" in wm.heads.keys():
+                        failure_data = data["failure"]
+                        safe_data = torch.where(failure_data == 0.0)
+                        unsafe_data = torch.where(failure_data == 1.0)
+                        safe_dataset = feat[safe_data]
+                        unsafe_dataset = feat[unsafe_data]
+                        pos = wm.heads["margin"](safe_dataset)
+                        neg = wm.heads["margin"](unsafe_dataset)
 
-                    lx_loss *=  self._config.margin_head["loss_scale"]
+                        gamma = self._config.gamma_lx
+                        if pos.numel() > 0:
+                            lx_loss += torch.relu(gamma - pos).mean()
+                        if neg.numel() > 0:
+                            lx_loss += torch.relu(gamma + neg).mean()
+
+                    lx_loss *= self._config.margin_head["loss_scale"]
                     if step < 3000:
-                        lx_loss *= 0
                         cont_loss *= 0
-            
-
+                if "margin" not in wm.heads.keys():
+                    lx_loss = 0.0
                 model_loss = kl_loss + recon_loss + lx_loss + cont_loss
                 metrics = self.pretrain_opt(
                     torch.mean(model_loss), self.pretrain_params
@@ -295,7 +285,7 @@ class Dreamer(nn.Module):
         metrics["dyn_loss"] = to_np(dyn_loss)
         metrics["rep_loss"] = to_np(rep_loss)
         metrics["kl_value"] = to_np(torch.mean(kl_value))
-        metrics["lx_loss"] = to_np(lx_loss)
+        # metrics["lx_loss"] = to_np(lx_loss)
         metrics["cont_loss"] = to_np(cont_loss)
 
         with torch.amp.autocast("cuda", enabled=wm._use_amp):
@@ -312,6 +302,7 @@ class Dreamer(nn.Module):
         self._maybe_log_metrics()
         self._step += 1
         self._logger.step = self._step
+
     def pretrain_regress_obs(self, data, obs_mlp, obs_opt, eval=False):
         wm = self._wm
         actor = self._task_behavior.actor
@@ -321,9 +312,13 @@ class Dreamer(nn.Module):
         with tools.RequiresGrad(obs_mlp):
             with torch.cuda.amp.autocast(wm._use_amp):
                 embed = self._wm.encoder(data)
-                post, prior = wm.dynamics.observe(embed, data["action"], data["is_first"])
+                post, prior = wm.dynamics.observe(
+                    embed, data["action"], data["is_first"]
+                )
 
-                feat = self._wm.dynamics.get_feat(prior).detach() # want the imagined prior to be strong
+                feat = self._wm.dynamics.get_feat(
+                    prior
+                ).detach()  # want the imagined prior to be strong
                 target = torch.Tensor(data["privileged_state"]).to(self._config.device)
                 pred_state = obs_mlp(feat)
                 obs_loss = torch.mean((pred_state - target) ** 2)
@@ -332,18 +327,18 @@ class Dreamer(nn.Module):
             else:
                 obs_mlp.train()
         return obs_loss.item()
-    
+
     def fill_cache(self):
-        print('filling cache')
+        print("filling cache")
         nx, ny, nz = 41, 41, 3
-        self.nz =nz
+        self.nz = nz
         self.v = np.zeros((nx, ny, nz))
         v = self.v
         xs = np.linspace(self._config.x_min, self._config.x_max, nx)
         ys = np.linspace(self._config.y_min, self._config.y_max, ny)
-        thetas= np.linspace(0, 2*np.pi, nz, endpoint=True)
-        it = np.nditer(v, flags=['multi_index'])
-        idxs = []  
+        thetas = np.linspace(0, 2 * np.pi, nz, endpoint=True)
+        it = np.nditer(v, flags=["multi_index"])
+        idxs = []
         imgs = []
         labels = []
         it = np.nditer(v, flags=["multi_index"])
@@ -353,50 +348,54 @@ class Dreamer(nn.Module):
             y = ys[idx[1]]
             theta = thetas[idx[2]]
             if (x**2 + y**2) < (self._config.obs_r**2):
-                labels.append(1) # unsafe
+                labels.append(1)  # unsafe
             else:
-                labels.append(0) # safe
-            x = x - np.cos(theta)*1*0.05
-            y = y - np.sin(theta)*1*0.05
-            #imgs.append(self.capture_image(np.array([x, y, theta])))
+                labels.append(0)  # safe
+            x = x - np.cos(theta) * 1 * 0.05
+            y = y - np.sin(theta) * 1 * 0.05
+            # imgs.append(self.capture_image(np.array([x, y, theta])))
             imgs.append(get_frame(torch.tensor([x, y, theta]), self._config))
-            idxs.append(idx)        
+            idxs.append(idx)
             it.iternext()
         idxs = np.array(idxs)
-        self.idxs=idxs
+        self.idxs = idxs
         self.safe_idxs = np.where(np.array(labels) == 0)
         self.unsafe_idxs = np.where(np.array(labels) == 1)
-        self.theta_lin = thetas[idxs[:,2]]
+        self.theta_lin = thetas[idxs[:, 2]]
         self.imgs = imgs
-        print('done!')
-    def get_latent(self, thetas, imgs):
+        print("done!")
 
-        states = np.expand_dims(np.expand_dims(thetas,1),1)
+    def get_latent(self, thetas, imgs):
+        states = np.expand_dims(np.expand_dims(thetas, 1), 1)
         imgs = np.expand_dims(imgs, 1)
         dummy_acs = np.zeros((np.shape(thetas)[0], 1))
-        dummy_acs[np.arange(np.shape(thetas)[0]), :] = 0.
+        dummy_acs[np.arange(np.shape(thetas)[0]), :] = 0.0
         firsts = np.ones((np.shape(thetas)[0], 1))
         lasts = np.zeros((np.shape(thetas)[0], 1))
-        
+
         cos = np.cos(states)
         sin = np.sin(states)
         states = np.concatenate([cos, sin], axis=-1)
-        data = {'obs_state': states, 'image': imgs, 'action': dummy_acs, 'is_first': firsts, 'is_terminal': lasts}
+        data = {
+            "obs_state": states,
+            "image": imgs,
+            "action": dummy_acs,
+            "is_first": firsts,
+            "is_terminal": lasts,
+        }
 
         data = self._wm.preprocess(data)
         embed = self._wm.encoder(data)
 
-        post, prior = self._wm.dynamics.observe(
-            embed, data["action"], data["is_first"]
-            )
+        post, prior = self._wm.dynamics.observe(embed, data["action"], data["is_first"])
         feat = self._wm.dynamics.get_feat(post).detach()
         with torch.no_grad():  # Disable gradient calculation
-            g_x = self._wm.heads["margin"](feat).detach().cpu().numpy().squeeze()
+            # g_x = self._wm.heads["margin"](feat).detach().cpu().numpy().squeeze()
+            g_x = torch.ones(feat.shape[0], device=self._config.device)
         feat = self._wm.dynamics.get_feat(post).detach().cpu().numpy().squeeze()
 
         return g_x, feat, post
-    
-    
+
     def get_eval_plot(self):
         self.eval()
         v = self.v
@@ -407,58 +406,99 @@ class Dreamer(nn.Module):
         g_x = np.array(g_x)
         v[self.idxs[:, 0], self.idxs[:, 1], self.idxs[:, 2]] = g_x
 
-        tp  = np.where(g_x[self.safe_idxs] > 0)
-        fn  = np.where(g_x[self.safe_idxs] <= 0)
-        fp  = np.where(g_x[self.unsafe_idxs] > 0)
-        tn  = np.where(g_x[self.unsafe_idxs] <= 0)
-        
-        vmax = round(max(np.max(v), 0),1)
-        vmin = round(min(np.min(v), -vmax),1)
-        
-        fig, axes = plt.subplots(self.nz, 2, figsize=(12, self.nz*6))
-        
+        tp = np.where(g_x[self.safe_idxs] > 0)
+        fn = np.where(g_x[self.safe_idxs] <= 0)
+        fp = np.where(g_x[self.unsafe_idxs] > 0)
+        tn = np.where(g_x[self.unsafe_idxs] <= 0)
+
+        vmax = round(max(np.max(v), 0), 1)
+        vmin = round(min(np.min(v), -vmax), 1)
+
+        fig, axes = plt.subplots(self.nz, 2, figsize=(12, self.nz * 6))
+
         for i in range(self.nz):
             ax = axes[i, 0]
             im = ax.imshow(
-                v[:, :, i].T, interpolation='none', extent=np.array([
-                self._config.x_min, self._config.x_max, self._config.y_min, self._config.y_max, ]), origin="lower",
-                cmap="seismic", vmin=vmin, vmax=vmax, zorder=-1
+                v[:, :, i].T,
+                interpolation="none",
+                extent=np.array(
+                    [
+                        self._config.x_min,
+                        self._config.x_max,
+                        self._config.y_min,
+                        self._config.y_max,
+                    ]
+                ),
+                origin="lower",
+                cmap="seismic",
+                vmin=vmin,
+                vmax=vmax,
+                zorder=-1,
             )
             cbar = fig.colorbar(
-                im, ax=ax, pad=0.01, fraction=0.05, shrink=.95, ticks=[vmin, 0, vmax]
+                im, ax=ax, pad=0.01, fraction=0.05, shrink=0.95, ticks=[vmin, 0, vmax]
             )
             cbar.ax.set_yticklabels(labels=[vmin, 0, vmax], fontsize=24)
-            ax.set_title(r'$g(x)$', fontsize=18)
+            ax.set_title(r"$g(x)$", fontsize=18)
 
             ax = axes[i, 1]
             im = ax.imshow(
-                v[:, :, i].T > 0, interpolation='none', extent=np.array([
-                self._config.x_min, self._config.x_max, self._config.y_min, self._config.y_max, ]), origin="lower",
-                cmap="seismic", vmin=-1, vmax=1, zorder=-1
+                v[:, :, i].T > 0,
+                interpolation="none",
+                extent=np.array(
+                    [
+                        self._config.x_min,
+                        self._config.x_max,
+                        self._config.y_min,
+                        self._config.y_max,
+                    ]
+                ),
+                origin="lower",
+                cmap="seismic",
+                vmin=-1,
+                vmax=1,
+                zorder=-1,
             )
             cbar = fig.colorbar(
-                im, ax=ax, pad=0.01, fraction=0.05, shrink=.95, ticks=[vmin, 0, vmax]
+                im, ax=ax, pad=0.01, fraction=0.05, shrink=0.95, ticks=[vmin, 0, vmax]
             )
             cbar.ax.set_yticklabels(labels=[vmin, 0, vmax], fontsize=24)
-            ax.set_title(r'$v(x)$', fontsize=18)
+            ax.set_title(r"$v(x)$", fontsize=18)
             fig.tight_layout()
-            circle = plt.Circle((0, 0), self._config.obs_r, fill=False, color='blue', label = 'GT boundary')
+            circle = plt.Circle(
+                (0, 0),
+                self._config.obs_r,
+                fill=False,
+                color="blue",
+                label="GT boundary",
+            )
 
             # Add the circle to the plot
-            axes[i,0].add_patch(circle)
-            axes[i,0].set_aspect('equal')
-            circle2 = plt.Circle((0, 0), self._config.obs_r, fill=False, color='blue', label = 'GT boundary')
+            axes[i, 0].add_patch(circle)
+            axes[i, 0].set_aspect("equal")
+            circle2 = plt.Circle(
+                (0, 0),
+                self._config.obs_r,
+                fill=False,
+                color="blue",
+                label="GT boundary",
+            )
 
-            axes[i,1].add_patch(circle2)
-            axes[i,1].set_aspect('equal')
+            axes[i, 1].add_patch(circle2)
+            axes[i, 1].set_aspect("equal")
 
         fp_g = np.shape(fp)[1]
         fn_g = np.shape(fn)[1]
         tp_g = np.shape(tp)[1]
         tn_g = np.shape(tn)[1]
         tot = fp_g + fn_g + tp_g + tn_g
-        fig.suptitle(r"$TP={:.0f}\%$ ".format(tp_g/tot * 100) + r"$TN={:.0f}\%$ ".format(tn_g/tot * 100) + r"$FP={:.0f}\%$ ".format(fp_g/tot * 100) +r"$FN={:.0f}\%$".format(fn_g/tot * 100),
-            fontsize=10,)
+        fig.suptitle(
+            r"$TP={:.0f}\%$ ".format(tp_g / tot * 100)
+            + r"$TN={:.0f}\%$ ".format(tn_g / tot * 100)
+            + r"$FP={:.0f}\%$ ".format(fp_g / tot * 100)
+            + r"$FN={:.0f}\%$".format(fn_g / tot * 100),
+            fontsize=10,
+        )
         buf = BytesIO()
 
         plt.savefig(buf, format="png")
@@ -467,7 +507,6 @@ class Dreamer(nn.Module):
         plot = Image.open(buf).convert("RGB")
         self.train()
         return np.array(plot), tp, fn, fp, tn
-    
 
 
 def count_steps(folder):
@@ -482,6 +521,7 @@ def make_dataset(episodes, config):
 
 def main(config):
     tools.set_seed_everywhere(config.seed)
+    config = tools.set_wm_name(config)
     if config.deterministic_run:
         tools.enable_deterministic_run()
     logdir = pathlib.Path(config.logdir).expanduser()
@@ -501,39 +541,46 @@ def main(config):
     logger = tools.Logger(logdir, config.action_repeat * step)
 
     print("Create envs.")
-    
+
     action_space = gym.spaces.Box(
         low=-config.turnRate, high=config.turnRate, shape=(1,), dtype=np.float32
     )
-    bounds = np.array([[config.x_min, config.x_max], [config.y_min, config.y_max], [0, 2 * np.pi]])
+    bounds = np.array(
+        [[config.x_min, config.x_max], [config.y_min, config.y_max], [0, 2 * np.pi]]
+    )
     low = bounds[:, 0]
     high = bounds[:, 1]
     midpoint = (low + high) / 2.0
     interval = high - low
     gt_observation_space = gym.spaces.Box(
-        np.float32(midpoint - interval/2),
-        np.float32(midpoint + interval/2),
+        np.float32(midpoint - interval / 2),
+        np.float32(midpoint + interval / 2),
     )
-    image_size = config.size[0] #128
+    image_size = config.size[0]  # 128
     image_observation_space = gym.spaces.Box(
         low=0, high=255, shape=(image_size, image_size, 3), dtype=np.uint8
     )
 
-    
-    obs_observation_space = gym.spaces.Box(
-        low=-1, high=1, shape=(2,), dtype=np.float32
-    )
-    observation_space = gym.spaces.Dict({
-            'state': gt_observation_space,
-            'obs_state': obs_observation_space,
-            'image': image_observation_space
-        })
+    obs_observation_space = gym.spaces.Box(low=-1, high=1, shape=(2,), dtype=np.float32)
+    dict_obs_space = {}
+    for key in ["obs_state", "image", "state"]:
+        if key in config.encoder["mlp_keys"] or key in config.encoder["cnn_keys"]:
+            if key == "obs_state":
+                dict_obs_space[key] = obs_observation_space
+            elif key == "image":
+                dict_obs_space[key] = image_observation_space
+            elif key == "state":
+                dict_obs_space[key] = gt_observation_space
 
+    observation_space = gym.spaces.Dict(dict_obs_space)
 
     print("Action Space", action_space)
-    config.num_actions = action_space.n if hasattr(action_space, "n") else action_space.shape[0]
+    config.num_actions = (
+        action_space.n if hasattr(action_space, "n") else action_space.shape[0]
+    )
 
-    
+    config = tools.set_wm_name(config)
+
     expert_eps = collections.OrderedDict()
     print(expert_eps)
     tools.fill_expert_dataset_dubins(config, expert_eps)
@@ -571,13 +618,14 @@ def main(config):
         plot = Image.open(buf).convert("RGB")
         plot_arr = np.array(plot)
         logger.image("pretrain/" + title, np.transpose(plot_arr, (2, 0, 1)))
+
     def eval_obs_recon():
         recon_steps = 101
         obs_mlp, obs_opt = agent._wm._init_obs_mlp(config, 3)
         train_loss = []
         eval_loss = []
         for i in range(recon_steps):
-            if i % int(recon_steps/4) == 0:
+            if i % int(recon_steps / 4) == 0:
                 new_loss = agent.pretrain_regress_obs(
                     next(eval_dataset), obs_mlp, obs_opt, eval=True
                 )
@@ -594,9 +642,10 @@ def main(config):
         logger.write(step=logger.step)
         del obs_mlp, obs_opt  # dont need to keep these
         return np.min(eval_loss)
+
     def evaluate(other_dataset=None, eval_prefix=""):
         agent.eval()
-        
+
         eval_policy = functools.partial(agent, training=False)
 
         # For Logging (1 episode)
@@ -608,23 +657,22 @@ def main(config):
                 video_pred = agent._wm.video_pred(next(other_dataset))
                 logger.video("train_recon/openl_agent", to_np(video_pred))
 
-        
         logger.write(step=logger.step)
         recon_eval = eval_obs_recon()  # testing observation reconstruction
 
         agent.train()
         return recon_eval, recon_eval
+
     # ==================== Pretrain ====================
-    total_train_steps = config.rssm_train_steps 
+    total_train_steps = config.rssm_train_steps
     print(total_train_steps)
     if total_train_steps > 0:
-        
         cprint(
             f"Pretraining for {total_train_steps=}",
             color="cyan",
             attrs=["bold"],
         )
-        ckpt_name = "rssm_ckpt" 
+        ckpt_name = "rssm_ckpt"
         best_pretrain_success = float("inf")
         for step in trange(
             total_train_steps,
@@ -632,28 +680,23 @@ def main(config):
             ncols=0,
             leave=False,
         ):
-            if (
-                ((step + 1) % config.eval_every) == 0
-                or step == 1
-            ):
+            if ((step + 1) % config.eval_every) == 0 or step == 1:
                 score, success = evaluate(
                     other_dataset=expert_dataset, eval_prefix="pretrain"
                 )
-                lx_plot, tp, fn, fp, tn = agent.get_eval_plot()
+                # lx_plot, tp, fn, fp, tn = agent.get_eval_plot()
 
-                logger.image("pretrain/lx_plot", np.transpose(lx_plot, (2, 0, 1)))
-                
+                # logger.image("pretrain/lx_plot", np.transpose(lx_plot, (2, 0, 1)))
+
                 best_pretrain_success = tools.save_checkpoint(
                     ckpt_name, step, success, best_pretrain_success, agent, logdir
                 )
 
-    
             exp_data = next(expert_dataset)
             agent.pretrain_model_only(exp_data, step)
-    
+
 
 if __name__ == "__main__":
-
     parser = argparse.ArgumentParser()
     parser.add_argument("--configs", nargs="+")
     args, remaining = parser.parse_known_args()
@@ -674,6 +717,7 @@ if __name__ == "__main__":
     defaults = {}
     for name in name_list:
         recursive_update(defaults, configs[name])
+
     parser = argparse.ArgumentParser()
     for key, value in sorted(defaults.items(), key=lambda x: x[0]):
         arg_type = tools.args_type(value)

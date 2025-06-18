@@ -23,6 +23,8 @@ from tqdm import tqdm
 
 
 def get_frame(states, config):
+    if states.shape[-1] != 3:
+        raise ValueError("States must have shape (3,) for x, y, theta.")
     dt = config.dt
     v = config.speed
     fig, ax = plt.subplots()
@@ -31,14 +33,16 @@ def get_frame(states, config):
     plt.axis("off")
     fig.set_size_inches(1, 1)
     # Create the circle patch
-    circle = patches.Circle(
-        [config.obs_x, config.obs_y],
-        config.obs_r,
-        edgecolor=(1, 0, 0),
-        facecolor="none",
-    )
-    # Add the circle patch to the axis
-    ax.add_patch(circle)
+    if config.show_constraint:
+        circle = patches.Circle(
+            [config.obs_x, config.obs_y],
+            config.obs_r,
+            edgecolor=config.constraint_color,
+            facecolor="none",
+        )
+        # Add the circle patch to the axis
+        ax.add_patch(circle)
+    agent_color = "black"
     plt.quiver(
         states[0],
         states[1],
@@ -48,11 +52,11 @@ def get_frame(states, config):
         scale_units="xy",
         minlength=0,
         width=0.1,
-        scale=0.18,
-        color=(0, 0, 1),
+        scale=config.arrow_size,
+        color=agent_color,
         zorder=3,
     )
-    plt.scatter(states[0], states[1], s=20, c=(0, 0, 1), zorder=3)
+    plt.scatter(states[0], states[1], s=20, c=agent_color, zorder=3)
     plt.subplots_adjust(left=0, right=1, top=1, bottom=0)
 
     buf = io.BytesIO()
@@ -140,7 +144,7 @@ def generate_trajs(config):
         demos.append(demo)
         # print('demo: ', i, "timesteps: ", len(state_obs))
 
-    with open("wm_demos" + str(config.size[0]) + ".pkl", "wb") as f:
+    with open(config.dataset_path, "wb") as f:
         pickle.dump(demos, f)
 
 
@@ -172,5 +176,7 @@ if __name__ == "__main__":
         arg_type = tools.args_type(value)
         parser.add_argument(f"--{key}", type=arg_type, default=arg_type(value))
     final_config = parser.parse_args(remaining)
+
+    final_config = tools.set_wm_name(final_config)
 
     demos = generate_trajs(final_config)

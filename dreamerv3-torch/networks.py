@@ -1,13 +1,12 @@
 import math
-import numpy as np
 import re
 
+import numpy as np
+import tools
 import torch
-from torch import nn
 import torch.nn.functional as F
 from torch import distributions as torchd
-
-import tools
+from torch import nn
 
 
 class RSSM(nn.Module):
@@ -129,11 +128,15 @@ class RSSM(nn.Module):
         # (batch, time, ch) -> (time, batch, ch)
         embed, action, is_first = swap(embed), swap(action), swap(is_first)
         # prev_state[0] means selecting posterior of return(posterior, prior) from obs_step
+
+        # Implement rolled action # TODO: think more about action rolling
+        rolled_action = torch.cat([action[:, -1:], action[:, :-1]], dim=1)
+
         post, prior = tools.static_scan(
             lambda prev_state, prev_act, embed, is_first: self.obs_step(
                 prev_state[0], prev_act, embed, is_first
             ),
-            (action, embed, is_first),
+            (rolled_action, embed, is_first),
             (state, state),
         )
 
@@ -636,9 +639,9 @@ class MLP(nn.Module):
 
         if name == "Margin":
             self.layers.add_module(
-                f"{name}_linear{i+1}", nn.Linear(units, 1, bias=False)
+                f"{name}_linear{i + 1}", nn.Linear(units, 1, bias=False)
             )
-            
+
         self.layers.apply(tools.weight_init)
 
         if isinstance(self._shape, dict):
