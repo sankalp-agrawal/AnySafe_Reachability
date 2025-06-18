@@ -426,7 +426,8 @@ for iter in range(warmup + args.total_episodes):
 
         wb_name_args = [
             f"{task_name}",
-            f"DDPGdist_type_{config.env_dist_type}",
+            "DDPG",
+            f"dist_type_{config.env_dist_type}",
             f"sim_{config.safety_margin_type}_{config.safety_margin_threshold}{'*' if config.safety_margin_hard_threshold else ''}",
             f"{config.wm_name}",
         ]

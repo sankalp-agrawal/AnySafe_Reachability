@@ -147,6 +147,7 @@ class Dubins_WM_Env(gym.Env):
         for k, v in self.latent.items():
             self.latent[k] = v[:, [-1]]
         self.feat = self.wm.dynamics.get_feat(self.latent).detach().cpu().numpy()
+        self.select_constraints()
         self.obs = {
             "state": self.feat.flatten(),
             "constraints": self.constraints,
