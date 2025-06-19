@@ -278,6 +278,16 @@ class Dubins_WM_Env(gym.Env):
                     1.0,
                 ]  # This is used to say that this constraint is active
             )
+        elif dist_type == "uni":
+            # Eval and test set are the same here
+            return np.array(
+                [
+                    np.random.uniform(low=-0.5, high=0.5),
+                    np.random.uniform(low=-0.5, high=0.5),
+                    np.random.uniform(low=0.1, high=0.5),
+                    1.0,  # This is used to say that this constraint is active
+                ]
+            )
         else:
             raise ValueError(
                 "Unknown distribution type: {}".format(self.distribution_type)
@@ -291,6 +301,7 @@ class Dubins_WM_Env(gym.Env):
         theta = 0.0
         constraint_state = torch.tensor([x, y, theta])
         img = get_frame(states=constraint_state[:3], config=self.config)
+        self.constraint_img = img
         feat_c = self.get_latent(
             wm=self.wm,
             thetas=constraint_state[-1].reshape(-1),
@@ -362,14 +373,26 @@ class Dubins_WM_Env(gym.Env):
         else:
             return feat.squeeze().cpu().numpy()
 
-    def get_eval_plot(self, cache, thetas, policy, config):
+    def get_eval_plot(self, cache, thetas, policy, config, in_distribution=True):
         nx, ny, nt = config.nx, config.ny, config.nt
-        fig1, axes1 = plt.subplots(2, len(thetas), figsize=(3 * len(thetas), 10))
-        fig2, axes2 = plt.subplots(2, len(thetas), figsize=(3 * len(thetas), 10))
-        fig3, axes3 = plt.subplots(2, len(thetas), figsize=(3 * len(thetas), 10))
+        show_constraint = self.safety_margin_type == "cosine_similarity"
+        if show_constraint:
+            fig1, axes1 = plt.subplots(
+                3, len(thetas) + 1, figsize=(3 * (len(thetas) + 1), 10)
+            )
+            fig2, axes2 = plt.subplots(
+                3, len(thetas) + 1, figsize=(3 * (len(thetas) + 1), 10)
+            )
+            fig3, axes3 = plt.subplots(
+                3, len(thetas) + 1, figsize=(3 * (len(thetas) + 1), 10)
+            )
+        else:
+            fig1, axes1 = plt.subplots(3, len(thetas), figsize=(3 * len(thetas), 10))
+            fig2, axes2 = plt.subplots(3, len(thetas), figsize=(3 * len(thetas), 10))
+            fig3, axes3 = plt.subplots(3, len(thetas), figsize=(3 * len(thetas), 10))
 
         # constraint = np.array([0.0, 0.0, 0.5, 1.0]).reshape(1, -1)
-        self.select_constraints()
+        self.select_constraints(in_distribution=in_distribution)
         constraint = self.gt_constraints
         constraint[:, 2] = 0.5  # Force radius to 0.5
         gt_values = self.solver.solve(
@@ -379,8 +402,19 @@ class Dubins_WM_Env(gym.Env):
 
         all_metrics = []
 
+        if show_constraint:
+            for axes, fig in zip([axes1, axes2, axes3], [fig1, fig2, fig3]):
+                for ax in axes[:, 0]:
+                    ax.imshow(
+                        self.constraint_img,
+                        extent=(-1.5, 1.5, -1.5, 1.5),
+                    )
+                    ax.set_title("Constraint Reference Image")
+            self.constraint_img
+
         for i in range(len(thetas)):
             theta = thetas[i]
+            graph_index = i + 1 if show_constraint else i
             idxs, imgs_prev, thetas_prev = cache[theta]
             with torch.no_grad():
                 feat, lz = self.get_latent(
@@ -406,28 +440,33 @@ class Dubins_WM_Env(gym.Env):
             all_metrics.append(metrics)
 
             # Find contours for gt and rl Value functions
-            contours_rl = measure.find_contours(
-                np.array(V > 0).astype(float), level=0.5
-            )
+            # contours_rl = measure.find_contours(
+            #     np.array(V > self.config.safety_filter_eps).astype(float), level=0.5
+            # )
             contours_gt = measure.find_contours(
                 np.array(gt_values[:, :, nt_index].T > 0).astype(float), level=0.5
             )
-            contours_safety_margin = measure.find_contours(
-                np.array(lz.reshape((nx, ny)).T > 0).astype(float), level=0.5
-            )
+            # contours_safety_margin = measure.find_contours(
+            #     np.array(lz.reshape((nx, ny)).T > self.config.safety_filter_eps).astype(
+            #         float
+            #     ),
+            #     level=0.5,
+            # )
 
             # Show sub-zero level set
-            axes1[0, i].imshow(V > 0, extent=(-1.0, 1.0, -1.0, 1.0), origin="lower")
-            axes1[1, i].imshow(
+            axes1[0, graph_index].imshow(
+                V > 0, extent=(-1.0, 1.0, -1.0, 1.0), origin="lower"
+            )
+            axes1[2, graph_index].imshow(
                 gt_values[:, :, nt_index].T > 0,
                 extent=(-1.0, 1.0, -1.0, 1.0),
                 origin="lower",
             )
             # Show value functions
-            axes2[0, i].imshow(
+            axes2[0, graph_index].imshow(
                 V, extent=(-1.0, 1.0, -1.0, 1.0), vmin=-1.0, vmax=1.0, origin="lower"
             )
-            axes2[1, i].imshow(
+            axes2[2, graph_index].imshow(
                 gt_values[:, :, nt_index].T,
                 extent=(-1.0, 1.0, -1.0, 1.0),
                 vmin=-1.0,
@@ -436,7 +475,7 @@ class Dubins_WM_Env(gym.Env):
             )
 
             # Plot safety margin
-            axes3[0, i].imshow(
+            axes3[0, graph_index].imshow(
                 lz.reshape((nx, ny)).T,
                 extent=(-1.0, 1.0, -1.0, 1.0),
                 vmin=-1.0,
@@ -444,7 +483,7 @@ class Dubins_WM_Env(gym.Env):
                 origin="lower",
             )
             # GT safety margin
-            axes3[1, i].imshow(
+            axes3[2, graph_index].imshow(
                 self.solver.failure_lx[:, :, nt_index].T,
                 extent=(-1.0, 1.0, -1.0, 1.0),
                 vmin=-1.0,
@@ -453,18 +492,37 @@ class Dubins_WM_Env(gym.Env):
             )
 
             # Plot contours for RL Value function
-            for contour in contours_rl:
-                for axes in [axes1, axes2]:
-                    [
-                        ax.plot(
-                            contour[:, 1] * (2.0 / (nx - 1)) - 1.0,
-                            contour[:, 0] * (2.0 / (ny - 1)) - 1.0,
-                            color="blue",
-                            linewidth=2,
-                            label="RL Value Contour",
-                        )
-                        for ax in axes[:, i]
-                    ]
+            # for contour in contours_rl:
+            #     for axes in [axes1, axes2, axes3]:
+            #         [
+            #             ax.plot(
+            #                 contour[:, 1] * (2.0 / (nx - 1)) - 1.0,
+            #                 contour[:, 0] * (2.0 / (ny - 1)) - 1.0,
+            #                 color="blue",
+            #                 linewidth=2,
+            #                 label=f"RL Value Contour (eps={self.config.safety_margin_threshold:.2f})",
+            #             )
+            #             for ax in axes[:, graph_index]
+            #         ]
+
+            metric = np.array(lz.reshape((nx, ny)).T)
+            x = np.linspace(-1.0, 1.0, metric.shape[1])
+            y = np.linspace(-1.0, 1.0, metric.shape[0])
+            X, Y = np.meshgrid(x, y)
+
+            contour = axes3[1, graph_index].contour(
+                X, Y, metric, levels=5, colors="black", linewidths=1
+            )
+            axes3[1, graph_index].clabel(contour, inline=True, fontsize=8, fmt="%.2f")
+
+            for axes in [axes1, axes2]:
+                contour = axes[1, graph_index].contour(
+                    X, Y, V, levels=5, colors="black", linewidths=1
+                )
+                axes[1, graph_index].clabel(
+                    contour, inline=True, fontsize=8, fmt="%.2f"
+                )
+
             # Plot contours for GT Value function
             for contour in contours_gt:
                 for axes in [axes1, axes2]:
@@ -472,25 +530,25 @@ class Dubins_WM_Env(gym.Env):
                         ax.plot(
                             contour[:, 1] * (2.0 / (nx - 1)) - 1.0,
                             contour[:, 0] * (2.0 / (ny - 1)) - 1.0,
-                            color="Green",
+                            color="orange",
                             linewidth=2,
                             label="GT Value Contour",
                         )
-                        for ax in axes[:, i]
+                        for ax in axes[:, graph_index]
                     ]
 
-            for contour in contours_safety_margin:
-                for axes in [axes3]:
-                    [
-                        ax.plot(
-                            contour[:, 1] * (2.0 / (nx - 1)) - 1.0,
-                            contour[:, 0] * (2.0 / (ny - 1)) - 1.0,
-                            color="orange",
-                            linewidth=2,
-                            label=f"Safety Margin Contour, (eps={self.config.safety_margin_threshold:.2f})",
-                        )
-                        for ax in axes[:, i]
-                    ]
+            # for contour in contours_safety_margin:
+            #     for axes in [axes1, axes2, axes3]:
+            #         [
+            #             ax.plot(
+            #                 contour[:, 1] * (2.0 / (nx - 1)) - 1.0,
+            #                 contour[:, 0] * (2.0 / (ny - 1)) - 1.0,
+            #                 color="orange",
+            #                 linewidth=2,
+            #                 label=f"Safety Margin Contour (eps={self.config.safety_margin_threshold:.2f})",
+            #             )
+            #             for ax in axes[:, graph_index]
+            #         ]
 
             # Add constraint patch
             for constraint in self.gt_constraints:
@@ -509,17 +567,17 @@ class Dubins_WM_Env(gym.Env):
                                 label="Constraint",
                             )
                         )
-                        for ax in axes[:, i]
+                        for ax in axes[:, graph_index]
                     ]
 
             for axes in [axes1, axes2, axes3]:
-                for j in range(2):
-                    label = (
-                        rf"$\theta$={thetas[i]:.2f}"
-                        if j == 0
-                        else rf"$GT, \theta$={thetas[i]:.2f}"
-                    )
-                    axes[j, i].set_title(
+                for j in range(3):
+                    label = rf"$\theta$={thetas[i]:.2f}"
+                    if j == 1:
+                        label = rf"$Topo Map, \theta$={thetas[i]:.2f}"
+                    elif j == 2:
+                        label = rf"$GT, \theta$={thetas[i]:.2f}"
+                    axes[j, graph_index].set_title(
                         label,
                         fontsize=12,
                     )
@@ -577,6 +635,7 @@ class Dubins_WM_Env(gym.Env):
         )
         obs, __ = self.reset()
         obs_gt, _ = gt_env.reset()
+        # TODO: Set constraints of gt_env to the same as self.constraints
         done_gt = False
         imgs_traj = []
         t = 0
@@ -588,7 +647,7 @@ class Dubins_WM_Env(gym.Env):
             with torch.no_grad():
                 feat, lz = self.get_latent(
                     wm=self.wm,
-                    thetas=torch.tensor([0.0], dtype=torch.float32),
+                    thetas=torch.tensor([theta], dtype=torch.float32),
                     imgs=[frame],
                 )
                 V, _ = self.safety_margin(torch.tensor([feat], device=self.device))

@@ -456,17 +456,23 @@ for iter in range(warmup + args.total_episodes):
     )
 
     save_best_fn(policy, epoch=epoch)
-    plot1, plot2, plot3, metrics = env.get_eval_plot(
-        cache=cache, thetas=thetas, config=config, policy=policy
-    )
-    wandb.log(
-        {
-            "binary_reach_avoid_plot": wandb.Image(plot1),
-            "continuous_plot": wandb.Image(plot2),
-            "safety_margin_function": wandb.Image(plot3),
-            **{f"metric/{k}": v for k, v in metrics.items()},
-        }
-    )
+    for in_dist in [True, False]:
+        plot1, plot2, plot3, metrics = env.get_eval_plot(
+            cache=cache,
+            thetas=thetas,
+            config=config,
+            policy=policy,
+            in_distribution=in_dist,
+        )
+        in_dist_label = "in_dist" if in_dist else "out_dist"
+        wandb.log(
+            {
+                f"{in_dist_label}/binary_reach_avoid_plot": wandb.Image(plot1),
+                f"{in_dist_label}/continuous_plot": wandb.Image(plot2),
+                f"{in_dist_label}/safety_margin_function": wandb.Image(plot3),
+                **{f"{in_dist_label}/metric/{k}": v for k, v in metrics.items()},
+            }
+        )
 
     traj_imgs = env.get_trajectory(policy=policy)
     wandb.log(

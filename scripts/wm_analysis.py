@@ -259,11 +259,12 @@ def topographic_map(config, cache, thetas, constraint_state, similarity_metric):
     feat_c = einops.repeat(feat_c, "N C -> B N C", B=idxs.shape[0])  # [B, N, Z]
 
     fig, axes = plt.subplots(
-        1, len(thetas), figsize=(3 * len(thetas), 5), constrained_layout=True
+        1, len(thetas) + 1, figsize=(3 * len(thetas), 5), constrained_layout=True
     )
 
     for i in range(len(thetas)):
         theta = thetas[i]
+        i += 1
         axes[i].set_title(f"theta = {theta:.2f}")
         idxs, imgs_prev, thetas_prev = cache[theta]
         with torch.no_grad():
@@ -275,10 +276,10 @@ def topographic_map(config, cache, thetas, constraint_state, similarity_metric):
                 feat_c, axis=-1
             )
             metric = -numerator / (denominator + 1e-8)  # (B, N)
-            metric = np.min(metric, axis=-1)  # (B,)
+            metric = np.mean(metric, axis=-1)  # (B,)
         elif similarity_metric == "Euclidean Distance":
             metric = -np.linalg.norm(feat - feat_c, axis=-1)  # (B, N)
-            metric = np.min(metric, axis=-1)  # (B,)
+            metric = np.mean(metric, axis=-1)  # (B,)
         else:
             raise ValueError(
                 f"Unknown similarity metric: {similarity_metric}. Supported: ['Cosine_Similarity', 'Euclidean Distance']"
@@ -293,24 +294,26 @@ def topographic_map(config, cache, thetas, constraint_state, similarity_metric):
         #     origin="lower",
         # )
 
-        x = np.linspace(-1, 1, metric.shape[1])
-        y = np.linspace(-1, 1, metric.shape[0])
+        x = np.linspace(-1.1, 1.1, metric.shape[1])
+        y = np.linspace(-1.1, 1.1, metric.shape[0])
         X, Y = np.meshgrid(x, y)
 
         contour = axes[i].contour(X, Y, metric, levels=5, colors="black", linewidths=1)
         axes[i].clabel(contour, inline=True, fontsize=8, fmt="%.2f")
 
-        for constraint_img in constraint_imgs:
-            # Show the constraint image on the topographic map
-            axes[i].imshow(
-                constraint_img,
-                extent=(config.x_min, config.x_max, config.y_min, config.y_max),
-            )
+    for constraint_img in constraint_imgs:
+        # Show the constraint image on the topographic map
+        axes[0].imshow(
+            constraint_img,
+            extent=(config.x_min, config.x_max, config.y_min, config.y_max),
+        )
+        axes[0].set_title("Constraint Image")
 
     # set axes limits
     for ax in axes:
         ax.set_xlim(-1.0, 1.0)
         ax.set_ylim(-1.0, 1.0)
+        ax.set_aspect("equal")
 
     fig.suptitle(f"Topographic Map using {similarity_metric}")
     plt.tight_layout()
@@ -330,7 +333,7 @@ logger = WandbLogger(
 
 for metric in similarity_metrics:
     constraint_list = [
-        [0.0, 0.0, 0.0],  # x, y, theta
+        [0.0, 0.0, 0.0],  # 0.0],  # x, y, theta
         [0.5, 0.5, np.pi / 2],
         [-0.5, -0.5, -np.pi / 2],
         [0.5, -0.5, np.pi / 2],

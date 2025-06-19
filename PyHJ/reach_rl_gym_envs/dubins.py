@@ -254,6 +254,15 @@ class Dubins_Env(gym.Env):
                     1.0,
                 ]  # This is used to say that this constraint is active
             )
+        elif self.distribution_type == "uni":
+            return np.array(
+                [
+                    np.random.uniform(low=-0.5, high=0.5),
+                    np.random.uniform(low=-0.5, high=0.5),
+                    np.random.uniform(low=0.1, high=0.5),
+                    1.0,
+                ]
+            )
         else:
             raise ValueError(
                 "Unknown distribution type: {}".format(self.distribution_type)

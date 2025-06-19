@@ -95,7 +95,6 @@ defaults:
   constraint_color: "red"
   arrow_size: 0.15 # Smaller is bigger here
 
-  env-dist-type: 'fc' # 'v' - vanilla, 'fc' - four corners, 'fcfe' - four corners four edges, 'rh' - right half, 'br' - big radii
   # Training
   batch_size: 16
   batch_length: 64
@@ -165,11 +164,12 @@ defaults:
   alpha: 0.2 
   weight-decay-pyhj: 0.001
 
+  env-dist-type: 'uni' # 'v' - vanilla, 'fc' - four corners, 'fcfe' - four corners four edges, 'rh' - right half, 'br' - big radii, 'uni' - uniform, 'rhfe' - right half four edges, 'rhbr' - right half big radii
   safety-margin-type: "cosine_similarity" # cosine_similarity, learned
-  safety-margin-threshold: -0.5 # type=float, default=0.5)
+  safety-margin-threshold: -0.0 # type=float, default=0.5)
   safety-margin-hard-threshold: False # type=bool, default=False)
 
-  safety_filter_eps: 0.0
+  safety_filter_eps: 0.5
   
   actor-activation: 'ReLU' #type=str, default='ReLU')
   critic-activation: 'ReLU' # type=str, default='ReLU')
