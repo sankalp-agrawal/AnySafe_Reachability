@@ -6,6 +6,7 @@ import einops
 import gymnasium  # as gym
 import numpy as np
 import torch
+import torch.nn as nn
 
 import PyHJ
 import wandb
@@ -232,7 +233,9 @@ def get_latent(
     return feat.squeeze().cpu().numpy(), stoch, deter
 
 
-def topographic_map(config, cache, thetas, constraint_state, similarity_metric):
+def topographic_map(
+    config, cache, thetas, constraint_state, similarity_metric, model=None
+):
     if constraint_state[-1] is None:
         constraint_states = [
             np.array([constraint_state[0], constraint_state[1], t])
@@ -276,10 +279,20 @@ def topographic_map(config, cache, thetas, constraint_state, similarity_metric):
                 feat_c, axis=-1
             )
             metric = -numerator / (denominator + 1e-8)  # (B, N)
-            metric = np.mean(metric, axis=-1)  # (B,)
+            metric = np.min(metric, axis=-1)  # (B,)
         elif similarity_metric == "Euclidean Distance":
             metric = -np.linalg.norm(feat - feat_c, axis=-1)  # (B, N)
-            metric = np.mean(metric, axis=-1)  # (B,)
+            metric = np.min(metric, axis=-1)  # (B,)
+
+        elif similarity_metric == "Learned":
+            assert model is not None, (
+                "Model must be provided for learned similarity metric."
+            )
+            feat = torch.tensor(feat, dtype=torch.float32)
+            feat_c = torch.tensor(feat_c, dtype=torch.float32)
+            metric = torch.tanh(model(feat, feat_c))  # (B, N)
+            metric = metric.detach().cpu().numpy()  # (B, N)
+            metric = np.min(metric, axis=-1)  # (B,)
         else:
             raise ValueError(
                 f"Unknown similarity metric: {similarity_metric}. Supported: ['Cosine_Similarity', 'Euclidean Distance']"
@@ -325,7 +338,40 @@ cache = make_cache(config, thetas)
 logger = None
 warmup = 1
 
-similarity_metrics = ["Cosine_Similarity", "Euclidean Distance"]
+
+class SafetyMargin(nn.Module):
+    def __init__(self, input_dim, hidden_dims, output_dim):
+        super(SafetyMargin, self).__init__()
+        layers = []
+
+        # Create hidden layers
+        last_dim = input_dim
+        for hidden_dim in hidden_dims:
+            layers.append(nn.Linear(last_dim, hidden_dim))
+            layers.append(nn.SiLU())
+            last_dim = hidden_dim
+
+        # Final output layer (no activation here)
+        layers.append(nn.Linear(last_dim, output_dim))
+        # layers.append(nn.Tanh())  # Use Tanh to keep output in [-1, 1]
+
+        self.model = nn.Sequential(*layers)
+
+    def forward(self, z, z_const):
+        input = torch.cat((z, z_const), dim=-1)
+        return self.model(input)
+
+
+safety_margin = SafetyMargin(input_dim=2 * 544, hidden_dims=[512, 256], output_dim=1)
+# Load the pre-trained model
+model_path = "safety_margin_model.pth"
+if os.path.exists(model_path):
+    safety_margin.load_state_dict(torch.load(model_path, map_location=config.device))
+    print("Safety Margin model loaded successfully.")
+else:
+    print(f"Model file {model_path} not found. Using untrained model.")
+
+similarity_metrics = ["Cosine_Similarity", "Euclidean Distance", "Learned"]
 
 logger = WandbLogger(
     name=f"wm_Analysis_{config.wm_name}", config=config, project="Dubins"
@@ -351,6 +397,7 @@ for metric in similarity_metrics:
             thetas=thetas,
             constraint_state=constraint_state,
             similarity_metric=metric,
+            model=safety_margin if metric == "Learned" else None,
         )
 
         wandb.log(
