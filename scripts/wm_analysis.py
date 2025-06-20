@@ -295,7 +295,7 @@ def topographic_map(
             metric = np.min(metric, axis=-1)  # (B,)
         else:
             raise ValueError(
-                f"Unknown similarity metric: {similarity_metric}. Supported: ['Cosine_Similarity', 'Euclidean Distance']"
+                f"Unknown similarity metric: {similarity_metric}. Supported: ['Cosine_Similarity', 'Euclidean Distance', 'Learned']"
             )
 
         metric = metric.reshape(config.nx, config.ny).T
