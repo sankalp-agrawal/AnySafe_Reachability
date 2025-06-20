@@ -288,18 +288,22 @@ class Dubins_WM_Env(gym.Env):
                     1.0,  # This is used to say that this constraint is active
                 ]
             )
+
+        elif dist_type == "ds":  # Distribution from dataset
+            init_traj = np.array(next(self.data)["privileged_state"])[0, 0]
+            init_traj = np.append(
+                init_traj, 1.0
+            )  # Append 1.0 to indicate that this constraint is active
         else:
             raise ValueError(
                 "Unknown distribution type: {}".format(self.distribution_type)
             )
 
     def select_constraints(self, in_distribution=True):
-        constraint = self.select_one_constraint(in_distribution=in_distribution)
-        # constraint = torch.tensor([0.0, 0.0, 0.0])
-        x, y = constraint[:2]
-        # theta = np.random.uniform(low=0, high=2 * np.pi)
-        theta = 0.0
-        constraint_state = torch.tensor([x, y, theta])
+        # constraint = self.select_one_constraint(in_distribution=in_distribution)
+        constraint = np.append(np.array(next(self.data)["privileged_state"])[0, 0], 1.0)
+        constraint_state = torch.tensor(constraint[:3], dtype=torch.float32)
+        # constraint_state[..., -1] = 0  # Set theta to 0 for the constraint image
         img = get_frame(states=constraint_state[:3], config=self.config)
         self.constraint_img = img
         feat_c = self.get_latent(
