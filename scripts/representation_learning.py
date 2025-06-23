@@ -14,6 +14,7 @@ dreamer_dir = os.path.abspath(
 sys.path.append(dreamer_dir)
 saferl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "/PyHJ"))
 sys.path.append(saferl_dir)
+import einops
 import torch.nn as nn
 import torch.optim as optim
 
@@ -23,12 +24,15 @@ import pathlib
 from datetime import datetime
 
 import models
+import requests
 import ruamel.yaml as yaml
 import tools
 
 # note: need to include the dreamerv3 repo for this
 from dreamer import make_dataset
+from PIL import Image
 from termcolor import cprint
+from transformers import AutoImageProcessor, AutoModel
 
 from PyHJ.exploration import GaussianNoise
 
@@ -45,6 +49,38 @@ from PyHJ.exploration import GaussianNoise
     python run_training_ddpg.py --task ra_1d_Game-v0 --control-net 32 32 --disturbance-net 4 4 --critic-net 4 4 --epoch 10 --total-episodes 160 --gamma 0.9 --is-game-baseline True
 
 """
+
+url = "http://images.cocodataset.org/val2017/000000039769.jpg"
+image = Image.open(requests.get(url, stream=True).raw)
+
+processor = AutoImageProcessor.from_pretrained("facebook/dinov2-base")
+dino = AutoModel.from_pretrained("facebook/dinov2-base")
+patch_size = dino.config.patch_size
+
+
+def encode_dino(image):
+    inputs = processor(images=image, return_tensors="pt")
+    batch_size, rgb, img_height, img_width = inputs.pixel_values.shape
+    num_patches_height, num_patches_width = (
+        img_height // patch_size,
+        img_width // patch_size,
+    )
+    num_patches_flat = num_patches_height * num_patches_width
+
+    outputs = dino(**inputs)
+    last_hidden_states = outputs[0]
+    # print(last_hidden_states.shape)  # [1, 1 + 256, 768]
+    assert last_hidden_states.shape == (
+        batch_size,
+        1 + num_patches_flat,
+        dino.config.hidden_size,
+    )
+
+    cls_token = last_hidden_states[:, 0, :]
+    patch_features = last_hidden_states[:, 1:, :].unflatten(
+        1, (num_patches_height, num_patches_width)
+    )
+    return cls_token, patch_features
 
 
 def recursive_update(base, update):
@@ -108,14 +144,17 @@ def create_dataset(dataset, wm, r=0.5):
     for i in tqdm(range(4000), desc="Creating dataset", unit="sample"):
         # Get z value
         data = next(dataset)
-        data = wm.preprocess(data)
-        embed = wm.encoder(data)
-        post, __ = wm.dynamics.observe(embed, data["action"], data["is_first"])
+        image = einops.rearrange(data["image"][:, 0, :, :], "N H W C -> N C H W")
+        feat, __ = encode_dino(image)
+        # data = wm.preprocess(data)
+        # embed = wm.encoder(data)
+        # post, __ = wm.dynamics.observe(embed, data["action"], data["is_first"])
 
-        feat = wm.dynamics.get_feat(post)
+        # feat = wm.dynamics.get_feat(post)
 
-        Z.append(feat[0, 0, :].detach().cpu())
-        priv_state.append(data["privileged_state"][0, 0, :].detach().cpu())
+        Z.append(feat[0].detach().cpu())
+        # Z.append(feat[0, 0, :].detach().cpu())
+        priv_state.append(data["privileged_state"][0, 0, :])
 
     return torch.stack(Z), torch.stack(priv_state)
 
@@ -183,7 +222,7 @@ batch_size = 32
 
 
 # Initialize model, loss, optimizer
-model = SafetyMargin(input_dim=2 * 544, hidden_dims=[512, 256], output_dim=1)
+model = SafetyMargin(input_dim=2 * 768, hidden_dims=[512, 256], output_dim=1)
 criterion = nn.MSELoss()
 optimizer = optim.Adam(model.parameters(), lr=1e-3)
 
