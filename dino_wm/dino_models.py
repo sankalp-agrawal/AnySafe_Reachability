@@ -344,6 +344,13 @@ class VideoTransformer(nn.Module):
             nn.Linear(total_dim, 1),
         )
 
+        self.semantic_encoder = nn.Sequential(
+            LayerNorm(total_dim),
+            nn.Linear(total_dim, total_dim),
+            nn.ReLU(),
+            nn.Linear(total_dim, total_dim),
+        )
+
     def forward(
         self,
         video1: torch.Tensor,

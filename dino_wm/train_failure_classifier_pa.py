@@ -2,18 +2,14 @@ import argparse
 import os
 import random
 
-import losses
 import numpy as np
 import torch
-import utils
 import wandb
-from net.bn_inception import *
-from net.googlenet import *
-from net.resnet import *
+from proxy_anchor.code import losses, utils
 from torch.utils.data import DataLoader
 from tqdm import *
 
-from dino_wm.dino_models import VideoTransformer
+from dino_wm.dino_models import VideoTransformer, normalize_acs
 from dino_wm.test_loader import SplitTrajectoryDataset
 
 seed = 1
@@ -124,12 +120,9 @@ model = VideoTransformer(
     dropout=0.1,
 ).to(device)
 
-decoder = VQVAE().to(device)
-print("decoder with parameters", count_parameters(decoder))
 
-
-if args.gpu_id == -1:
-    model = nn.DataParallel(model)
+for name, param in model.named_parameters():
+    param.requires_grad = name.startswith("semantic_encoder")
 
 # DML Losses
 criterion = losses.Proxy_Anchor(
@@ -142,25 +135,11 @@ criterion = losses.Proxy_Anchor(
 # Train Parameters
 param_groups = [
     {
-        "params": list(
-            set(model.parameters()).difference(set(model.model.embedding.parameters()))
-        )
-        if args.gpu_id != -1
-        else list(
-            set(model.module.parameters()).difference(
-                set(model.module.model.embedding.parameters())
-            )
-        )
-    },
-    {
-        "params": model.model.embedding.parameters()
-        if args.gpu_id != -1
-        else model.module.model.embedding.parameters(),
+        "params": model.semantic_encoder.parameters(),  # Semantic encoder parameters
         "lr": float(args.lr) * 1,
     },
+    {"params": criterion.parameters(), "lr": float(args.lr) * 100},  # Just proxies
 ]
-param_groups.append({"params": criterion.parameters(), "lr": float(args.lr) * 100})
-
 # Optimizer Setting
 opt = torch.optim.AdamW(param_groups, lr=float(args.lr), weight_decay=args.weight_decay)
 
@@ -176,42 +155,42 @@ best_epoch = 0
 
 for epoch in range(0, args.nb_epochs):
     model.train()
-    bn_freeze = args.bn_freeze
-    if bn_freeze:
-        modules = (
-            model.model.modules() if args.gpu_id != -1 else model.module.model.modules()
-        )
-        for m in modules:
-            if isinstance(m, nn.BatchNorm2d):
-                m.eval()
 
     losses_per_epoch = []
 
     # Warmup: Train only new params, helps stabilize learning.
-    if args.warm > 0:
-        if args.gpu_id != -1:
-            unfreeze_model_param = list(model.model.embedding.parameters()) + list(
-                criterion.parameters()
-            )
-        else:
-            unfreeze_model_param = list(
-                model.module.model.embedding.parameters()
-            ) + list(criterion.parameters())
+    # TODO: implement warmup training if needed
 
-        if epoch == 0:
-            for param in list(
-                set(model.parameters()).difference(set(unfreeze_model_param))
-            ):
-                param.requires_grad = False
-        if epoch == args.warm:
-            for param in list(
-                set(model.parameters()).difference(set(unfreeze_model_param))
-            ):
-                param.requires_grad = True
+    pbar = tqdm(enumerate(expert_loader))
 
-    pbar = tqdm(enumerate(dl_tr))
+    for batch_idx, data in pbar:
+        labels_gt = data["failure"][:, 1:]
 
-    for batch_idx, (x, y) in pbar:
+        data1 = data["cam_zed_embd"].to(device)
+        data2 = data["cam_rs_embd"].to(device)
+        inputs1 = data1[:, :-1]
+        output1 = data1[:, 1:]
+
+        inputs2 = data2[:, :-1]
+        output2 = data2[:, 1:]
+
+        data_state = data["state"].to(device)
+        states = data_state[:, :-1]
+        output_state = data_state[:, 1:]
+
+        data_acs = data["action"].to(device)
+        acs = data_acs[:, :-1]
+        acs = normalize_acs(acs, device)
+
+        with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=True):
+            pred1, pred2, pred_state, pred_fail = model(inputs1, inputs2, states, acs)
+            # TODO: figure out how to encode into semantic space
+
+            failure_loss = fail_loss(pred_fail, data["failure"][:, 1:])
+            loss = failure_loss
+        import ipdb
+
+        ipdb.set_trace()
         m = model(x.squeeze().cuda())
         loss = criterion(m, y.squeeze().cuda())
 
