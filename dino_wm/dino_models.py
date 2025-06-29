@@ -348,7 +348,7 @@ class VideoTransformer(nn.Module):
             LayerNorm(total_dim),
             nn.Linear(total_dim, total_dim),
             nn.ReLU(),
-            nn.Linear(total_dim, total_dim),
+            nn.Linear(total_dim, 512),
         )
 
     def forward(
@@ -365,8 +365,9 @@ class VideoTransformer(nn.Module):
         pred2 = self.wrist_head(x)
         state_preds = self.state_pred(x)
         failure_preds = self.failure_pred(x)
+        semantic_features = self.semantic_embed(x)
 
-        return pred1, pred2, state_preds, failure_preds
+        return pred1, pred2, state_preds, failure_preds, semantic_features
 
     def forward_features(
         self,
@@ -405,6 +406,11 @@ class VideoTransformer(nn.Module):
         failure_preds = self.failure_head(features)
         failure_preds = torch.mean(failure_preds, dim=2)  # Average over patches
         return failure_preds
+
+    def semantic_embed(self, features):
+        semantic_features = self.semantic_encoder(features)
+        semantic_features = torch.mean(semantic_features, dim=2)
+        return semantic_features
 
     def state_pred(self, features):
         state_preds = self.state_head(features)

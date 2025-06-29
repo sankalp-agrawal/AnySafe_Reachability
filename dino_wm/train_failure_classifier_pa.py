@@ -1,12 +1,24 @@
 import argparse
-import os
+import copy
 import random
 
+import einops
+import matplotlib.cm as cm
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
+import torch.nn.functional as F
 import wandb
-from proxy_anchor.code import losses, utils
-from torch.utils.data import DataLoader
+from proxy_anchor.code import losses
+from sklearn.manifold import TSNE
+from sklearn.metrics import (
+    accuracy_score,
+    balanced_accuracy_score,
+    f1_score,
+    precision_score,
+    recall_score,
+)
+from torch.utils.data import DataLoader, Subset
 from tqdm import *
 
 from dino_wm.dino_models import VideoTransformer, normalize_acs
@@ -98,15 +110,22 @@ wandb.config.update(args)
 # Dataset Loader and Sampler
 BS = args.sz_batch  # batch size
 BL = 4
-hdf5_file = "/home/sunny/data/skittles/vlog-test-labeled/consolidated.h5"
+
+hdf5_file = "/home/sunny/data/skittles/consolidated.h5"
+hdf5_file_test = "/home/sunny/data/skittles/vlog-test-labeled/consolidated.h5"
 
 expert_data = SplitTrajectoryDataset(hdf5_file, BL, split="train", num_test=0)
-expert_loader = iter(DataLoader(expert_data, batch_size=BS, shuffle=True))
+expert_data_eval = SplitTrajectoryDataset(hdf5_file_test, BL, split="train", num_test=0)
+
+expert_loader = DataLoader(expert_data, batch_size=BS, shuffle=True)
+expert_loader_eval = DataLoader(expert_data_eval, batch_size=10, shuffle=True)
+
 device = "cuda:0"
 
 nb_classes = 2  # Safe and Failure
 
 # Backbone Model
+LOG_DIR = "logs_pa"
 
 model = VideoTransformer(
     image_size=(224, 224),
@@ -119,6 +138,7 @@ model = VideoTransformer(
     num_frames=BL - 1,
     dropout=0.1,
 ).to(device)
+# model.load_state_dict(torch.load("checkpoints/best_classifier.pth"))
 
 
 for name, param in model.named_parameters():
@@ -150,8 +170,8 @@ scheduler = torch.optim.lr_scheduler.StepLR(
 print("Training parameters: {}".format(vars(args)))
 print("Training for {} epochs.".format(args.nb_epochs))
 losses_list = []
-best_recall = [0]
 best_epoch = 0
+best_eval = float("inf")
 
 for epoch in range(0, args.nb_epochs):
     model.train()
@@ -161,10 +181,17 @@ for epoch in range(0, args.nb_epochs):
     # Warmup: Train only new params, helps stabilize learning.
     # TODO: implement warmup training if needed
 
-    pbar = tqdm(enumerate(expert_loader))
+    max_trajectories = 5000  # Maximum number of trajectories to sample
+    total_trajectories = len(expert_data)
+    subset_indices = random.sample(range(total_trajectories), max_trajectories)
+    subset = Subset(expert_data, subset_indices)
+    loader_subset = DataLoader(subset, batch_size=BS, shuffle=True)
+
+    # pbar = tqdm(enumerate(expert_loader))
+    pbar = tqdm(enumerate(loader_subset), total=len(loader_subset))
 
     for batch_idx, data in pbar:
-        labels_gt = data["failure"][:, 1:]
+        labels_gt = data["failure"][:, 1:].to(device, dtype=torch.float32)
 
         data1 = data["cam_zed_embd"].to(device)
         data2 = data["cam_rs_embd"].to(device)
@@ -183,23 +210,19 @@ for epoch in range(0, args.nb_epochs):
         acs = normalize_acs(acs, device)
 
         with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=True):
-            pred1, pred2, pred_state, pred_fail = model(inputs1, inputs2, states, acs)
-            # TODO: figure out how to encode into semantic space
+            __, __, __, __, semantic_features = model(inputs1, inputs2, states, acs)
 
-            failure_loss = fail_loss(pred_fail, data["failure"][:, 1:])
-            loss = failure_loss
-        import ipdb
+        unsafe_weak_mask = labels_gt == 2.0
+        labels_gt_masked = copy.deepcopy(labels_gt)
+        labels_gt_masked[unsafe_weak_mask] = 1.0  # Set
 
-        ipdb.set_trace()
-        m = model(x.squeeze().cuda())
-        loss = criterion(m, y.squeeze().cuda())
+        loss = criterion(semantic_features.float(), labels_gt_masked.squeeze().cuda())
 
         opt.zero_grad()
         loss.backward()
 
-        torch.nn.utils.clip_grad_value_(model.parameters(), 10)
-        if args.loss == "Proxy_Anchor":
-            torch.nn.utils.clip_grad_value_(criterion.parameters(), 10)
+        torch.nn.utils.clip_grad_value_(model.semantic_encoder.parameters(), 10)
+        torch.nn.utils.clip_grad_value_(criterion.parameters(), 10)
 
         losses_per_epoch.append(loss.data.cpu().numpy())
         opt.step()
@@ -208,8 +231,8 @@ for epoch in range(0, args.nb_epochs):
             "Train Epoch: {} [{}/{} ({:.0f}%)] Loss: {:.6f}".format(
                 epoch,
                 batch_idx + 1,
-                len(dl_tr),
-                100.0 * batch_idx / len(dl_tr),
+                len(expert_loader),
+                100.0 * batch_idx / len(expert_loader),
                 loss.item(),
             )
         )
@@ -219,57 +242,186 @@ for epoch in range(0, args.nb_epochs):
     scheduler.step()
 
     if epoch >= 0:
+        losses = []
+        metrics = {
+            "Accuracy": [],
+            "Precision": [],
+            "Recall": [],
+            "F1-score": [],
+            "Balanced Accuracy": [],
+            # "Cross Entropy Loss": [],
+        }
+        X = []
+        y = []
         with torch.no_grad():
             print("**Evaluating...**")
-            if args.dataset == "Inshop":
-                Recalls = utils.evaluate_cos_Inshop(model, dl_query, dl_gallery)
-            elif args.dataset != "SOP":
-                Recalls = utils.evaluate_cos(model, dl_ev)
-            else:
-                Recalls = utils.evaluate_cos_SOP(model, dl_ev)
+            for batch_idx, data in enumerate(expert_loader_eval):
+                # print(batch_idx)
+                labels_gt = data["failure"][:, 1:].to(device, dtype=torch.float32)
 
-        # Logging Evaluation Score
-        if args.dataset == "Inshop":
-            for i, K in enumerate([1, 10, 20, 30, 40, 50]):
-                wandb.log({"R@{}".format(K): Recalls[i]}, step=epoch)
-        elif args.dataset != "SOP":
-            for i in range(6):
-                wandb.log({"R@{}".format(2**i): Recalls[i]}, step=epoch)
-        else:
-            for i in range(4):
-                wandb.log({"R@{}".format(10**i): Recalls[i]}, step=epoch)
+                data1 = data["cam_zed_embd"].to(device)
+                data2 = data["cam_rs_embd"].to(device)
+                inputs1 = data1[:, :-1]
+                output1 = data1[:, 1:]
 
-        # Best model save
-        if best_recall[0] < Recalls[0]:
-            best_recall = Recalls
-            best_epoch = epoch
-            if not os.path.exists("{}".format(LOG_DIR)):
-                os.makedirs("{}".format(LOG_DIR))
-            torch.save(
-                {"model_state_dict": model.state_dict()},
-                "{}/{}_{}_best.pth".format(LOG_DIR, args.dataset, args.model),
+                inputs2 = data2[:, :-1]
+                output2 = data2[:, 1:]
+
+                data_state = data["state"].to(device)
+                states = data_state[:, :-1]
+                output_state = data_state[:, 1:]
+
+                data_acs = data["action"].to(device)
+                acs = data_acs[:, :-1]
+                acs = normalize_acs(acs, device)
+
+                __, __, __, __, semantic_features = model(inputs1, inputs2, states, acs)
+
+                unsafe_weak_mask = labels_gt == 2.0
+                labels_gt_masked = copy.deepcopy(labels_gt)
+                labels_gt_masked[unsafe_weak_mask] = 1.0  # Set
+
+                # Normalize all vectors for cosine similarity
+                semantic_features_norm = F.normalize(
+                    semantic_features, dim=-1
+                )  # (10, 3, 512)
+                proxies_norm = F.normalize(criterion.proxies, dim=-1)  # (2, 512)
+
+                # Broadcastable shapes: (10, 3, 1, 512) and (1, 1, 2, 512)
+                semantic_features_exp = einops.rearrange(
+                    semantic_features_norm, "B T Z -> B T 1 Z"
+                )  # (10, 3, 1, 512)
+                proxies_exp = einops.rearrange(
+                    proxies_norm, "L Z -> 1 1 L Z"
+                )  # (1, 1, 2, 512)
+
+                # Compute cosine similarity
+                cos_sim = (semantic_features_exp * proxies_exp).sum(
+                    dim=-1
+                )  # (10, 3, 2)
+
+                # Choose the index (0 or 1) of the most similar vector
+                logits = F.softmax(cos_sim, dim=-1)  # (10, 3, 2)
+                pred_labels = logits.argmax(dim=-1)  # (10, 3)
+
+                pred_labels = (
+                    einops.rearrange(pred_labels, "B T -> (B T)").cpu().numpy()
+                )  # Flatten
+                gt_labels = (
+                    einops.rearrange(labels_gt_masked, "B T -> (B T)").cpu().numpy()
+                )  # Flatten
+                cos_sim = einops.rearrange(cos_sim, "B T L -> (B T) L").cpu().numpy()
+
+                X.append(semantic_features.cpu().numpy())
+                y.append(labels_gt.cpu().numpy())
+
+                losses.append(
+                    criterion(
+                        semantic_features.float(), labels_gt_masked.squeeze().cuda()
+                    )
+                    .detach()
+                    .cpu()
+                    .numpy()
+                )
+
+                # Calculate metrics
+                metrics["Accuracy"].append(accuracy_score(gt_labels, pred_labels))
+                metrics["Precision"].append(
+                    precision_score(
+                        gt_labels, pred_labels, average="macro", zero_division=0
+                    )
+                )
+                metrics["Recall"].append(
+                    recall_score(
+                        gt_labels, pred_labels, average="macro", zero_division=0
+                    )
+                )
+                metrics["F1-score"].append(
+                    f1_score(gt_labels, pred_labels, average="macro", zero_division=0)
+                )
+                metrics["Balanced Accuracy"].append(
+                    balanced_accuracy_score(gt_labels, pred_labels)
+                )
+                # metrics["Cross Entropy Loss"].append(
+                #     F.cross_entropy(cos_sim, gt_labels, reduction="mean").item()
+                # )
+
+        loss = np.mean(losses)
+
+        for key, value in metrics.items():
+            metrics[key] = np.mean(value)
+        wandb.log({f"eval/{k}": v for k, v in metrics.items()}, step=epoch)
+
+        # ---- Flatten and Prepare Data ----
+        if len(X) == 0 or len(y) == 0:
+            print("No data to visualize.")
+            continue
+
+        print("Visualizing embeddings with t-SNE...")
+
+        X = einops.rearrange(np.concatenate(X, axis=0), "B T Z -> (B T) Z")
+        y = einops.rearrange(np.concatenate(y, axis=0), "B T -> (B T)")
+        num_classes_eval = len(np.unique(y))
+
+        tsne = TSNE(n_components=2, perplexity=10, learning_rate=200, random_state=42)
+        tsne_input = np.concatenate(
+            [X, criterion.proxies.detach().cpu().numpy()], axis=0
+        )
+        tsne_output = tsne.fit_transform(tsne_input)
+
+        X_tsne = tsne_output[:-nb_classes]
+        proxies_tsne = tsne_output[-nb_classes:]
+
+        # ---- Rainbow Color Setup ----
+        cmap = cm.get_cmap(
+            "hsv"
+        )  # or try "nipy_spectral" or "gist_rainbow" for variety
+        class_colors = [
+            cmap(i / num_classes_eval) for i in range(num_classes_eval)
+        ]  # RGBA tuples
+
+        # ---- Plot ----
+        plt.figure(figsize=(8, 6))
+
+        # Plot data points
+        for class_idx in range(num_classes_eval):
+            idxs = y == class_idx
+            plt.scatter(
+                X_tsne[idxs, 0],
+                X_tsne[idxs, 1],
+                s=15,
+                color=class_colors[class_idx],
+                label=f"Class {class_idx} (data)",
+                alpha=0.7,
             )
-            with open(
-                "{}/{}_{}_best_results.txt".format(LOG_DIR, args.dataset, args.model),
-                "w",
-            ) as f:
-                f.write("Best Epoch: {}\n".format(best_epoch))
-                if args.dataset == "Inshop":
-                    for i, K in enumerate([1, 10, 20, 30, 40, 50]):
-                        f.write(
-                            "Best Recall@{}: {:.4f}\n".format(K, best_recall[i] * 100)
-                        )
-                elif args.dataset != "SOP":
-                    for i in range(6):
-                        f.write(
-                            "Best Recall@{}: {:.4f}\n".format(
-                                2**i, best_recall[i] * 100
-                            )
-                        )
-                else:
-                    for i in range(4):
-                        f.write(
-                            "Best Recall@{}: {:.4f}\n".format(
-                                10**i, best_recall[i] * 100
-                            )
-                        )
+
+        # Plot proxies
+        for i, proxy in enumerate(proxies_tsne):
+            plt.scatter(
+                proxy[0],
+                proxy[1],
+                color=class_colors[i],
+                marker="X",
+                s=100,
+                edgecolor="black",
+                linewidth=1.2,
+                label=f"Class {i} (proxy)",
+                alpha=1.0,
+            )
+
+        # ---- Final Formatting ----
+        plt.title("t-SNE visualization of embeddings")
+        plt.xlabel("Component 1")
+        plt.ylabel("Component 2")
+        plt.legend(loc="best", fontsize=8, frameon=True)
+        plt.tight_layout()
+        plt.show()
+
+        wandb.log({"tsne_plot": wandb.Image(plt)})
+
+        torch.save(model.state_dict(), "checkpoints_pa/encoder.pth")
+
+        if loss < best_eval:
+            best_eval = loss
+            print(f"New best at iter {i}, saving model.")
+            torch.save(model.state_dict(), "checkpoints_pa/best_encoder.pth")
