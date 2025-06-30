@@ -3,6 +3,7 @@ import os
 import random
 import sys
 
+import matplotlib.gridspec as gridspec
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -135,6 +136,17 @@ if __name__ == "__main__":
     euc_distances_cam_2 = copy.deepcopy(cosine_similarities_cam_1)
 
     cosine_similarities_sem = init_nested_dict()
+    closest_diff_class = {
+        "cos_sim": -float("inf"),
+        "wrist_image1": None,
+        "front_image1": None,
+        "class1": None,
+        "wrist_image2": None,
+        "front_image2": None,
+        "class2": None,
+    }
+    furthest_same_class = copy.deepcopy(closest_diff_class)
+    furthest_same_class["cos_sim"] = 1.0
 
     for _ in tqdm(range(len(expert_loader) - 1), desc="Computing cosine similarities"):
         data = next(expert_loader)
@@ -205,6 +217,51 @@ if __name__ == "__main__":
                     # Compute cosine similarity as dot product of normalized vectors
                     cos_sim_matrix = anchors_norm @ queries_norm.T
 
+                    if k1 == k2:
+                        mask = cos_sim_matrix < furthest_same_class["cos_sim"]
+                        if mask.any():
+                            furthest_same_class["cos_sim"] = cos_sim_matrix[mask].min()
+                            mask = cos_sim_matrix == furthest_same_class["cos_sim"]
+                            index_1, index_2 = (mask).nonzero(as_tuple=False)[0]
+                            furthest_same_class["wrist_image1"] = data[
+                                "robot0_eye_in_hand_image"
+                            ][masks[k1]][index_1, -1]
+                            furthest_same_class["front_image1"] = data[
+                                "agentview_image"
+                            ][masks[k1]][index_1, -1]
+                            furthest_same_class["class1"] = k1
+                            furthest_same_class["wrist_image2"] = data[
+                                "robot0_eye_in_hand_image"
+                            ][masks[k2]][index_2, -1]
+                            furthest_same_class["front_image2"] = data[
+                                "agentview_image"
+                            ][masks[k2]][index_2, -1]
+                            furthest_same_class["class2"] = k2
+
+                    if k1 != k2 and set([k1, k2]) == {
+                        "weak_unsafe",
+                        "unsafe",
+                    }:  # too similar to be interesting
+                        mask = cos_sim_matrix > closest_diff_class["cos_sim"]
+                        if mask.any():
+                            closest_diff_class["cos_sim"] = cos_sim_matrix[mask].max()
+                            mask = cos_sim_matrix == closest_diff_class["cos_sim"]
+                            index_1, index_2 = (mask).nonzero(as_tuple=False)[0]
+                            closest_diff_class["wrist_image1"] = data[
+                                "robot0_eye_in_hand_image"
+                            ][masks[k1]][index_1, -1]
+                            closest_diff_class["front_image1"] = data[
+                                "agentview_image"
+                            ][masks[k1]][index_1, -1]
+                            closest_diff_class["class1"] = k1
+                            closest_diff_class["wrist_image2"] = data[
+                                "robot0_eye_in_hand_image"
+                            ][masks[k2]][index_2, -1]
+                            closest_diff_class["front_image2"] = data[
+                                "agentview_image"
+                            ][masks[k2]][index_2, -1]
+                            closest_diff_class["class2"] = k2
+
                     if k1 == k2:  # Avoid self-comparison
                         cos_sim_matrix.fill_diagonal_(-2.0)
                     cos_sim_sem = cos_sim_matrix[cos_sim_matrix != -2.0].flatten()
@@ -269,3 +326,46 @@ if __name__ == "__main__":
         frameon=False,
     )
     plt.savefig("latent_analysis.png")
+
+    fig = plt.figure(figsize=(12, 6))
+    outer = gridspec.GridSpec(2, 1, height_ratios=[1, 1], hspace=0.5)
+
+    group_data = [closest_diff_class, furthest_same_class]
+    group_titles = [
+        f"Closest Diff Class Pair - Cos Sim: {closest_diff_class['cos_sim']:.2f}",
+        f"Furthest Same Class Pair - Cos Sim: {furthest_same_class['cos_sim']:.2f}",
+    ]
+
+    # Y positions for group titles in figure coordinates
+    group_title_positions = [
+        0.95,
+        0.48,
+    ]  # increase second one slightly to avoid overlap
+
+    for group_idx, (data_dict, title) in enumerate(zip(group_data, group_titles)):
+        inner = gridspec.GridSpecFromSubplotSpec(
+            1, 4, subplot_spec=outer[group_idx], wspace=0.3
+        )
+
+        for j, key in enumerate(
+            ["wrist_image1", "front_image1", "wrist_image2", "front_image2"]
+        ):
+            ax = plt.Subplot(fig, inner[j])
+            ax.imshow(data_dict[key])
+            ax.set_title(f"{key}, Class: {data_dict[f'class{j // 2 + 1}']}", fontsize=9)
+            ax.axis("off")
+            fig.add_subplot(ax)
+
+        # Group title (above row)
+        fig.text(
+            0.5,
+            group_title_positions[group_idx],
+            title,
+            ha="center",
+            va="bottom",  # ensures it aligns *above* the row
+            fontsize=14,
+            weight="bold",
+        )
+
+    plt.tight_layout(rect=[0, 0, 1, 0.93])  # Give top text breathing room
+    plt.savefig("failure_modes.png")

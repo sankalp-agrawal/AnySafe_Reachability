@@ -520,9 +520,11 @@ for epoch in range(0, args.nb_epochs):
 
         wandb.log({"tsne_plot": wandb.Image(plt)}, step=epoch)
 
-        torch.save(model.state_dict(), "checkpoints_pa/encoder.pth")
+        torch.save(model.state_dict(), f"checkpoints_pa/encoder_{args.mrg}.pth")
 
         if loss < best_eval:
             best_eval = loss
             print(f"New best at iter {i}, saving model.")
-            torch.save(model.state_dict(), "checkpoints_pa/best_encoder.pth")
+            torch.save(
+                model.state_dict(), f"checkpoints_pa/best_encoder_{args.mrg}.pth"
+            )
