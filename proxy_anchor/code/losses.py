@@ -1,4 +1,5 @@
 import einops
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -9,7 +10,12 @@ def binarize(T, nb_classes):
     T = T.cpu().numpy()
     import sklearn.preprocessing
 
-    T = sklearn.preprocessing.label_binarize(T, classes=range(0, nb_classes))
+    if nb_classes == 2:
+        # Manual one-hot encoding for binary case
+        T = np.eye(2)[T.astype(int)]
+    else:
+        T = sklearn.preprocessing.label_binarize(T, classes=range(nb_classes))
+
     T = torch.FloatTensor(T).cuda()
     return T
 
@@ -52,6 +58,10 @@ class Proxy_Anchor(torch.nn.Module):
             dim=1
         )  # The set of positive proxies of data in the batch
         num_valid_proxies = len(with_pos_proxies)  # The number of positive proxies
+        if num_valid_proxies == 0:
+            import ipdb
+
+            ipdb.set_trace()
 
         P_sim_sum = torch.where(P_one_hot == 1, pos_exp, torch.zeros_like(pos_exp)).sum(
             dim=0
@@ -60,7 +70,11 @@ class Proxy_Anchor(torch.nn.Module):
             dim=0
         )
 
-        pos_term = torch.log(1 + P_sim_sum).sum() / num_valid_proxies
+        pos_term = (
+            torch.log(1 + P_sim_sum).sum() / num_valid_proxies
+            if num_valid_proxies > 0
+            else 0
+        )
         neg_term = torch.log(1 + N_sim_sum).sum() / self.nb_classes
         loss = pos_term + neg_term
 

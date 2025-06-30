@@ -102,6 +102,7 @@ if __name__ == "__main__":
     ).to(device)
     # transition.load_state_dict(torch.load('/home/kensuke/latent-safety/scripts/checkpoints/claude_zero_wfail20500_rotvec.pth'))
     # transition.load_state_dict(torch.load("checkpoints/best_classifier.pth"))
+    transition.load_state_dict(torch.load("checkpoints_pa/best_encoder.pth"))
 
     decoder = VQVAE().to(device)
     # decoder.load_state_dict(torch.load('/home/kensuke/latent-safety/scripts/checkpoints/best_decoder_10m.pth'))
@@ -139,7 +140,7 @@ if __name__ == "__main__":
 
     with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=use_amp):
         with torch.no_grad():
-            pred1, pred2, pred_state, pred_fail = transition(
+            pred1, pred2, pred_state, pred_fail, __ = transition(
                 inputs1, inputs2, states, acs
             )
     transition.eval()
@@ -169,46 +170,29 @@ if __name__ == "__main__":
         data1 = data["cam_zed_embd"].to(device)
         data2 = data["cam_rs_embd"].to(device)
 
-        inputs1 = data1[:, :-1]
-        output1 = data1[:, 1:]
-
-        inputs2 = data2[:, :-1]
-        output2 = data2[:, 1:]
-
-        data_state = data["state"].to(device)
-        states = data_state[:, :-1]
-        output_state = data_state[:, 1:]
-
-        data_acs = data["action"].to(device)
-        acs = data_acs[:, :-1]
-        acs = normalize_acs(acs, device)
-
-        with torch.no_grad():
-            pred1, pred2, pred_state, __ = transition(inputs1, inputs2, states, acs)
-
         safe_mask = data["failure"][:, 0] == 0.0
         unsafe_mask = data["failure"][:, 0] == 1.0
         weak_unsafe_mask = data["failure"][:, 0] == 2.0
 
-        pred1_class = {
-            "safe": pred1[safe_mask],
-            "unsafe": pred1[unsafe_mask],
-            "weak_unsafe": pred1[weak_unsafe_mask],
+        data1_class = {
+            "safe": data1[safe_mask],
+            "unsafe": data1[unsafe_mask],
+            "weak_unsafe": data1[weak_unsafe_mask],
         }
-        pred2_class = {
-            "safe": pred2[safe_mask],
-            "unsafe": pred2[unsafe_mask],
-            "weak_unsafe": pred2[weak_unsafe_mask],
+        data2_class = {
+            "safe": data2[safe_mask],
+            "unsafe": data2[unsafe_mask],
+            "weak_unsafe": data2[weak_unsafe_mask],
         }
         for key in cosine_similarities_cam_1.keys():
             for key2 in cosine_similarities_cam_1[key].keys():
-                if len(pred1_class[key]) > 0 and len(pred1_class[key2]) > 0:
+                if len(data1_class[key]) > 0 and len(data1_class[key2]) > 0:
                     # if key != key2:
                     #     import ipdb
 
                     #     ipdb.set_trace()
-                    pred_anchors = torch.norm(pred1_class[key][:, -1], dim=-1)
-                    pred_queries = torch.norm(pred1_class[key2][:, -1], dim=-1)
+                    pred_anchors = torch.norm(data1_class[key][:, -1], dim=-1)
+                    pred_queries = torch.norm(data1_class[key2][:, -1], dim=-1)
                     for pred_anchor in pred_anchors:
                         # Cosine similarity
                         pred_anchor = pred_anchor.unsqueeze(0)
@@ -225,8 +209,8 @@ if __name__ == "__main__":
                         euc_dist = euc_dist[euc_dist != 0.0]  # Avoid self-similarity
                         euc_distances_cam_1[key][key2].append(euc_dist.cpu().numpy())
 
-                    pred_anchors = torch.norm(pred2_class[key][:, -1], dim=-1)
-                    pred_queries = torch.norm(pred2_class[key2][:, -1], dim=-1)
+                    pred_anchors = torch.norm(data2_class[key][:, -1], dim=-1)
+                    pred_queries = torch.norm(data2_class[key2][:, -1], dim=-1)
                     for pred_anchor in pred_anchors:
                         pred_anchor = pred_anchor.unsqueeze(0)
 
@@ -325,7 +309,3 @@ if __name__ == "__main__":
         frameon=False,
     )
     plt.savefig("latent_analysis.png")
-
-    import ipdb
-
-    ipdb.set_trace()

@@ -181,7 +181,7 @@ for epoch in range(0, args.nb_epochs):
     # Warmup: Train only new params, helps stabilize learning.
     # TODO: implement warmup training if needed
 
-    max_trajectories = 5000  # Maximum number of trajectories to sample
+    max_trajectories = 10_000  # Maximum number of trajectories to sample
     total_trajectories = len(expert_data)
     subset_indices = random.sample(range(total_trajectories), max_trajectories)
     subset = Subset(expert_data, subset_indices)
@@ -231,8 +231,8 @@ for epoch in range(0, args.nb_epochs):
             "Train Epoch: {} [{}/{} ({:.0f}%)] Loss: {:.6f}".format(
                 epoch,
                 batch_idx + 1,
-                len(expert_loader),
-                100.0 * batch_idx / len(expert_loader),
+                len(loader_subset),
+                100.0 * batch_idx / len(loader_subset),
                 loss.item(),
             )
         )
@@ -317,7 +317,7 @@ for epoch in range(0, args.nb_epochs):
 
                 losses.append(
                     criterion(
-                        semantic_features.float(), labels_gt_masked.squeeze().cuda()
+                        X=semantic_features.float(), T=labels_gt_masked.squeeze().cuda()
                     )
                     .detach()
                     .cpu()
