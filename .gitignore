@@ -9,6 +9,7 @@ experiment_script/log
 **/logs/
 **.pt
 **.pkl
+**.png
 
 
 **/__pycache__/

@@ -10,6 +10,7 @@ import torch
 import torch.nn.functional as F
 import wandb
 from proxy_anchor.code import losses
+from scipy.stats import gaussian_kde
 from sklearn.manifold import TSNE
 from sklearn.metrics import (
     accuracy_score,
@@ -104,7 +105,7 @@ if args.gpu_id != -1:
     torch.cuda.set_device(args.gpu_id)
 
 # Wandb Initialization
-wandb.init(project="ProxyAnchor")
+wandb.init(name=f"mrg_{args.mrg}_alpha_{args.alpha}", project="ProxyAnchor")
 wandb.config.update(args)
 
 # Dataset Loader and Sampler
@@ -249,6 +250,7 @@ for epoch in range(0, args.nb_epochs):
             "Recall": [],
             "F1-score": [],
             "Balanced Accuracy": [],
+            "Proxy Anchor Loss": [],
             # "Cross Entropy Loss": [],
         }
         X = []
@@ -342,11 +344,114 @@ for epoch in range(0, args.nb_epochs):
                 metrics["Balanced Accuracy"].append(
                     balanced_accuracy_score(gt_labels, pred_labels)
                 )
+                metrics["Proxy Anchor Loss"].append(losses[-1])
                 # metrics["Cross Entropy Loss"].append(
                 #     F.cross_entropy(cos_sim, gt_labels, reduction="mean").item()
                 # )
 
         loss = np.mean(losses)
+
+        X = einops.rearrange(np.concatenate(X, axis=0), "B T Z -> (B T) Z")
+        y = einops.rearrange(np.concatenate(y, axis=0), "B T -> (B T)")
+        num_classes_eval = len(np.unique(y))
+
+        cosine_sims = {
+            i: {j: [] for j in range(i, num_classes_eval)}
+            for i in range(num_classes_eval)
+        }
+
+        def cosine_sim_plot_eval(X, y):
+            y_masked = copy.deepcopy(y)
+            y_masked[y == 2] = 1  # Set weak unsafe to unsafe
+
+            X_class = {
+                k: X[y_masked == k]
+                / (np.linalg.norm(X[y_masked == k], axis=1, keepdims=True) + 1e-8)
+                for k in np.unique(y_masked)
+            }
+
+            fig, ax = plt.subplots(figsize=(10, 8))
+            class_to_label = {0: "Safe", 1: "Fail", 2: "Weak Fail"}
+
+            plt.title("Cosine Similarity Distribution per Class")
+            plt.xlabel("Cosine Similarity")
+            plt.ylabel("Density")
+
+            class_pairs = []
+            for i in range(len(np.unique(y_masked))):
+                for j in range(i, len(np.unique(y_masked))):
+                    class_pairs.append((i, j))
+
+            cmap = plt.cm.rainbow
+            colors = [cmap(i / len(class_pairs)) for i in range(len(class_pairs))]
+
+            for idx, (i, j) in enumerate(class_pairs):
+                cos_sim = X_class[i] @ X_class[j].T
+
+                if i == j:
+                    np.fill_diagonal(cos_sim, -2.0)
+                cos_sim = cos_sim[cos_sim != -2.0].flatten()
+
+                if len(cos_sim) > 1000:
+                    cos_sim_sampled = np.random.choice(cos_sim, 1000, replace=False)
+                else:
+                    cos_sim_sampled = cos_sim
+
+                kde_cs = gaussian_kde(cos_sim_sampled)
+                x_cs = np.linspace(cos_sim.min() - 1e-3, 1, 1000)
+                y_pdf = kde_cs(x_cs)
+
+                color = colors[idx]
+                label = f"{class_to_label[i]}-{class_to_label[j]}"
+                ax.plot(x_cs, y_pdf, label=label, color=color)
+
+                # Statistics
+                mean_val = np.mean(cos_sim_sampled)
+                lower, upper = np.percentile(cos_sim_sampled, [2.5, 97.5])
+
+                # Get KDE values at stat locations
+                mean_y = kde_cs(mean_val)
+                lower_y = kde_cs(lower)
+                upper_y = kde_cs(upper)
+
+                # Plot short vertical lines
+                ax.vlines(
+                    mean_val, 0, mean_y, color=color, linestyle="dashed", alpha=0.8
+                )
+                ax.vlines(lower, 0, lower_y, color=color, linestyle="dotted", alpha=0.5)
+                ax.vlines(upper, 0, upper_y, color=color, linestyle="dotted", alpha=0.5)
+
+                # Text labels with white background
+                label_kwargs = dict(
+                    ha="center",
+                    fontsize=8,
+                    bbox=dict(facecolor="white", edgecolor="none", alpha=1.0),
+                )
+                ax.text(
+                    mean_val,
+                    mean_y + 0.01,
+                    f"μ={mean_val:.2f}",
+                    color=color,
+                    **label_kwargs,
+                )
+                ax.text(
+                    lower, lower_y + 0.01, f"↓{lower:.2f}", color=color, **label_kwargs
+                )
+                ax.text(
+                    upper, upper_y + 0.01, f"↑{upper:.2f}", color=color, **label_kwargs
+                )
+
+            # Add dummy lines for legend explanation
+            ax.plot([], [], linestyle="dashed", color="black", label="μ = Mean")
+            ax.plot(
+                [], [], linestyle="dotted", color="black", label="↓ ↑ = 95% Interval"
+            )
+
+            ax.legend()
+            plt.tight_layout()
+            wandb.log({"eval/cosine_sim_plot": wandb.Image(fig)}, step=epoch)
+
+        cosine_sim_plot_eval(X, y)
 
         for key, value in metrics.items():
             metrics[key] = np.mean(value)
@@ -358,10 +463,6 @@ for epoch in range(0, args.nb_epochs):
             continue
 
         print("Visualizing embeddings with t-SNE...")
-
-        X = einops.rearrange(np.concatenate(X, axis=0), "B T Z -> (B T) Z")
-        y = einops.rearrange(np.concatenate(y, axis=0), "B T -> (B T)")
-        num_classes_eval = len(np.unique(y))
 
         tsne = TSNE(n_components=2, perplexity=10, learning_rate=200, random_state=42)
         tsne_input = np.concatenate(
@@ -417,7 +518,7 @@ for epoch in range(0, args.nb_epochs):
         plt.tight_layout()
         plt.show()
 
-        wandb.log({"tsne_plot": wandb.Image(plt)})
+        wandb.log({"tsne_plot": wandb.Image(plt)}, step=epoch)
 
         torch.save(model.state_dict(), "checkpoints_pa/encoder.pth")
 

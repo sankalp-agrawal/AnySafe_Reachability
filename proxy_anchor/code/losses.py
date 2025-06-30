@@ -48,6 +48,7 @@ class Proxy_Anchor(torch.nn.Module):
         T = einops.rearrange(T, "B T -> (B T)")  # Ensure T
 
         cos = F.linear(l2_norm(X), l2_norm(P))  # Calcluate cosine similarity
+
         P_one_hot = binarize(T=T, nb_classes=self.nb_classes)
         N_one_hot = 1 - P_one_hot
 
@@ -57,11 +58,8 @@ class Proxy_Anchor(torch.nn.Module):
         with_pos_proxies = torch.nonzero(P_one_hot.sum(dim=0) != 0).squeeze(
             dim=1
         )  # The set of positive proxies of data in the batch
-        num_valid_proxies = len(with_pos_proxies)  # The number of positive proxies
-        if num_valid_proxies == 0:
-            import ipdb
 
-            ipdb.set_trace()
+        num_valid_proxies = len(with_pos_proxies)  # The number of positive proxies
 
         P_sim_sum = torch.where(P_one_hot == 1, pos_exp, torch.zeros_like(pos_exp)).sum(
             dim=0
