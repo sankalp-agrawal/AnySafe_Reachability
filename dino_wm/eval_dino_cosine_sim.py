@@ -92,10 +92,12 @@ if __name__ == "__main__":
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
 
-    BS, BL = 16, 4
-    hdf5_file = "/home/sunny/data/skittles/vlog-test-labeled/consolidated.h5"
+    BS, BL = 100, 4
+    # hdf5_file = "/home/sunny/data/skittles/vlog-test-labeled/consolidated.h5"
+    # expert_data = SplitTrajectoryDataset(hdf5_file, BL, split="train", num_test=0)
 
-    expert_data = SplitTrajectoryDataset(hdf5_file, BL, split="train", num_test=0)
+    hdf5_file = "/home/sunny/data/skittles/consolidated.h5"
+    expert_data = SplitTrajectoryDataset(hdf5_file, BL, split="test", num_test=100)
     expert_loader = iter(DataLoader(expert_data, batch_size=BS, shuffle=True))
 
     device = "cuda:0"
@@ -111,7 +113,7 @@ if __name__ == "__main__":
         num_frames=BL - 1,
         dropout=0.1,
     ).to(device)
-    # transition.load_state_dict(torch.load("checkpoints_pa/best_encoder.pth"))
+    transition.load_state_dict(torch.load("checkpoints_pa/encoder_0.1.pth"))
     transition.eval()
 
     decoder = VQVAE().to(device)
@@ -124,10 +126,14 @@ if __name__ == "__main__":
     )
 
     def init_nested_dict():
+        # return {
+        #     "safe": {"safe": [], "unsafe": [], "weak_unsafe": []},
+        #     "unsafe": {"unsafe": [], "weak_unsafe": []},
+        #     "weak_unsafe": {"weak_unsafe": []},
+        # }
         return {
-            "safe": {"safe": [], "unsafe": [], "weak_unsafe": []},
-            "unsafe": {"unsafe": [], "weak_unsafe": []},
-            "weak_unsafe": {"weak_unsafe": []},
+            "safe": {"safe": [], "unsafe": []},
+            "unsafe": {"unsafe": []},
         }
 
     cosine_similarities_cam_1 = init_nested_dict()
@@ -140,13 +146,17 @@ if __name__ == "__main__":
         "cos_sim": -float("inf"),
         "wrist_image1": None,
         "front_image1": None,
-        "class1": None,
         "wrist_image2": None,
         "front_image2": None,
-        "class2": None,
     }
     furthest_same_class = copy.deepcopy(closest_diff_class)
-    furthest_same_class["cos_sim"] = 1.0
+    furthest_same_class["cos_sim"] = float("inf")
+
+    failure_modes = {
+        "safe_safe": copy.deepcopy(furthest_same_class),
+        "unsafe_unsafe": copy.deepcopy(furthest_same_class),
+        "safe_unsafe": copy.deepcopy(closest_diff_class),
+    }
 
     for _ in tqdm(range(len(expert_loader) - 1), desc="Computing cosine similarities"):
         data = next(expert_loader)
@@ -160,8 +170,8 @@ if __name__ == "__main__":
 
         masks = {
             "safe": data["failure"][:, 0] == 0.0,
-            "unsafe": data["failure"][:, 0] == 1.0,
-            "weak_unsafe": data["failure"][:, 0] == 2.0,
+            "unsafe": (data["failure"][:, 0] == 1.0) | (data["failure"][:, 0] == 2.0),
+            # "weak_unsafe": data["failure"][:, 0] == 2.0,
         }
 
         embed_cam_1_class = {k: embed_cam_1[m] for k, m in masks.items()}
@@ -191,8 +201,11 @@ if __name__ == "__main__":
 
                         # Compute cosine similarity
                         cos_sim_matrix = anchors_norm @ queries_norm.T
-                        if k1 == k2:  # Avoid self-comparison
-                            cos_sim_matrix.fill_diagonal_(-2.0)
+                        if k1 == k2:  # Avoid self-comparison and double counting
+                            mask = torch.triu(
+                                torch.ones_like(cos_sim_matrix), diagonal=1
+                            ).bool()
+                            cos_sim_matrix[~mask] = -2.0  # Set masked values to -2.0
                         cos_sim = cos_sim_matrix[cos_sim_matrix != -2.0].flatten()
                         cos_dict[k1][k2].append(cos_sim.cpu().numpy())
 
@@ -215,56 +228,67 @@ if __name__ == "__main__":
                     )  # [M, Z]
 
                     # Compute cosine similarity as dot product of normalized vectors
-                    cos_sim_matrix = anchors_norm @ queries_norm.T
+                    cos_sim_matrix = anchors_norm @ queries_norm.T  # [N, M]
 
                     if k1 == k2:
-                        mask = cos_sim_matrix < furthest_same_class["cos_sim"]
+                        mask = cos_sim_matrix < failure_modes[f"{k1}_{k2}"]["cos_sim"]
                         if mask.any():
-                            furthest_same_class["cos_sim"] = cos_sim_matrix[mask].min()
-                            mask = cos_sim_matrix == furthest_same_class["cos_sim"]
+                            failure_modes[f"{k1}_{k2}"]["cos_sim"] = cos_sim_matrix[
+                                mask
+                            ].min()
+                            mask = (
+                                cos_sim_matrix == failure_modes[f"{k1}_{k2}"]["cos_sim"]
+                            )
                             index_1, index_2 = (mask).nonzero(as_tuple=False)[0]
-                            furthest_same_class["wrist_image1"] = data[
+                            failure_modes[f"{k1}_{k2}"]["wrist_image1"] = data[
                                 "robot0_eye_in_hand_image"
                             ][masks[k1]][index_1, -1]
-                            furthest_same_class["front_image1"] = data[
+                            failure_modes[f"{k1}_{k2}"]["front_image1"] = data[
                                 "agentview_image"
                             ][masks[k1]][index_1, -1]
-                            furthest_same_class["class1"] = k1
-                            furthest_same_class["wrist_image2"] = data[
+                            failure_modes[f"{k1}_{k2}"]["class1"] = k1
+                            failure_modes[f"{k1}_{k2}"]["wrist_image2"] = data[
                                 "robot0_eye_in_hand_image"
                             ][masks[k2]][index_2, -1]
-                            furthest_same_class["front_image2"] = data[
+                            failure_modes[f"{k1}_{k2}"]["front_image2"] = data[
                                 "agentview_image"
                             ][masks[k2]][index_2, -1]
-                            furthest_same_class["class2"] = k2
+                            failure_modes[f"{k1}_{k2}"]
+                            failure_modes[f"{k1}_{k2}"]["class2"] = k2
 
-                    if k1 != k2 and set([k1, k2]) == {
-                        "weak_unsafe",
-                        "unsafe",
-                    }:  # too similar to be interesting
-                        mask = cos_sim_matrix > closest_diff_class["cos_sim"]
+                    if k1 != k2:
+                        if f"{k1}_{k2}" not in failure_modes:
+                            continue
+                        mask = cos_sim_matrix > failure_modes[f"{k1}_{k2}"]["cos_sim"]
                         if mask.any():
-                            closest_diff_class["cos_sim"] = cos_sim_matrix[mask].max()
-                            mask = cos_sim_matrix == closest_diff_class["cos_sim"]
+                            failure_modes[f"{k1}_{k2}"]["cos_sim"] = cos_sim_matrix[
+                                mask
+                            ].max()
+                            mask = (
+                                cos_sim_matrix == failure_modes[f"{k1}_{k2}"]["cos_sim"]
+                            )
                             index_1, index_2 = (mask).nonzero(as_tuple=False)[0]
-                            closest_diff_class["wrist_image1"] = data[
+                            failure_modes[f"{k1}_{k2}"]["wrist_image1"] = data[
                                 "robot0_eye_in_hand_image"
                             ][masks[k1]][index_1, -1]
-                            closest_diff_class["front_image1"] = data[
+                            failure_modes[f"{k1}_{k2}"]["front_image1"] = data[
                                 "agentview_image"
                             ][masks[k1]][index_1, -1]
-                            closest_diff_class["class1"] = k1
-                            closest_diff_class["wrist_image2"] = data[
+                            failure_modes[f"{k1}_{k2}"]["class1"] = k1
+                            failure_modes[f"{k1}_{k2}"]["wrist_image2"] = data[
                                 "robot0_eye_in_hand_image"
                             ][masks[k2]][index_2, -1]
-                            closest_diff_class["front_image2"] = data[
+                            failure_modes[f"{k1}_{k2}"]["front_image2"] = data[
                                 "agentview_image"
                             ][masks[k2]][index_2, -1]
-                            closest_diff_class["class2"] = k2
+                            failure_modes[f"{k1}_{k2}"]["class2"] = k2
 
-                    if k1 == k2:  # Avoid self-comparison
-                        cos_sim_matrix.fill_diagonal_(-2.0)
-                    cos_sim_sem = cos_sim_matrix[cos_sim_matrix != -2.0].flatten()
+                    if k1 == k2:  # avoid double counting and self comparison
+                        mask = torch.triu(
+                            torch.ones_like(cos_sim_matrix), diagonal=1
+                        ).bool()
+                        cos_sim_matrix[~mask] = -2.0  # Set masked values to -2.0
+                    cos_sim_sem = cos_sim_matrix[cos_sim_matrix != -2.0]
                     cosine_similarities_sem[k1][k2].append(cos_sim_sem.cpu().numpy())
 
     # Plotting
@@ -286,8 +310,6 @@ if __name__ == "__main__":
     for k1 in cosine_similarities_cam_1:
         for k2 in cosine_similarities_cam_1[k1]:
             if cosine_similarities_cam_1[k1][k2]:
-                if k1 == "weak_unsafe" or k2 == "weak_unsafe":
-                    continue
                 cs1 = np.concatenate(cosine_similarities_cam_1[k1][k2])
                 cs2 = np.concatenate(cosine_similarities_cam_2[k1][k2])
                 ed1 = np.concatenate(euc_distances_cam_1[k1][k2])
@@ -328,21 +350,33 @@ if __name__ == "__main__":
     plt.savefig("latent_analysis.png")
 
     fig = plt.figure(figsize=(12, 6))
-    outer = gridspec.GridSpec(2, 1, height_ratios=[1, 1], hspace=0.5)
+    outer = gridspec.GridSpec(
+        len(failure_modes.keys()),
+        1,
+        height_ratios=[
+            1,
+        ]
+        * len(failure_modes),
+        hspace=0.5,
+    )
 
-    group_data = [closest_diff_class, furthest_same_class]
-    group_titles = [
-        f"Closest Diff Class Pair - Cos Sim: {closest_diff_class['cos_sim']:.2f}",
-        f"Furthest Same Class Pair - Cos Sim: {furthest_same_class['cos_sim']:.2f}",
-    ]
+    group_titles = []
+
+    for k in failure_modes:
+        group_titles.append(
+            f"Failure Mode: {k}, Cos Sim: {failure_modes[k]['cos_sim']:.2f}"
+        )
 
     # Y positions for group titles in figure coordinates
     group_title_positions = [
-        0.95,
-        0.48,
+        0.93,
+        0.64,
+        0.34,
     ]  # increase second one slightly to avoid overlap
 
-    for group_idx, (data_dict, title) in enumerate(zip(group_data, group_titles)):
+    for group_idx, (data_dict, title) in enumerate(
+        zip(failure_modes.values(), group_titles)
+    ):
         inner = gridspec.GridSpecFromSubplotSpec(
             1, 4, subplot_spec=outer[group_idx], wspace=0.3
         )
@@ -350,8 +384,13 @@ if __name__ == "__main__":
         for j, key in enumerate(
             ["wrist_image1", "front_image1", "wrist_image2", "front_image2"]
         ):
+            if data_dict[key] is None:
+                continue
             ax = plt.Subplot(fig, inner[j])
-            ax.imshow(data_dict[key])
+            image = np.array(data_dict[key], dtype=np.float32)
+            if np.max(image) > 1.0:
+                image = image / 255.0
+            ax.imshow(image)
             ax.set_title(f"{key}, Class: {data_dict[f'class{j // 2 + 1}']}", fontsize=9)
             ax.axis("off")
             fig.add_subplot(ax)

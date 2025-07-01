@@ -388,8 +388,9 @@ for epoch in range(0, args.nb_epochs):
             for idx, (i, j) in enumerate(class_pairs):
                 cos_sim = X_class[i] @ X_class[j].T
 
-                if i == j:
-                    np.fill_diagonal(cos_sim, -2.0)
+                if i == j:  # Avoid self-comparison and double counting
+                    masks = torch.triu(torch.ones_like(cos_sim), diagonal=1).bool()
+                    cos_sim[~masks] = -2.0  # Set masked values to -2.0
                 cos_sim = cos_sim[cos_sim != -2.0].flatten()
 
                 if len(cos_sim) > 1000:
