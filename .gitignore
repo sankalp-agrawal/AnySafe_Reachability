@@ -10,6 +10,7 @@ experiment_script/log
 **.pt
 **.pkl
 **.png
+**.gif
 
 
 **/__pycache__/

@@ -9,6 +9,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import wandb
+from dino_wm.dino_models import VideoTransformer, normalize_acs
+from dino_wm.test_loader import SplitTrajectoryDataset
 from proxy_anchor.code import losses
 from scipy.stats import gaussian_kde
 from sklearn.manifold import TSNE
@@ -21,9 +23,6 @@ from sklearn.metrics import (
 )
 from torch.utils.data import DataLoader, Subset
 from tqdm import *
-
-from dino_wm.dino_models import VideoTransformer, normalize_acs
-from dino_wm.test_loader import SplitTrajectoryDataset
 
 seed = 1
 random.seed(seed)
@@ -520,6 +519,8 @@ for epoch in range(0, args.nb_epochs):
         plt.show()
 
         wandb.log({"tsne_plot": wandb.Image(plt)}, step=epoch)
+
+        model.proxies = criterion.proxies
 
         torch.save(model.state_dict(), f"checkpoints_pa/encoder_{args.mrg}.pth")
 
