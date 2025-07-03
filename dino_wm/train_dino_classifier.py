@@ -126,7 +126,7 @@ if __name__ == "__main__":
         num_frames=BL - 1,
         dropout=0.1,
     ).to(device)
-    # transition.load_state_dict(torch.load("checkpoints/best_testing.pth"))
+    transition.load_state_dict(torch.load("checkpoints/best_testing.pth"))
 
     for name, param in transition.named_parameters():
         param.requires_grad = name.startswith("failure_head")
@@ -194,10 +194,7 @@ if __name__ == "__main__":
         optimizer.zero_grad()
 
         with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=use_amp):
-            import ipdb
-
-            ipdb.set_trace()
-            pred1, pred2, pred_state, pred_fail = transition(
+            pred1, pred2, pred_state, pred_fail, __ = transition(
                 inputs1, inputs2, states, acs
             )
             failure_loss = fail_loss(pred_fail, data["failure"][:, 1:])
@@ -228,9 +225,6 @@ if __name__ == "__main__":
                 all_acs = normalize_acs(all_acs, device)
                 acs = eval_data["action"][[0], :H].to(device)
                 acs = normalize_acs(acs, device)
-                import ipdb
-
-                ipdb.set_trace()
                 states = eval_data["state"][[0], :H].to(device)
                 im1s = (
                     eval_data["agentview_image"][[0], :H].squeeze().to(device) / 255.0
@@ -240,7 +234,7 @@ if __name__ == "__main__":
                     / 255.0
                 )
                 for k in range(EVAL_H - H):
-                    pred1, pred2, pred_state, pred_fail = transition(
+                    pred1, pred2, pred_state, pred_fail, __ = transition(
                         inputs1, inputs2, states, acs
                     )
                     pred_latent = torch.cat(
@@ -325,7 +319,7 @@ if __name__ == "__main__":
                 acs = data_acs[:, :-1]
                 acs = normalize_acs(acs, device)
 
-                pred1, pred2, pred_state, pred_fail = transition(
+                pred1, pred2, pred_state, pred_fail, __ = transition(
                     inputs1, inputs2, states, acs
                 )
 

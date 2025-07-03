@@ -53,8 +53,8 @@ if __name__ == "__main__":
     EVAL_H = 16
     H = 3
 
-    hdf5_file = "/data/vlog/consolidated.h5"
-    hdf5_file_test = "/data/vlog-test/consolidated.h5"
+    hdf5_file = "/home/sunny/data/skittles/consolidated.h5"
+    hdf5_file_test = "/home/sunny/data/skittles/vlog-test-labeled/consolidated.h5"
 
     expert_data = SplitTrajectoryDataset(hdf5_file, BL, split="train", num_test=0)
     expert_data_eval = SplitTrajectoryDataset(
@@ -150,7 +150,7 @@ if __name__ == "__main__":
         optimizer.zero_grad()
 
         with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=use_amp):
-            pred1, pred2, pred_state, _ = transition(  # Forward pass
+            pred1, pred2, pred_state, _, __ = transition(  # Forward pass
                 inputs1, inputs2, inputs_states, acs
             )
             im1_loss_tf = nn.MSELoss()(
@@ -172,7 +172,7 @@ if __name__ == "__main__":
             )
             acs_ar = norm_acs[:, [0, 1]]
 
-            pred1_ar, pred2_ar, pred_state_ar, _ = transition(
+            pred1_ar, pred2_ar, pred_state_ar, _, __ = transition(
                 inputs1_ar, inputs2_ar, states_ar, acs_ar
             )
             output1_ar = data1[:, 2]
@@ -228,7 +228,7 @@ if __name__ == "__main__":
                     / 255.0
                 )
                 for k in range(EVAL_H - H):
-                    pred1, pred2, pred_state, _ = transition(
+                    pred1, pred2, pred_state, _, ___ = transition(
                         inputs1, inputs2, inputs_states, acs
                     )
 
@@ -294,7 +294,9 @@ if __name__ == "__main__":
                 data_acs = eval_data["action"].to(device)
                 data_acs = normalize_acs(data_acs, device)
                 acs = data_acs[:, :-1]
-                pred1, pred2, pred_state, _ = transition(inputs1, inputs2, states, acs)
+                pred1, pred2, pred_state, _, __ = transition(
+                    inputs1, inputs2, states, acs
+                )
 
                 pred_latent = torch.cat([pred1[:, [H - 1]], pred2[:, [H - 1]]], dim=0)
                 pred_ims, _ = decoder(pred_latent)

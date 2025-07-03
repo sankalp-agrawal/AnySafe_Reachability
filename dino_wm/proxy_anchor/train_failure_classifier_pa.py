@@ -1,6 +1,8 @@
 import argparse
 import copy
+import os
 import random
+import sys
 
 import einops
 import matplotlib.cm as cm
@@ -16,13 +18,20 @@ from scipy.stats import gaussian_kde
 from sklearn.manifold import TSNE
 from sklearn.metrics import (
     accuracy_score,
-    balanced_accuracy_score,
     f1_score,
     precision_score,
     recall_score,
+    roc_auc_score,
 )
 from torch.utils.data import DataLoader, Subset
 from tqdm import *
+
+base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+sys.path.extend(
+    [
+        base_dir,
+    ]
+)
 
 seed = 1
 random.seed(seed)
@@ -93,7 +102,13 @@ def make_parser():
         "--bn-freeze", default=1, type=int, help="Batch normalization parameter freeze"
     )
     parser.add_argument("--l2-norm", default=1, type=int, help="L2 normlization")
-    parser.add_argument("--remark", default="", help="Any reamrk")
+    parser.add_argument("--remark", default="", help="Any remark")
+    parser.add_argument(
+        "--dont-save-model",
+        dest="save_model",
+        action="store_false",
+        help="Don't save model",
+    )
     return parser
 
 
@@ -138,7 +153,7 @@ model = VideoTransformer(
     num_frames=BL - 1,
     dropout=0.1,
 ).to(device)
-# model.load_state_dict(torch.load("checkpoints/best_classifier.pth"))
+model.load_state_dict(torch.load("../checkpoints/best_classifier.pth"))
 
 
 for name, param in model.named_parameters():
@@ -171,12 +186,13 @@ print("Training parameters: {}".format(vars(args)))
 print("Training for {} epochs.".format(args.nb_epochs))
 losses_list = []
 best_epoch = 0
-best_eval = float("inf")
+best_eval = -float("inf")
 
 for epoch in range(0, args.nb_epochs):
     model.train()
 
     losses_per_epoch = []
+    auc_per_epoch = []
 
     # Warmup: Train only new params, helps stabilize learning.
     # TODO: implement warmup training if needed
@@ -193,20 +209,16 @@ for epoch in range(0, args.nb_epochs):
     for batch_idx, data in pbar:
         labels_gt = data["failure"][:, 1:].to(device, dtype=torch.float32)
 
-        data1 = data["cam_zed_embd"].to(device)
-        data2 = data["cam_rs_embd"].to(device)
-        inputs1 = data1[:, :-1]
-        output1 = data1[:, 1:]
-
-        inputs2 = data2[:, :-1]
-        output2 = data2[:, 1:]
+        data1 = data["cam_zed_embd"].to(device)  # [B BL, 256, 384]
+        data2 = data["cam_rs_embd"].to(device)  # [B BL, 256, 384]
+        inputs1 = data1[:, :-1]  # [B BL-1, 256, 384]
+        inputs2 = data2[:, :-1]  # [B BL-1, 256, 384]
 
         data_state = data["state"].to(device)
-        states = data_state[:, :-1]
-        output_state = data_state[:, 1:]
+        states = data_state[:, :-1]  # [B BL-1, 8]
 
         data_acs = data["action"].to(device)
-        acs = data_acs[:, :-1]
+        acs = data_acs[:, :-1]  # [B BL-1, 10]
         acs = normalize_acs(acs, device)
 
         with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=True):
@@ -218,6 +230,39 @@ for epoch in range(0, args.nb_epochs):
 
         loss = criterion(semantic_features.float(), labels_gt_masked.squeeze().cuda())
 
+        P = criterion.proxies.detach()  # Ensure P is in the same dtype as X
+        semantic_features = einops.rearrange(
+            semantic_features.float(), "B T Z -> (B T) Z"
+        )  # Ensure X is in the correct shape
+
+        cos_sim_fail = F.linear(losses.l2_norm(semantic_features), losses.l2_norm(P))[
+            :, -1
+        ]
+
+        if nb_classes == 2:
+            auc = roc_auc_score(
+                y_true=einops.rearrange(labels_gt_masked, "B T -> (B T)").cpu().numpy(),
+                y_score=cos_sim_fail.detach().cpu().numpy(),
+            )
+
+        else:
+            raise notImplementedError(
+                "AUC calculation for more than 2 classes is not implemented."
+            )
+            metrics["AUC"].append(
+                roc_auc_score(
+                    y_true=losses.binarize(
+                        einops.rearrange(labels_gt_masked, "B T -> (B T)"),
+                        nb_classes=nb_classes,
+                    )
+                    .cpu()
+                    .numpy(),
+                    y_score=einops.rearrange(logits, "B T L -> (B T) L").cpu().numpy(),
+                    multi_class="ovr",
+                    average="macro",
+                )
+            )
+
         opt.zero_grad()
         loss.backward()
 
@@ -225,6 +270,7 @@ for epoch in range(0, args.nb_epochs):
         torch.nn.utils.clip_grad_value_(criterion.parameters(), 10)
 
         losses_per_epoch.append(loss.data.cpu().numpy())
+        auc_per_epoch.append(auc)
         opt.step()
 
         pbar.set_description(
@@ -238,11 +284,13 @@ for epoch in range(0, args.nb_epochs):
         )
 
     losses_list.append(np.mean(losses_per_epoch))
-    wandb.log({"loss": losses_list[-1]}, step=epoch)
+    wandb.log({"train/Proxy Anchor Loss": losses_list[-1]}, step=epoch)
+    wandb.log({"train/AUC": np.mean(auc_per_epoch)}, step=epoch)
+
     scheduler.step()
 
     if epoch >= 0:
-        losses = []
+        accuracies = []
         metrics = {
             "Accuracy": [],
             "Precision": [],
@@ -250,6 +298,7 @@ for epoch in range(0, args.nb_epochs):
             "F1-score": [],
             "Balanced Accuracy": [],
             "Proxy Anchor Loss": [],
+            "AUC": [],
             # "Cross Entropy Loss": [],
         }
         X = []
@@ -316,16 +365,34 @@ for epoch in range(0, args.nb_epochs):
                 X.append(semantic_features.cpu().numpy())
                 y.append(labels_gt.cpu().numpy())
 
-                losses.append(
-                    criterion(
-                        X=semantic_features.float(), T=labels_gt_masked.squeeze().cuda()
-                    )
-                    .detach()
-                    .cpu()
-                    .numpy()
-                )
+                accuracies.append(accuracy_score(gt_labels, pred_labels))
 
                 # Calculate metrics
+                if nb_classes == 2:
+                    metrics["AUC"].append(
+                        roc_auc_score(
+                            y_true=einops.rearrange(labels_gt_masked, "B T -> (B T)")
+                            .cpu()
+                            .numpy(),
+                            y_score=cos_sim[:, -1],
+                        )
+                    )
+                else:
+                    metrics["AUC"].append(
+                        roc_auc_score(
+                            y_true=losses.binarize(
+                                einops.rearrange(labels_gt_masked, "B T -> (B T)"),
+                                nb_classes=nb_classes,
+                            )
+                            .cpu()
+                            .numpy(),
+                            y_score=einops.rearrange(logits, "B T L -> (B T) L")
+                            .cpu()
+                            .numpy(),
+                            multi_class="ovr",
+                            average="macro",
+                        )
+                    )
                 metrics["Accuracy"].append(accuracy_score(gt_labels, pred_labels))
                 metrics["Precision"].append(
                     precision_score(
@@ -340,15 +407,20 @@ for epoch in range(0, args.nb_epochs):
                 metrics["F1-score"].append(
                     f1_score(gt_labels, pred_labels, average="macro", zero_division=0)
                 )
-                metrics["Balanced Accuracy"].append(
-                    balanced_accuracy_score(gt_labels, pred_labels)
+                metrics["Balanced Accuracy"].append(accuracies[-1])
+                metrics["Proxy Anchor Loss"].append(
+                    criterion(
+                        X=semantic_features.float(), T=labels_gt_masked.squeeze().cuda()
+                    )
+                    .detach()
+                    .cpu()
+                    .numpy()
                 )
-                metrics["Proxy Anchor Loss"].append(losses[-1])
                 # metrics["Cross Entropy Loss"].append(
                 #     F.cross_entropy(cos_sim, gt_labels, reduction="mean").item()
                 # )
 
-        loss = np.mean(losses)
+        balanced_accuracy = np.mean(accuracies)
 
         X = einops.rearrange(np.concatenate(X, axis=0), "B T Z -> (B T) Z")
         y = einops.rearrange(np.concatenate(y, axis=0), "B T -> (B T)")
@@ -388,8 +460,9 @@ for epoch in range(0, args.nb_epochs):
                 cos_sim = X_class[i] @ X_class[j].T
 
                 if i == j:  # Avoid self-comparison and double counting
-                    masks = torch.triu(torch.ones_like(cos_sim), diagonal=1).bool()
-                    cos_sim[~masks] = -2.0  # Set masked values to -2.0
+                    mask = np.triu(np.ones_like(cos_sim, dtype=bool), k=1)
+                    cos_sim = np.where(mask, cos_sim, -2.0)
+
                 cos_sim = cos_sim[cos_sim != -2.0].flatten()
 
                 if len(cos_sim) > 1000:
@@ -520,13 +593,19 @@ for epoch in range(0, args.nb_epochs):
 
         wandb.log({"tsne_plot": wandb.Image(plt)}, step=epoch)
 
-        model.proxies = criterion.proxies
+        with torch.no_grad():
+            model.proxies.copy_(criterion.proxies)
 
-        torch.save(model.state_dict(), f"checkpoints_pa/encoder_{args.mrg}.pth")
-
-        if loss < best_eval:
-            best_eval = loss
-            print(f"New best at iter {i}, saving model.")
+        if args.save_model:
             torch.save(
-                model.state_dict(), f"checkpoints_pa/best_encoder_{args.mrg}.pth"
+                model.state_dict(),
+                f"../checkpoints_pa/encoder_{args.mrg}.pth",
             )
+
+            if balanced_accuracy < best_eval:
+                best_eval = balanced_accuracy
+                print(f"New best at iter {i}, saving model.")
+                torch.save(
+                    model.state_dict(),
+                    f"../checkpoints/best_encoder_{args.mrg}.pth",
+                )

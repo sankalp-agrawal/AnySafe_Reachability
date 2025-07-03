@@ -80,106 +80,166 @@ def data_from_traj(traj):
 
 def make_comparison_video(output_dict, save_path="output_video.mp4", fps=5):
     """
-    Creates a video comparing ground truth and imagination rollouts over time.
+    Creates a video comparing ground truth and imagination rollouts over time,
+    now with constraint images added next to wrist and front views.
 
     Parameters:
-        output_dict (dict): Dictionary with keys "ground_truth" and "imagination",
-                            each containing "imgs_wrist", "imgs_front", "ken_fail", and "cosine_sim".
+        output_dict (dict): Must include keys "ground_truth" and "imagination",
+                            each containing "imgs_wrist", "imgs_front",
+                            and single static images "img_constraint1", "img_constraint2",
+                            plus time-series "ken_fail", "cosine_sim_prox", etc.
         save_path (str): Path to save the output video or gif (e.g., 'out.mp4' or 'out.gif').
         fps (int): Frames per second.
     """
-    output = output_dict
 
-    # Check that data is consistent
+    output = output_dict
     T = len(output["ground_truth"]["ken_fail"])
+
+    required_keys = [
+        "imgs_wrist",
+        "imgs_front",
+        "ken_fail",
+        "cosine_sim_prox",
+        "cosine_sim_const1",
+        "cosine_sim_const2",
+        "gt_fail_label",
+    ]
     assert all(
         len(output[k][s]) == T
         for k in ["ground_truth", "imagination"]
-        for s in ["imgs_wrist", "imgs_front", "ken_fail", "cosine_sim"]
+        for s in required_keys
     ), "Inconsistent sequence lengths"
 
-    # Setup figure
-    fig = plt.figure(figsize=(10, 8), dpi=100)
-    plt.subplots_adjust(top=0.85)  # Leave space at the top
+    # Setup figure: 2 graph rows, 2 image rows with 4 columns (wrist, front, constraint1, constraint2)
+    fig = plt.figure(figsize=(12, 8), dpi=100)
+    plt.subplots_adjust(top=0.85)
     canvas = FigureCanvas(fig)
-    gs = gridspec.GridSpec(4, 4, figure=fig)
+    gs = gridspec.GridSpec(4, 8, figure=fig)  # more cols for image width
 
-    # Define axes
-    gt_graph_ax = fig.add_subplot(gs[0, 0:2])
-    gt_wrist_ax = fig.add_subplot(gs[0, 2])
-    gt_front_ax = fig.add_subplot(gs[0, 3])
-    im_graph_ax = fig.add_subplot(gs[2, 0:2])
-    im_wrist_ax = fig.add_subplot(gs[2, 2])
-    im_front_ax = fig.add_subplot(gs[2, 3])
+    # Axes
+    gt_graph_ax = fig.add_subplot(gs[0, 0:4])
+    im_graph_ax = fig.add_subplot(gs[2, 0:4])
+
+    gt_wrist_ax = fig.add_subplot(gs[0, 4])
+    gt_front_ax = fig.add_subplot(gs[0, 5])
+    gt_const1_ax = fig.add_subplot(gs[0, 6])
+    gt_const2_ax = fig.add_subplot(gs[0, 7])  # now moved to same row (visually grouped)
+
+    im_wrist_ax = fig.add_subplot(gs[2, 4])
+    im_front_ax = fig.add_subplot(gs[2, 5])
+    im_const1_ax = fig.add_subplot(gs[2, 6])
+    im_const2_ax = fig.add_subplot(gs[2, 7])  # also aligned
 
     frames = []
 
+    def prepare_img(img):
+        if img.dtype == np.float16:
+            img = img.astype(np.float32)
+        if img.max() <= 1.0:
+            img = (img * 255).clip(0, 255)
+        return img.astype(np.uint8)
+
     for t in range(T):
-        # Clear all axes
         for ax in [
             gt_graph_ax,
             im_graph_ax,
             gt_wrist_ax,
             gt_front_ax,
+            gt_const1_ax,
+            gt_const2_ax,
             im_wrist_ax,
             im_front_ax,
+            im_const1_ax,
+            im_const2_ax,
         ]:
             ax.clear()
 
-        # Plot graphs
+        # Plotting graphs
         time = np.arange(t + 1)
-
-        # Save handles outside the loop for global legend
         (line_ken,) = gt_graph_ax.plot([], [], color="red", label="Ken Fail")
-        (line_cos,) = gt_graph_ax.plot([], [], color="blue", label="Cosine Sim")
+        (line_cos_prox,) = gt_graph_ax.plot(
+            [], [], color="blue", label="Proxies Cos Sim"
+        )
+        (line_cos_const1,) = gt_graph_ax.plot(
+            [], [], color="orange", label="Constraint 1 Cos Sim"
+        )
+        (line_cos_const2,) = gt_graph_ax.plot(
+            [], [], color="purple", label="Constraint 2 Cos Sim"
+        )
+        (line_gt,) = gt_graph_ax.plot(
+            [], [], color="green", linestyle="--", label="Ground Truth Fail Label"
+        )
 
         for ax, key in zip([gt_graph_ax, im_graph_ax], ["ground_truth", "imagination"]):
-            (line1,) = ax.plot(time, output[key]["ken_fail"][: t + 1], color="red")
-            (line2,) = ax.plot(time, output[key]["cosine_sim"][: t + 1], color="blue")
-            ax.set_ylim(-1, 1)
+            ax.plot(time, output[key]["ken_fail"][: t + 1], color="red")
+            ax.plot(time, output[key]["cosine_sim_prox"][: t + 1], color="blue")
+            ax.plot(time, output[key]["cosine_sim_const1"][: t + 1], color="orange")
+            ax.plot(time, output[key]["cosine_sim_const2"][: t + 1], color="purple")
+            ax.plot(
+                time,
+                output[key]["gt_fail_label"][: t + 1],
+                color="green",
+                linestyle="--",
+            )
+            ax.set_ylim(-2, 2)
             ax.set_xlim(0, T)
             ax.set_ylabel("l(z)")
             ax.set_xlabel("Time")
             ax.set_title(f"{key.replace('_', ' ').title()} Graph")
 
-        # Add global legend at the top center
         fig.legend(
-            handles=[line_ken, line_cos],
-            labels=["Ken Fail", "Cosine Sim"],
+            handles=[
+                line_ken,
+                line_cos_prox,
+                line_cos_const1,
+                line_cos_const2,
+                line_gt,
+            ],
+            labels=[
+                "Ken Fail",
+                "Proxies Cos Sim",
+                "Const 1 Cos Sim",
+                "Const 2 Cos Sim",
+                "Ground Truth Fail Label",
+            ],
             loc="upper center",
-            bbox_to_anchor=(0.5, 0.98),  # center horizontally, top of figure
-            ncol=2,
+            bbox_to_anchor=(0.5, 0.98),
+            ncol=3,
             frameon=False,
         )
 
-        # Show current images
-        def prepare_img(img):
-            if img.dtype == np.float16:
-                img = img.astype(np.float32)
-            if img.max() <= 1.0:
-                img = (img * 255).clip(0, 255)
-            return img.astype(np.uint8)
-
+        # Show images
         gt_wrist_ax.imshow(prepare_img(output["ground_truth"]["imgs_wrist"][t]))
         gt_front_ax.imshow(prepare_img(output["ground_truth"]["imgs_front"][t]))
+        gt_const1_ax.imshow(prepare_img(output["ground_truth"]["img_constraint1"][0]))
+        gt_const2_ax.imshow(prepare_img(output["ground_truth"]["img_constraint2"][0]))
+
         im_wrist_ax.imshow(prepare_img(output["imagination"]["imgs_wrist"][t]))
         im_front_ax.imshow(prepare_img(output["imagination"]["imgs_front"][t]))
+        im_const1_ax.imshow(prepare_img(output["imagination"]["img_constraint1"][0]))
+        im_const2_ax.imshow(prepare_img(output["imagination"]["img_constraint2"][0]))
 
-        for ax in [gt_wrist_ax, gt_front_ax, im_wrist_ax, im_front_ax]:
+        for ax, title in zip(
+            [gt_wrist_ax, gt_front_ax, gt_const1_ax, gt_const2_ax],
+            ["Wrist View", "Front View", "Constraint 1", "Constraint 2"],
+        ):
+            ax.set_title(title)
             ax.axis("off")
 
-        gt_wrist_ax.set_title("Wrist View")
-        gt_front_ax.set_title("Front View")
-        im_wrist_ax.set_title("Wrist View")
-        im_front_ax.set_title("Front View")
+        for ax, title in zip(
+            [im_wrist_ax, im_front_ax, im_const1_ax, im_const2_ax],
+            ["Wrist View", "Front View", "Constraint 1", "Constraint 2"],
+        ):
+            ax.set_title(title)
+            ax.axis("off")
 
-        # Render and capture frame
+        # Render and save frame
         canvas.draw()
         renderer = canvas.get_renderer()
-        buf = np.asarray(renderer.buffer_rgba())[:, :, :3]  # get RGB, discard alpha
+        buf = np.asarray(renderer.buffer_rgba())[:, :, :3]
         frames.append(buf.copy())
 
-    # Save the video/gif
+    # Save video/gif
     imageio.mimsave(save_path, frames, fps=fps)
     print(f"Saved to {save_path}")
 
@@ -245,14 +305,43 @@ if __name__ == "__main__":
         num_frames=BL - 1,
         dropout=0.1,
     ).to(device)
-    # transition.load_state_dict(torch.load("../checkpoints_pa/encoder_0.1.pth"))
+    transition.load_state_dict(torch.load("../checkpoints_pa/encoder_0.1.pth"))
+
+    # transition.load_state_dict(torch.load("../checkpoints/best_classifier.pth"))
     transition.eval()
 
     decoder = VQVAE().to(device)
-    # decoder.load_state_dict(torch.load("../checkpoints/testing_decoder.pth"))
+    decoder.load_state_dict(torch.load("../checkpoints/testing_decoder.pth"))
     decoder.eval()
 
+    constraint1 = {
+        "wrist": database[7]["robot0_eye_in_hand_image"][82],
+        "front": database[7]["agentview_image"][82],
+    }  # weak unsafe frame
+    constraint2 = {
+        "wrist": database[1]["robot0_eye_in_hand_image"][108],
+        "front": database[1]["agentview_image"][108],
+    }  # unsafe frame
+
+    for data, constraint, t in zip(
+        [database[7], database[1]], [constraint1, constraint2], [82, 108]
+    ):
+        inputs2 = data["cam_rs_embd"][t : BL - 1 + t, :].to(device).unsqueeze(0)
+        inputs1 = data["cam_zed_embd"][t : BL - 1 + t, :].to(device).unsqueeze(0)
+        acs = data["action"][t : BL - 1 + t, :].to(device).unsqueeze(0)
+        acs = normalize_acs(acs, device=device)
+        states = data["state"][t : BL - 1 + t, :].to(device).unsqueeze(0)
+
+        __, __, __, __, semantic_feat = transition(
+            inputs1,
+            inputs2,
+            states,
+            acs,
+        )
+        constraint.update({"semantic_feat": semantic_feat.squeeze()[-1]})
+
     for traj_id in range(len(database)):
+        # Select weak_unsafe frame
         data = database[traj_id]
         traj_length = data["action"].shape[0]
 
@@ -277,14 +366,24 @@ if __name__ == "__main__":
             "imagination": {
                 "imgs_wrist": [],
                 "imgs_front": [],
+                "img_constraint1": constraint1["front"].unsqueeze(0).cpu().numpy(),
+                "img_constraint2": constraint2["front"].unsqueeze(0).cpu().numpy(),
                 "ken_fail": [],
-                "cosine_sim": [],
+                "cosine_sim_prox": [],
+                "cosine_sim_const1": [],
+                "cosine_sim_const2": [],
+                "gt_fail_label": [],
             },
             "ground_truth": {
                 "imgs_wrist": [],
                 "imgs_front": [],
+                "img_constraint1": constraint1["front"].unsqueeze(0).cpu().numpy(),
+                "img_constraint2": constraint2["front"].unsqueeze(0).cpu().numpy(),
                 "ken_fail": [],
-                "cosine_sim": [],
+                "cosine_sim_prox": [],
+                "cosine_sim_const1": [],
+                "cosine_sim_const2": [],
+                "gt_fail_label": [],
             },
         }
 
@@ -319,9 +418,7 @@ if __name__ == "__main__":
 
                     # Compute cosine similarity
                     cos_sim_matrix = queries_norm @ proxies_norm.T
-                    cos_sim_fail = (
-                        F.softmax(cos_sim_matrix, dim=1)[-1, -1].item() * 2 - 1
-                    )
+                    cos_sim_fail = -cos_sim_matrix[-1, -1].item()
 
                     # Decode images
                     pred_img, __ = decoder(torch.cat([inp1, inp2], dim=0))
@@ -331,16 +428,33 @@ if __name__ == "__main__":
             pred1 = pred1.squeeze().permute(0, 2, 3, 1)
             pred2 = pred2.squeeze().permute(0, 2, 3, 1)
 
-            output["imagination"]["imgs_front"].append(pred1.cpu().numpy()[-1])
-            output["imagination"]["imgs_wrist"].append(pred2.cpu().numpy()[-1])
+            output["imagination"]["imgs_front"].append(pred1.cpu().numpy()[-1] * 255.0)
+            output["imagination"]["imgs_wrist"].append(pred2.cpu().numpy()[-1] * 255.0)
             output["imagination"]["ken_fail"].append(
-                pred_fail.squeeze().cpu().numpy()[-1]
+                pred_fail.detach().squeeze().cpu().numpy()[-1]
             )
-            output["imagination"]["cosine_sim"].append(cos_sim_fail)
+            output["imagination"]["cosine_sim_prox"].append(cos_sim_fail)
+            output["imagination"]["cosine_sim_const1"].append(
+                -F.cosine_similarity(
+                    semantic_feat.squeeze()[-1], constraint1["semantic_feat"], dim=0
+                ).item()
+            )
+            output["imagination"]["cosine_sim_const2"].append(
+                -F.cosine_similarity(
+                    semantic_feat.squeeze()[-1], constraint2["semantic_feat"], dim=0
+                ).item()
+            )
+            output["imagination"]["gt_fail_label"].append(
+                -2 * data["failure"][t + BL - 1].cpu().numpy() + 1
+            )
 
-            front_hist = torch.cat([front_hist[:, 1:], inp1[:, [-1]]], dim=1)
-            wrist_hist = torch.cat([wrist_hist[:, 1:], inp2[:, [-1]]], dim=1)
-            state_hist = torch.cat([state_hist[:, 1:], state[:, [-1]]], dim=1)
+            input2_gt = data["cam_rs_embd"][[t + BL - 1], :].to(device).unsqueeze(0)
+            input1_gt = data["cam_zed_embd"][[t + BL - 1], :].to(device).unsqueeze(0)
+            state_gt = data["state"][[t + BL - 1], :].to(device).unsqueeze(0)
+
+            front_hist = torch.cat([front_hist[:, 1:], input1_gt[:, [-1]]], dim=1)
+            wrist_hist = torch.cat([wrist_hist[:, 1:], input2_gt[:, [-1]]], dim=1)
+            state_hist = torch.cat([state_hist[:, 1:], state_gt[:, [-1]]], dim=1)
 
         # Do ground truth images
         inputs2 = data["cam_rs_embd"][0 : BL - 1, :].to(device).unsqueeze(0)
@@ -374,10 +488,6 @@ if __name__ == "__main__":
                         front_hist, wrist_hist, state_hist, ac_hist
                     )
 
-                    # Generate predictions
-                    inp1 = transition.front_head(latent)
-                    inp2 = transition.wrist_head(latent)
-                    state = transition.state_pred(latent)
                     pred_fail = transition.failure_pred(latent)
 
                     # Calculate cos sim for failure margin
@@ -391,9 +501,7 @@ if __name__ == "__main__":
 
                     # Compute cosine similarity
                     cos_sim_matrix = queries_norm @ proxies_norm.T
-                    cos_sim_fail = (
-                        F.softmax(cos_sim_matrix, dim=1)[-1, -1].item() * 2 - 1
-                    )
+                    cos_sim_fail = -cos_sim_matrix[-1, -1].item()
 
             inputs2 = data["cam_rs_embd"][[t + BL - 1], :].to(device).unsqueeze(0)
             inputs1 = data["cam_zed_embd"][[t + BL - 1], :].to(device).unsqueeze(0)
@@ -417,9 +525,22 @@ if __name__ == "__main__":
                 .numpy()[-1]
             )
             output["ground_truth"]["ken_fail"].append(
-                ken_fail.squeeze().cpu().numpy()[-1]
+                ken_fail.detach().squeeze().cpu().numpy()[-1]
             )
-            output["ground_truth"]["cosine_sim"].append(cos_sim_fail)
+            output["ground_truth"]["cosine_sim_const1"].append(
+                -F.cosine_similarity(
+                    semantic_feat.squeeze()[-1], constraint1["semantic_feat"], dim=0
+                ).item()
+            )
+            output["ground_truth"]["cosine_sim_const2"].append(
+                -F.cosine_similarity(
+                    semantic_feat.squeeze()[-1], constraint2["semantic_feat"], dim=0
+                ).item()
+            )
+            output["ground_truth"]["cosine_sim_prox"].append(cos_sim_fail)
+            output["ground_truth"]["gt_fail_label"].append(
+                -2 * data["failure"][t + BL - 1].cpu().numpy() + 1
+            )
 
         make_comparison_video(
             output_dict=output, save_path=f"results/output_video_{traj_id}.gif", fps=5
