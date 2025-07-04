@@ -424,7 +424,17 @@ for iter in range(warmup + args.total_episodes):
             args.task
         )  # .split("-")[:-1]  # Take everything before the last dash
 
-        wandb_name = f"{task_name}_DDPG_sim_{config.safety_margin_type}_{config.safety_margin_threshold}_{config.wm_name}"
+        wb_name_args = [
+            f"{task_name}",
+            "DDPG",
+            f"dist_type_{config.env_dist_type}",
+            f"sim_{config.safety_margin_type}_{config.safety_margin_threshold}{'*' if config.safety_margin_hard_threshold else ''}",
+            f"{config.wm_name}",
+        ]
+        wandb_name = ""
+        for arg in wb_name_args:
+            wandb_name += f"{arg}_"
+        wandb_name = wandb_name[:-1]  # Remove the last underscore
         logger = WandbLogger(name=wandb_name, project="Dubins", config=config)
         logger.load(writer)
     logger = TensorboardLogger(writer)
@@ -446,17 +456,23 @@ for iter in range(warmup + args.total_episodes):
     )
 
     save_best_fn(policy, epoch=epoch)
-    plot1, plot2, plot3, metrics = env.get_eval_plot(
-        cache=cache, thetas=thetas, config=config, policy=policy
-    )
-    wandb.log(
-        {
-            "binary_reach_avoid_plot": wandb.Image(plot1),
-            "continuous_plot": wandb.Image(plot2),
-            "safety_margin_function": wandb.Image(plot3),
-            **{f"metric/{k}": v for k, v in metrics.items()},
-        }
-    )
+    for in_dist in [True, False]:
+        plot1, plot2, plot3, metrics = env.get_eval_plot(
+            cache=cache,
+            thetas=thetas,
+            config=config,
+            policy=policy,
+            in_distribution=in_dist,
+        )
+        in_dist_label = "in_dist" if in_dist else "out_dist"
+        wandb.log(
+            {
+                f"{in_dist_label}/binary_reach_avoid_plot": wandb.Image(plot1),
+                f"{in_dist_label}/continuous_plot": wandb.Image(plot2),
+                f"{in_dist_label}/safety_margin_function": wandb.Image(plot3),
+                **{f"{in_dist_label}/metric/{k}": v for k, v in metrics.items()},
+            }
+        )
 
     traj_imgs = env.get_trajectory(policy=policy)
     wandb.log(

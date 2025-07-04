@@ -6,6 +6,7 @@ import einops
 import gymnasium  # as gym
 import numpy as np
 import torch
+import torch.nn as nn
 
 import PyHJ
 import wandb
@@ -232,11 +233,13 @@ def get_latent(
     return feat.squeeze().cpu().numpy(), stoch, deter
 
 
-def topographic_map(config, cache, thetas, constraint_state, similarity_metric):
+def topographic_map(
+    config, cache, thetas, constraint_state, similarity_metric, model=None
+):
     if constraint_state[-1] is None:
         constraint_states = [
-            np.array(constraint_state[0], constraint_state[1], t)
-            for t in np.linspace(0, 2 * np.pi, 5)
+            np.array([constraint_state[0], constraint_state[1], t])
+            for t in np.linspace(0, 2 * np.pi, 9)
         ]
         constraint_states = torch.tensor(constraint_states, dtype=torch.float32)
     else:
@@ -248,37 +251,82 @@ def topographic_map(config, cache, thetas, constraint_state, similarity_metric):
         constraint_img = get_frame(states=constraint_state, config=config)  # (H, W, C)
         constraint_imgs.append(constraint_img)
 
-    import ipdb
+    # Safety state
+    safe_states = []
+    for constraint_state in constraint_states:
+        safe_state = torch.tensor(
+            [-constraint_state[0], -constraint_state[1], constraint_state[2] + np.pi],
+        )
+        safe_states.append(safe_state)
 
-    ipdb.set_trace()
+    safe_states = torch.stack(safe_states, dim=0)
+
+    safe_imgs = []
+    for safe_state in safe_states:
+        safe_state = torch.tensor(safe_state, dtype=torch.float32)
+        safe_img = get_frame(states=safe_state, config=config)  # (H, W, C)
+        safe_imgs.append(safe_img)
 
     with torch.no_grad():
-        feat_c, stoch_c, deter_c = get_latent(
+        feat_c, stoch_c, deter_c = get_latent(  # [N, Z]
             wm, thetas=np.array(constraint_states[:, -1]), imgs=constraint_imgs
         )
+        if feat_c.ndim == 1:
+            feat_c = feat_c.reshape(1, -1)  # [1, Z]
+
+        feat_s, __, __ = get_latent(  # [N, Z]
+            wm, thetas=np.array(safe_states[:, -1]), imgs=safe_imgs
+        )
+        if feat_s.ndim == 1:
+            feat_s = feat_s.reshape(1, -1)
 
     idxs, __, __ = cache[thetas[0]]
-    feat_c = einops.repeat(feat_c, "N C -> B N C", B=idxs.shape[0])
+    feat_c = einops.repeat(feat_c, "N C -> B N C", B=idxs.shape[0])  # [B, N, Z]
+    feat_s = einops.repeat(feat_s, "N C -> B N C", B=idxs.shape[0])  # [B, N, Z]
 
     fig, axes = plt.subplots(
-        1, len(thetas), figsize=(3 * len(thetas), 5), constrained_layout=True
+        1, len(thetas) + 2, figsize=(3 * len(thetas), 5), constrained_layout=True
     )
 
     for i in range(len(thetas)):
         theta = thetas[i]
+        i += 2  # offset for constraint and safe images
         axes[i].set_title(f"theta = {theta:.2f}")
         idxs, imgs_prev, thetas_prev = cache[theta]
         with torch.no_grad():
-            feat, stoch, deter = get_latent(wm, thetas_prev, imgs_prev)
+            feat, stoch, deter = get_latent(wm, thetas_prev, imgs_prev)  # [B, Z]
+            feat = einops.repeat(feat, "B C -> B N C", N=feat_c.shape[1])  # [B, N, Z]
         if similarity_metric == "Cosine_Similarity":  # negative cosine similarity
-            numerator = np.sum(feat * feat_c, axis=1)
-            denominator = np.linalg.norm(feat, axis=1) * np.linalg.norm(feat_c, axis=1)
-            metric = -numerator / (denominator + 1e-8)  # (N)
+            numerator = np.sum(feat * feat_c, axis=-1)  # (B, N)
+            denominator = np.linalg.norm(feat, axis=-1) * np.linalg.norm(  # (B, N)
+                feat_c, axis=-1
+            )
+            metric_const = -numerator / (denominator + 1e-8)  # (B, N)
+            metric_const = np.min(metric_const, axis=-1)  # (B,)
+
+            numerator = np.sum(feat * feat_s, axis=-1)  # (B, N)
+            denominator = np.linalg.norm(feat, axis=-1) * np.linalg.norm(  # (B, N)
+                feat_s, axis=-1
+            )
+            metric_safe = -numerator / (denominator + 1e-8)  # (B, N)
+            metric_safe = np.min(metric_safe, axis=-1)
+            metric = metric_const - np.clip(metric_safe, a_min=-0.5, a_max=0.5)  # (B,)
         elif similarity_metric == "Euclidean Distance":
-            metric = np.linalg.norm(feat - feat_c, axis=1)
+            metric = -np.linalg.norm(feat - feat_c, axis=-1)  # (B, N)
+            metric = np.min(metric, axis=-1)  # (B,)
+
+        elif similarity_metric == "Learned":
+            assert model is not None, (
+                "Model must be provided for learned similarity metric."
+            )
+            feat = torch.tensor(feat, dtype=torch.float32)
+            feat_c = torch.tensor(feat_c, dtype=torch.float32)
+            metric = torch.tanh(model(feat, feat_c))  # (B, N)
+            metric = metric.detach().cpu().numpy()  # (B, N)
+            metric = np.min(metric, axis=-1)  # (B,)
         else:
             raise ValueError(
-                f"Unknown similarity metric: {similarity_metric}. Supported: ['Cosine_Similarity', 'Euclidean Distance']"
+                f"Unknown similarity metric: {similarity_metric}. Supported: ['Cosine_Similarity', 'Euclidean Distance', 'Learned']"
             )
 
         metric = metric.reshape(config.nx, config.ny).T
@@ -290,22 +338,33 @@ def topographic_map(config, cache, thetas, constraint_state, similarity_metric):
         #     origin="lower",
         # )
 
-        x = np.linspace(-1, 1, metric.shape[1])
-        y = np.linspace(-1, 1, metric.shape[0])
+        x = np.linspace(-1.1, 1.1, metric.shape[1])
+        y = np.linspace(-1.1, 1.1, metric.shape[0])
         X, Y = np.meshgrid(x, y)
 
         contour = axes[i].contour(X, Y, metric, levels=5, colors="black", linewidths=1)
         axes[i].clabel(contour, inline=True, fontsize=8, fmt="%.2f")
 
-        axes[i].imshow(
+    for constraint_img in constraint_imgs:
+        # Show the constraint image on the topographic map
+        axes[0].imshow(
             constraint_img,
             extent=(config.x_min, config.x_max, config.y_min, config.y_max),
         )
+        axes[0].set_title("Constraint Image")
+
+    for safe_img in safe_imgs:
+        # Show the safe image on the topographic map
+        axes[1].imshow(
+            safe_img, extent=(config.x_min, config.x_max, config.y_min, config.y_max)
+        )
+        axes[1].set_title("Safe Image")
 
     # set axes limits
     for ax in axes:
         ax.set_xlim(-1.0, 1.0)
         ax.set_ylim(-1.0, 1.0)
+        ax.set_aspect("equal")
 
     fig.suptitle(f"Topographic Map using {similarity_metric}")
     plt.tight_layout()
@@ -317,7 +376,40 @@ cache = make_cache(config, thetas)
 logger = None
 warmup = 1
 
-similarity_metrics = ["Cosine_Similarity", "Euclidean Distance"]
+
+class SafetyMargin(nn.Module):
+    def __init__(self, input_dim, hidden_dims, output_dim):
+        super(SafetyMargin, self).__init__()
+        layers = []
+
+        # Create hidden layers
+        last_dim = input_dim
+        for hidden_dim in hidden_dims:
+            layers.append(nn.Linear(last_dim, hidden_dim))
+            layers.append(nn.SiLU())
+            last_dim = hidden_dim
+
+        # Final output layer (no activation here)
+        layers.append(nn.Linear(last_dim, output_dim))
+        # layers.append(nn.Tanh())  # Use Tanh to keep output in [-1, 1]
+
+        self.model = nn.Sequential(*layers)
+
+    def forward(self, z, z_const):
+        input = torch.cat((z, z_const), dim=-1)
+        return self.model(input)
+
+
+safety_margin = SafetyMargin(input_dim=2 * 544, hidden_dims=[512, 256], output_dim=1)
+# Load the pre-trained model
+model_path = "safety_margin_model.pth"
+if os.path.exists(model_path):
+    safety_margin.load_state_dict(torch.load(model_path, map_location=config.device))
+    print("Safety Margin model loaded successfully.")
+else:
+    print(f"Model file {model_path} not found. Using untrained model.")
+
+similarity_metrics = ["Cosine_Similarity", "Euclidean Distance", "Learned"]
 
 logger = WandbLogger(
     name=f"wm_Analysis_{config.wm_name}", config=config, project="Dubins"
@@ -325,7 +417,7 @@ logger = WandbLogger(
 
 for metric in similarity_metrics:
     constraint_list = [
-        [0.0, 0.0, None],  # x, y, theta
+        [0.0, 0.0, 0.0],  # 0.0],  # x, y, theta
         [0.5, 0.5, np.pi / 2],
         [-0.5, -0.5, -np.pi / 2],
         [0.5, -0.5, np.pi / 2],
@@ -343,6 +435,7 @@ for metric in similarity_metrics:
             thetas=thetas,
             constraint_state=constraint_state,
             similarity_metric=metric,
+            model=safety_margin if metric == "Learned" else None,
         )
 
         wandb.log(

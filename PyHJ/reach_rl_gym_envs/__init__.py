@@ -1,4 +1,5 @@
 """Registers the internal gym envs then loads the env plugins for module using the entry point."""
+
 from typing import Any
 
 from gymnasium.envs.registration import (
@@ -10,29 +11,8 @@ from gymnasium.envs.registration import (
     spec,
 )
 
+# Customized environments begin:
 
-
-# Customized environments begin: 
-
-
-register(
-    id='ra_highway_Game-v2',
-    entry_point='PyHJ.reach_rl_gym_envs.ra_highway_10d:Highway_10D_game_Env2',
-    max_episode_steps = 400, # horizon of the problem
-    reward_threshold=1e8,
-)
-register(
-    id="ra_droneracing_Game-v6",
-    entry_point="PyHJ.reach_rl_gym_envs.Double_Drones_RA_linear:Double_Drones_RA_linear_Game_Env6",
-    max_episode_steps=200,
-    reward_threshold=1e8
-)
-register(
-    id="ra_1d_Game-v0",
-    entry_point="PyHJ.reach_rl_gym_envs.ra_1d:LQR_Env",
-    max_episode_steps=1000,
-    reward_threshold=1e8,
-)
 
 register(
     id="dubins-v0",
@@ -62,3 +42,9 @@ register(
     reward_threshold=1e8,
 )
 
+register(
+    id="franka_wm_DINO-v0",
+    entry_point="PyHJ.reach_rl_gym_envs.franka-DINOwm:Franka_DINOWM_Env",
+    max_episode_steps=10,
+    reward_threshold=1e8,
+)

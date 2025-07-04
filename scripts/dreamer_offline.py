@@ -256,20 +256,19 @@ class Dreamer(nn.Module):
 
                     # failure margin
                     lx_loss = 0.0
-                    if "margin" in wm.heads.keys():
-                        failure_data = data["failure"]
-                        safe_data = torch.where(failure_data == 0.0)
-                        unsafe_data = torch.where(failure_data == 1.0)
-                        safe_dataset = feat[safe_data]
-                        unsafe_dataset = feat[unsafe_data]
-                        pos = wm.heads["margin"](safe_dataset)
-                        neg = wm.heads["margin"](unsafe_dataset)
+                    failure_data = data["failure"]
+                    safe_data = torch.where(failure_data == 0.0)
+                    unsafe_data = torch.where(failure_data == 1.0)
+                    safe_dataset = feat[safe_data]
+                    unsafe_dataset = feat[unsafe_data]
+                    pos = wm.heads["margin"](safe_dataset)
+                    neg = wm.heads["margin"](unsafe_dataset)
 
-                        gamma = self._config.gamma_lx
-                        if pos.numel() > 0:
-                            lx_loss += torch.relu(gamma - pos).mean()
-                        if neg.numel() > 0:
-                            lx_loss += torch.relu(gamma + neg).mean()
+                    gamma = self._config.gamma_lx
+                    if pos.numel() > 0:
+                        lx_loss += torch.relu(gamma - pos).mean()
+                    if neg.numel() > 0:
+                        lx_loss += torch.relu(gamma + neg).mean()
 
                     lx_loss *= self._config.margin_head["loss_scale"]
                     if step < 3000:
