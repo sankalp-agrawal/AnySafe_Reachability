@@ -341,10 +341,10 @@ if __name__ == "__main__":
         constraint.update({"semantic_feat": semantic_feat.squeeze()[-1]})
 
     for traj_id in range(len(database)):
-        # Select weak_unsafe frame
         data = database[traj_id]
         traj_length = data["action"].shape[0]
 
+        # Imagination Rollouts
         inputs2 = data["cam_rs_embd"][0 : BL - 1, :].to(device).unsqueeze(0)
         inputs1 = data["cam_zed_embd"][0 : BL - 1, :].to(device).unsqueeze(0)
         acs = data["action"][0 : BL - 1, :].to(device).unsqueeze(0)
@@ -387,8 +387,11 @@ if __name__ == "__main__":
             },
         }
 
+        # Imagination Loop
         for t in range(traj_length - BL + 1):
-            ac_torch = action = data["action"][[t + BL - 1], :].to(device).unsqueeze(0)
+            ac_torch = action = normalize_acs(
+                data["action"][[t + BL - 1], :].to(device).unsqueeze(0)
+            )
 
             ac_hist = torch.cat([ac_hist[:, 1:], ac_torch], dim=1)
 
@@ -463,22 +466,18 @@ if __name__ == "__main__":
         acs = normalize_acs(acs, device=device)
         states = data["state"][0 : BL - 1, :].to(device).unsqueeze(0)
 
-        inp1, inp2, state, pred_fail, semantic_feat = transition(
-            inputs1,
-            inputs2,
-            states,
-            acs,
-        )
-        front_hist = torch.cat([inputs1[:, 1:], inp1[:, [-1]]], dim=1)
-        wrist_hist = torch.cat([inputs2[:, 1:], inp2[:, [-1]]], dim=1)
-        state_hist = torch.cat([states[:, 1:], state[:, [-1]]], dim=1)
+        # inp1, inp2, state, pred_fail, semantic_feat = transition(
+        #     inputs1,
+        #     inputs2,
+        #     states,
+        #     acs,
+        # )
+        front_hist = inputs1
+        wrist_hist = inputs2
+        state_hist = states
         ac_hist = acs
 
         for t in range(traj_length - BL + 1):
-            ac_torch = action = data["action"][[t + BL - 1], :].to(device).unsqueeze(0)
-
-            ac_hist = torch.cat([ac_hist[:, 1:], ac_torch], dim=1)
-
             with torch.autocast(
                 device_type="cuda", dtype=torch.float16, enabled=use_amp
             ):
@@ -512,6 +511,7 @@ if __name__ == "__main__":
             front_hist = torch.cat([front_hist[:, 1:], inputs1[:, [-1]]], dim=1)
             wrist_hist = torch.cat([wrist_hist[:, 1:], inputs2[:, [-1]]], dim=1)
             state_hist = torch.cat([state_hist[:, 1:], states[:, [-1]]], dim=1)
+            ac_hist = torch.cat([ac_hist[:, 1:], acs], dim=1)
 
             ken_fail = pred_fail
 
