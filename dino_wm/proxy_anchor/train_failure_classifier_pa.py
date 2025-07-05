@@ -6,7 +6,6 @@ import sys
 
 import einops
 import h5py
-import matplotlib.cm as cm
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -15,6 +14,7 @@ import umap.umap_ as umap
 import wandb
 from dino_wm.dino_models import VideoTransformer, normalize_acs
 from dino_wm.test_loader import SplitTrajectoryDataset
+from matplotlib import colormaps
 from proxy_anchor.code import losses
 from scipy.stats import gaussian_kde
 from sklearn.metrics import (
@@ -26,6 +26,7 @@ from sklearn.metrics import (
 )
 from torch.utils.data import DataLoader, Subset
 from tqdm import *
+from utils import load_state_dict_flexible
 from viz_traj_cosine_sim import data_from_traj
 
 base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -126,16 +127,18 @@ wandb.config.update(args)
 
 # Dataset Loader and Sampler
 BS = args.sz_batch  # batch size
-BL = 4
+BL = 1
 
 hdf5_file = "/home/sunny/data/skittles/consolidated.h5"
 hdf5_file_test = "/home/sunny/data/skittles/vlog-test-labeled/consolidated.h5"
 
 expert_data = SplitTrajectoryDataset(hdf5_file, BL, split="train", num_test=0)
 expert_data_eval = SplitTrajectoryDataset(hdf5_file_test, BL, split="train", num_test=0)
+# expert_data_eval = SplitTrajectoryDataset(hdf5_file, BL, split="test", num_test=30)
 
 expert_loader = DataLoader(expert_data, batch_size=BS, shuffle=True)
 expert_loader_eval = DataLoader(expert_data_eval, batch_size=10, shuffle=True)
+# expert_loader_eval = DataLoader(expert_data_eval, batch_size=BS, shuffle=True)
 
 device = "cuda:0"
 
@@ -143,6 +146,7 @@ nb_classes = 2  # Safe and Failure
 
 # Backbone Model
 LOG_DIR = "logs_pa"
+
 
 model = VideoTransformer(
     image_size=(224, 224),
@@ -155,7 +159,8 @@ model = VideoTransformer(
     num_frames=BL - 1,
     dropout=0.1,
 ).to(device)
-model.load_state_dict(torch.load("../checkpoints/best_classifier.pth"))
+# model.load_state_dict(torch.load("../checkpoints/best_classifier.pth"), strict=False)
+load_state_dict_flexible(model, "../checkpoints/best_classifier.pth")
 # model.load_state_dict(torch.load("../checkpoints_pa/encoder_0.1.pth"))
 
 for name, param in model.named_parameters():
@@ -207,7 +212,7 @@ losses_list = []
 best_epoch = 0
 best_eval = -float("inf")
 
-for epoch in range(0, args.nb_epochs):
+for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
     model.train()
 
     losses_per_epoch = []
@@ -223,25 +228,29 @@ for epoch in range(0, args.nb_epochs):
     loader_subset = DataLoader(subset, batch_size=BS, shuffle=True)
 
     # pbar = tqdm(enumerate(expert_loader))
-    pbar = tqdm(enumerate(loader_subset), total=len(loader_subset))
+    pbar = tqdm(
+        enumerate(loader_subset), total=len(loader_subset), position=1, leave=False
+    )
 
     for batch_idx, data in pbar:
-        labels_gt = data["failure"][:, 1:].to(device, dtype=torch.float32)
+        labels_gt = data["failure"][:].to(device, dtype=torch.float32)
 
-        data1 = data["cam_zed_embd"].to(device)  # [B BL, 256, 384]
-        data2 = data["cam_rs_embd"].to(device)  # [B BL, 256, 384]
-        inputs1 = data1[:, :-1]  # [B BL-1, 256, 384]
-        inputs2 = data2[:, :-1]  # [B BL-1, 256, 384]
+        data1 = data["cam_zed_embd"].to(device)  # [B 1, 256, 384]
+        data2 = data["cam_rs_embd"].to(device)  # [B 1, 256, 384]
+        inputs1 = data1[:, -1:]  # [B 1, 256, 384]
+        inputs2 = data2[:, -1:]  # [B 1, 256, 384]
 
         data_state = data["state"].to(device)
-        states = data_state[:, :-1]  # [B BL-1, 8]
+        states = data_state[:, -1:]  # [B 1, 8]
 
         data_acs = data["action"].to(device)
-        acs = data_acs[:, :-1]  # [B BL-1, 10]
+        acs = data_acs[:, -1:]  # [B 1, 10]
         acs = normalize_acs(acs, device)
 
         with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=True):
-            __, __, __, __, semantic_features = model(inputs1, inputs2, states, acs)
+            semantic_features = model.semantic_embed(
+                inp1=inputs1, inp2=inputs2, state=states
+            )
 
         unsafe_weak_mask = labels_gt == 2.0
         labels_gt_masked = copy.deepcopy(labels_gt)
@@ -293,11 +302,8 @@ for epoch in range(0, args.nb_epochs):
         opt.step()
 
         pbar.set_description(
-            "Train Epoch: {} [{}/{} ({:.0f}%)] Loss: {:.6f}".format(
+            "Train Epoch: {} Loss: {:.6f}".format(
                 epoch,
-                batch_idx + 1,
-                len(loader_subset),
-                100.0 * batch_idx / len(loader_subset),
                 loss.item(),
             )
         )
@@ -312,55 +318,49 @@ for epoch in range(0, args.nb_epochs):
         for data, constraint, t in zip(
             [database[7], database[1]], [constraint1, constraint2], [82, 108]
         ):
-            inputs2 = data["cam_rs_embd"][t : BL - 1 + t, :].to(device).unsqueeze(0)
-            inputs1 = data["cam_zed_embd"][t : BL - 1 + t, :].to(device).unsqueeze(0)
-            acs = data["action"][t : BL - 1 + t, :].to(device).unsqueeze(0)
-            acs = normalize_acs(acs, device=device)
-            states = data["state"][t : BL - 1 + t, :].to(device).unsqueeze(0)
-
-            __, __, __, __, semantic_feat = model(
-                inputs1,
-                inputs2,
-                states,
-                acs,
+            inputs2 = (  # [1, 1, 256, 384]
+                data["cam_rs_embd"][[t], :].to(device).unsqueeze(0)
             )
-            constraint.update({"semantic_feat": semantic_feat.squeeze()[-1]})
+            inputs1 = (  # [1, 1, 256, 384]
+                data["cam_zed_embd"][[t], :].to(device).unsqueeze(0)
+            )
+            # acs = data["action"][t, :].to(device).unsqueeze(0)
+            # acs = normalize_acs(acs, device=device)
+            states = data["state"][[t], :].to(device).unsqueeze(0)  # [1, 1, 8]
 
-        accuracies = []
-        metrics = {
-            "Accuracy": [],
-            "Precision": [],
-            "Recall": [],
-            "F1-score": [],
-            "Balanced Accuracy": [],
-            "Proxy Anchor Loss": [],
-            # "Cross Entropy Loss": [],
-        }
+            semantic_feat = model.semantic_embed(  # [embedding_dim]
+                inp1=inputs1, inp2=inputs2, state=states
+            )
+            constraint.update({"semantic_feat": semantic_feat.squeeze()})
+
+        metrics = {}
         X = []
         y = []
+        y_pred = []
         with torch.no_grad():
-            print("**Evaluating...**")
-            for batch_idx, data in enumerate(expert_loader_eval):
-                # print(batch_idx)
-                labels_gt = data["failure"][:, 1:].to(device, dtype=torch.float32)
+            pbar = tqdm(
+                enumerate(expert_loader_eval),
+                total=len(expert_loader_eval),
+                desc="Evaluation",
+                position=2,
+                leave=False,
+            )
+            for batch_idx, data in pbar:
+                labels_gt = data["failure"][:, -1:].to(
+                    device, dtype=torch.float32
+                )  # [B, 1]
 
-                data1 = data["cam_zed_embd"].to(device)
-                data2 = data["cam_rs_embd"].to(device)
-                inputs1 = data1[:, :-1]
-                output1 = data1[:, 1:]
+                inputs2 = (  # [B, 1, 256, 384]
+                    data["cam_rs_embd"][:, -1:].to(device)
+                )
+                inputs1 = (  # [B, 1, 256, 384]
+                    data["cam_zed_embd"][:, -1:].to(device)
+                )
+                states = data["state"][:, -1:].to(device)  # [B, 1, 8]
 
-                inputs2 = data2[:, :-1]
-                output2 = data2[:, 1:]
-
-                data_state = data["state"].to(device)
-                states = data_state[:, :-1]
-                output_state = data_state[:, 1:]
-
-                data_acs = data["action"].to(device)
-                acs = data_acs[:, :-1]
-                acs = normalize_acs(acs, device)
-
-                __, __, __, __, semantic_features = model(inputs1, inputs2, states, acs)
+                semantic_features = model.semantic_embed(  # [embedding_dim]
+                    inp1=inputs1, inp2=inputs2, state=states
+                )
 
                 unsafe_weak_mask = labels_gt == 2.0
                 labels_gt_masked = copy.deepcopy(labels_gt)
@@ -369,13 +369,13 @@ for epoch in range(0, args.nb_epochs):
                 # Normalize all vectors for cosine similarity
                 semantic_features_norm = F.normalize(
                     semantic_features, dim=-1
-                )  # (10, 3, 512)
+                )  # (10, 1, 512)
                 proxies_norm = F.normalize(criterion.proxies, dim=-1)  # (2, 512)
 
-                # Broadcastable shapes: (10, 3, 1, 512) and (1, 1, 2, 512)
+                # Broadcastable shapes: (10, 1, 1, 512) and (1, 1, 2, 512)
                 semantic_features_exp = einops.rearrange(
                     semantic_features_norm, "B T Z -> B T 1 Z"
-                )  # (10, 3, 1, 512)
+                )  # (BS, T, 1, 512)
                 proxies_exp = einops.rearrange(
                     proxies_norm, "L Z -> 1 1 L Z"
                 )  # (1, 1, 2, 512)
@@ -383,58 +383,50 @@ for epoch in range(0, args.nb_epochs):
                 # Compute cosine similarity
                 cos_sim = (semantic_features_exp * proxies_exp).sum(
                     dim=-1
-                )  # (10, 3, 2)
+                )  # (10, 1, 2)
 
                 # Choose the index (0 or 1) of the most similar vector
-                logits = F.softmax(cos_sim, dim=-1)  # (10, 3, 2)
-                pred_labels = logits.argmax(dim=-1)  # (10, 3)
-
-                pred_labels = (
-                    einops.rearrange(pred_labels, "B T -> (B T)").cpu().numpy()
-                )  # Flatten
-                gt_labels = (
-                    einops.rearrange(labels_gt_masked, "B T -> (B T)").cpu().numpy()
-                )  # Flatten
-                cos_sim = einops.rearrange(cos_sim, "B T L -> (B T) L").cpu().numpy()
+                logits = F.softmax(cos_sim, dim=-1)  # (10, 1, 2)
+                pred_labels = logits.argmax(dim=-1)  # (10, 1)
 
                 X.append(semantic_features.cpu().numpy())
                 y.append(labels_gt.cpu().numpy())
+                y_pred.append(pred_labels.cpu().numpy())
 
-                accuracies.append(accuracy_score(gt_labels, pred_labels))
+            X = einops.rearrange(np.concatenate(X, axis=0), "B T Z -> (B T) Z")
+            y = einops.rearrange(np.concatenate(y, axis=0), "B T -> (B T)")
+            y_pred = einops.rearrange(np.concatenate(y_pred, axis=0), "B T -> (B T)")
+            num_classes_eval = len(np.unique(y))
 
-                # Calculate metrics
-                metrics["Accuracy"].append(accuracy_score(gt_labels, pred_labels))
-                metrics["Precision"].append(
-                    precision_score(
-                        gt_labels, pred_labels, average="macro", zero_division=0
-                    )
-                )
-                metrics["Recall"].append(
-                    recall_score(
-                        gt_labels, pred_labels, average="macro", zero_division=0
-                    )
-                )
-                metrics["F1-score"].append(
-                    f1_score(gt_labels, pred_labels, average="macro", zero_division=0)
-                )
-                metrics["Balanced Accuracy"].append(accuracies[-1])
-                metrics["Proxy Anchor Loss"].append(
-                    criterion(
-                        X=semantic_features.float(), T=labels_gt_masked.squeeze().cuda()
-                    )
-                    .detach()
-                    .cpu()
-                    .numpy()
-                )
-                # metrics["Cross Entropy Loss"].append(
-                #     F.cross_entropy(cos_sim, gt_labels, reduction="mean").item()
-                # )
+            y_gt_masked = copy.deepcopy(y)
+            y_gt_masked[y == 2] = 1  # Set weak unsafe to unsafe
 
-        balanced_accuracy = np.mean(accuracies)
-
-        X = einops.rearrange(np.concatenate(X, axis=0), "B T Z -> (B T) Z")
-        y = einops.rearrange(np.concatenate(y, axis=0), "B T -> (B T)")
-        num_classes_eval = len(np.unique(y))
+            # Calculate metrics
+            metrics["Accuracy"] = balanced_accuracy = accuracy_score(
+                y_gt_masked, y_pred
+            )
+            metrics["Precision"] = precision_score(
+                y_gt_masked, y_pred, average="macro", zero_division=0
+            )
+            metrics["Recall"] = recall_score(
+                y_gt_masked, y_pred, average="macro", zero_division=0
+            )
+            metrics["F1-score"] = f1_score(
+                y_gt_masked, y_pred, average="macro", zero_division=0
+            )
+            metrics["Balanced Accuracy"] = accuracy_score(y_gt_masked, y_pred)
+            metrics["Proxy Anchor Loss"] = (
+                criterion(
+                    X=torch.tensor(X, device=device),
+                    T=torch.tensor(y_gt_masked, device=device),
+                )
+                .detach()
+                .cpu()
+                .numpy()
+            )
+            # metrics["Cross Entropy Loss"].append(
+            #     F.cross_entropy(cos_sim, gt_labels, reduction="mean").item()
+            # )
 
         cosine_sims = {
             i: {j: [] for j in range(i, num_classes_eval)}
@@ -717,21 +709,21 @@ for epoch in range(0, args.nb_epochs):
             print("No data to visualize.")
             continue
 
-        print("Visualizing embeddings with UMAP...")
+        # print("Visualizing embeddings with UMAP...")
 
         # ---- UMAP Setup ----
         umap_input = np.concatenate(
             [X, criterion.proxies.detach().cpu().numpy()], axis=0
         )
 
-        reducer = umap.UMAP(n_components=2, metric="cosine", random_state=42)
+        reducer = umap.UMAP(n_components=2, metric="cosine")
         umap_output = reducer.fit_transform(umap_input)
 
         X_umap = umap_output[:-nb_classes]
         proxies_umap = umap_output[-nb_classes:]
 
         # ---- Rainbow Color Setup ----
-        cmap = cm.get_cmap("hsv")
+        cmap = colormaps.get_cmap("hsv")
         class_colors = [cmap(i / num_classes_eval) for i in range(num_classes_eval)]
 
         # ---- Plot ----
@@ -771,6 +763,7 @@ for epoch in range(0, args.nb_epochs):
         plt.tight_layout()
 
         wandb.log({"umap_plot": wandb.Image(plt)})
+        plt.close()
 
         with torch.no_grad():
             model.proxies.copy_(criterion.proxies)

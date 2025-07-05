@@ -44,8 +44,12 @@ class Proxy_Anchor(torch.nn.Module):
 
     def forward(self, X, T):
         P = self.proxies  # Ensure P is in the same dtype as X
-        X = einops.rearrange(X, "B T Z -> (B T) Z")  # Ensure X is in the correct shape
-        T = einops.rearrange(T, "B T -> (B T)")  # Ensure T
+        if X.ndim != 2:
+            X = einops.rearrange(
+                X, "B T Z -> (B T) Z"
+            )  # Ensure X is in the correct shape
+        if T.ndim != 1:
+            T = einops.rearrange(T, "B T -> (B T)")  # Ensure T is in the correct shape
 
         cos = F.linear(l2_norm(X), l2_norm(P))  # Calcluate cosine similarity
 

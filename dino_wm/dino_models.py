@@ -344,11 +344,12 @@ class VideoTransformer(nn.Module):
             nn.Linear(total_dim, 1),
         )
 
+        semantic_dim = 2 * dim + state_dim
         self.semantic_encoder = nn.Sequential(
-            LayerNorm(total_dim),
-            nn.Linear(total_dim, total_dim),
+            LayerNorm(semantic_dim),
+            nn.Linear(semantic_dim, semantic_dim),
             nn.ReLU(),
-            nn.Linear(total_dim, 512),
+            nn.Linear(semantic_dim, 512),
         )
 
         self.proxies = nn.Parameter(torch.randn(2, 512).cuda())
@@ -367,7 +368,10 @@ class VideoTransformer(nn.Module):
         pred2 = self.wrist_head(x)
         state_preds = self.state_pred(x)
         failure_preds = self.failure_pred(x)
-        semantic_features = self.semantic_embed(x)
+
+        semantic_features = self.semantic_embed(
+            inp1=pred1, inp2=pred2, state=state_preds
+        )
 
         return pred1, pred2, state_preds, failure_preds, semantic_features
 
@@ -409,10 +413,25 @@ class VideoTransformer(nn.Module):
         failure_preds = torch.mean(failure_preds, dim=2)  # Average over patches
         return failure_preds
 
-    def semantic_embed(self, features):
-        semantic_features = self.semantic_encoder(features)
-        semantic_features = torch.mean(semantic_features, dim=2)
-        return semantic_features
+    def semantic_embed(self, inp1, inp2, state):
+        """
+        Combine features from two inputs and state, then pass through semantic encoder.
+        Args:
+            inp1 (torch.Tensor): Features from the first input (e.g., front camera).
+            inp2 (torch.Tensor): Features from the second input (e.g., wrist camera).
+            state (torch.Tensor): State features.
+        Returns:
+            torch.Tensor: Encoded semantic features.
+        """
+        features = torch.cat(  # [B T 384*2 + state_dim]
+            (
+                torch.norm(inp1, p=2, dim=-2),
+                torch.norm(inp2, p=2, dim=-2),
+                state,
+            ),
+            dim=-1,
+        )
+        return self.semantic_encoder(features)
 
     def state_pred(self, features):
         state_preds = self.state_head(features)
