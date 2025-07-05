@@ -251,12 +251,12 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
     # Warmup: Train only new params, helps stabilize learning.
     # TODO: implement warmup training if needed
 
-    max_trajectories = 10_000  # Maximum number of trajectories to sample
+    max_timesteps = 10_000  # Maximum number of timesteps to sample
     total_trajectories = len(expert_data)
-    if total_trajectories < max_trajectories:
+    if total_trajectories < max_timesteps:
         loader_subset = expert_loader
     else:
-        subset_indices = random.sample(range(total_trajectories), max_trajectories)
+        subset_indices = random.sample(range(total_trajectories), max_timesteps)
         subset = Subset(expert_data, subset_indices)
         loader_subset = DataLoader(subset, batch_size=BS, shuffle=True)
 
@@ -804,7 +804,7 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
         if args.save_model:
             torch.save(
                 model.state_dict(),
-                f"../checkpoints_pa/encoder_mrg_{args.mrg}.pth",
+                f"../checkpoints_pa/encoder_mrg_{args.mrg}_num_ex_{args.num_examples_per_class}.pth",
             )
 
             if balanced_accuracy < best_eval:
@@ -812,5 +812,5 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
                 print(f"New best at iter {i}, saving model.")
                 torch.save(
                     model.state_dict(),
-                    f"../checkpoints/best_encoder_mrg_{args.mrg}.pth",
+                    f"../checkpoints/best_encoder_mrg_{args.mrg}_num_ex_{args.num_examples_per_class}.pth",
                 )

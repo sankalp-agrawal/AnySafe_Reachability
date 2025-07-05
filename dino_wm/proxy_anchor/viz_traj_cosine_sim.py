@@ -308,7 +308,10 @@ if __name__ == "__main__":
         num_frames=BL - 1,
         dropout=0.1,
     ).to(device)
-    load_state_dict_flexible(transition, "../checkpoints_pa/encoder_0.1.pth")
+    # load_state_dict_flexible(transition, "../checkpoints_pa/encoder_0.1.pth")
+    load_state_dict_flexible(
+        transition, "../checkpoints_pa/encoder_mrg_0.1_num_ex_20.pth"
+    )
 
     # transition.load_state_dict(torch.load("../checkpoints/best_classifier.pth"))
     transition.eval()
@@ -542,5 +545,5 @@ if __name__ == "__main__":
             )
 
         make_comparison_video(
-            output_dict=output, save_path=f"results/output_video_{traj_id}.gif", fps=5
+            output_dict=output, save_path=f"results/output_video_{traj_id}.mp4", fps=5
         )

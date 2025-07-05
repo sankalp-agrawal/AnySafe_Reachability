@@ -11,6 +11,7 @@ experiment_script/log
 **.pkl
 **.png
 **.gif
+**.mp4
 
 
 **/__pycache__/
@@ -27,3 +28,4 @@ experiment_script/final_runs/sac_experiments
 experiment_script/final_runs/new_backup
 experiment_script/final_runs/new_sac_experiments
 experiment_script/final_runs/new_new_backup
+dino_wm/proxy_anchor/viz_traj_cosine_sim.py
