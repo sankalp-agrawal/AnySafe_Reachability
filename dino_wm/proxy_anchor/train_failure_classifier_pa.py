@@ -112,6 +112,12 @@ def make_parser():
         action="store_false",
         help="Don't save model",
     )
+    parser.add_argument(
+        "--num-examples-per-class",
+        type=int,
+        default=None,
+        help="Number of examples per class for training",
+    )
     return parser
 
 
@@ -122,7 +128,19 @@ if args.gpu_id != -1:
     torch.cuda.set_device(args.gpu_id)
 
 # Wandb Initialization
-wandb.init(name=f"mrg_{args.mrg}_alpha_{args.alpha}", project="ProxyAnchor")
+wandb_name_kwargs = {
+    "mrg": args.mrg,
+    "alpha": args.alpha,
+    "num_ex": (
+        args.num_examples_per_class
+        if args.num_examples_per_class is not None
+        else "all"
+    ),
+}
+wandb_name = "".join(
+    f"{key}_{value}_" for key, value in wandb_name_kwargs.items() if value is not None
+).rstrip("_")
+wandb.init(name=wandb_name, project="ProxyAnchor")
 wandb.config.update(args)
 
 # Dataset Loader and Sampler
@@ -132,8 +150,20 @@ BL = 1
 hdf5_file = "/home/sunny/data/skittles/consolidated.h5"
 hdf5_file_test = "/home/sunny/data/skittles/vlog-test-labeled/consolidated.h5"
 
-expert_data = SplitTrajectoryDataset(hdf5_file, BL, split="train", num_test=0)
-expert_data_eval = SplitTrajectoryDataset(hdf5_file_test, BL, split="train", num_test=0)
+expert_data = SplitTrajectoryDataset(
+    hdf5_file,
+    BL,
+    split="train",
+    num_test=0,
+    num_examples_per_class=args.num_examples_per_class,
+)
+expert_data_eval = SplitTrajectoryDataset(
+    hdf5_file_test,
+    BL,
+    split="train",
+    num_test=0,
+    num_examples_per_class=None,  # Don't limit number of examples per class for evaluation
+)
 # expert_data_eval = SplitTrajectoryDataset(hdf5_file, BL, split="test", num_test=30)
 
 expert_loader = DataLoader(expert_data, batch_size=BS, shuffle=True)
@@ -223,9 +253,12 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
 
     max_trajectories = 10_000  # Maximum number of trajectories to sample
     total_trajectories = len(expert_data)
-    subset_indices = random.sample(range(total_trajectories), max_trajectories)
-    subset = Subset(expert_data, subset_indices)
-    loader_subset = DataLoader(subset, batch_size=BS, shuffle=True)
+    if total_trajectories < max_trajectories:
+        loader_subset = expert_loader
+    else:
+        subset_indices = random.sample(range(total_trajectories), max_trajectories)
+        subset = Subset(expert_data, subset_indices)
+        loader_subset = DataLoader(subset, batch_size=BS, shuffle=True)
 
     # pbar = tqdm(enumerate(expert_loader))
     pbar = tqdm(
@@ -771,7 +804,7 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
         if args.save_model:
             torch.save(
                 model.state_dict(),
-                f"../checkpoints_pa/encoder_{args.mrg}.pth",
+                f"../checkpoints_pa/encoder_mrg_{args.mrg}.pth",
             )
 
             if balanced_accuracy < best_eval:
@@ -779,5 +812,5 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
                 print(f"New best at iter {i}, saving model.")
                 torch.save(
                     model.state_dict(),
-                    f"../checkpoints/best_encoder_{args.mrg}.pth",
+                    f"../checkpoints/best_encoder_mrg_{args.mrg}.pth",
                 )
