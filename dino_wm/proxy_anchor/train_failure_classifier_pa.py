@@ -174,10 +174,6 @@ device = "cuda:0"
 
 nb_classes = 2  # Safe and Failure
 
-# Backbone Model
-LOG_DIR = "logs_pa"
-
-
 model = VideoTransformer(
     image_size=(224, 224),
     dim=384,  # DINO feature dimension
