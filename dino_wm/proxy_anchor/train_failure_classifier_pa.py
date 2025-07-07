@@ -305,6 +305,7 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
 
     # pbar = tqdm(enumerate(expert_loader))
     max_timesteps = 10_000  # Maximum number of timesteps to sample
+    min_timesteps = 1_000  # Minimum number of timesteps to sample
     total_timesteps = len(train_data_labeled)
     if total_timesteps > max_timesteps:
         subset_indices = random.sample(range(total_timesteps), max_timesteps)
@@ -312,6 +313,21 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
         train_loader_labeled = DataLoader(
             subset, batch_size=BS, shuffle=True, num_workers=args.nb_workers
         )
+    elif total_timesteps < min_timesteps:
+        # Step 1: Include all original samples once
+        all_indices = list(range(total_timesteps))
+        extra_needed = min_timesteps - total_timesteps
+        extra_indices = random.choices(all_indices, k=extra_needed)
+        combined_indices = all_indices + extra_indices
+        bootstrapped_subset = Subset(train_data_labeled, combined_indices)
+
+        train_loader_labeled = DataLoader(
+            bootstrapped_subset,
+            batch_size=BS,
+            shuffle=True,  # optional: can use RandomSampler instead
+            num_workers=args.nb_workers,
+        )
+
     pbar = tqdm(
         enumerate(train_loader_labeled),
         total=len(train_loader_labeled),
@@ -419,8 +435,14 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
         )
 
     losses_list.append(np.mean(losses_per_epoch))
-    wandb.log({"train/Proxy Anchor Loss": losses_list[-1], "num_updates": num_updates})
-    wandb.log({"train/AUC": np.mean(auc_per_epoch), "num_updates": num_updates})
+    wandb.log(
+        {"train/Proxy Anchor Loss": losses_list[-1], "num_updates": num_updates},
+        step=num_updates,
+    )
+    wandb.log(
+        {"train/AUC": np.mean(auc_per_epoch), "num_updates": num_updates},
+        step=num_updates,
+    )
 
     scheduler.step()
 
@@ -639,7 +661,8 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
             ax.legend()
             plt.tight_layout()
             wandb.log(
-                {"eval/cosine_sim_plot": wandb.Image(fig), "num_updates": num_updates}
+                {"eval/cosine_sim_plot": wandb.Image(fig), "num_updates": num_updates},
+                step=num_updates,
             )
             wandb.log(
                 {
@@ -649,7 +672,8 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
                     )
                     / 2.0,
                     "num_updates": num_updates,
-                }
+                },
+                step=num_updates,
             )
             plt.close()
 
@@ -781,13 +805,15 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
             plt.tight_layout()
 
             wandb.log(
-                {"eval/metric_plot": wandb.Image(fig), "num_updates": num_updates}
+                {"eval/metric_plot": wandb.Image(fig), "num_updates": num_updates},
+                step=num_updates,
             )
             wandb.log(
                 {
                     "eval/intersect_threshold_variance": np.var(intersect_thresholds),
                     "num_updates": num_updates,
-                }
+                },
+                step=num_updates,
             )
             plt.close()
 
@@ -810,7 +836,10 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
                 ax.set_title(title)
                 ax.legend()
             plt.tight_layout()
-            wandb.log({"eval/roc_curve": wandb.Image(fig), "num_updates": num_updates})
+            wandb.log(
+                {"eval/roc_curve": wandb.Image(fig), "num_updates": num_updates},
+                step=num_updates,
+            )
             plt.close()
             return cos_sim_fail
 
@@ -823,7 +852,7 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
                 y_true=y_masked,
                 y_score=-cos_sim_fail.cpu().numpy(),
             )
-            wandb.log({"eval/AUC": auc, "num_updates": num_updates})
+            wandb.log({"eval/AUC": auc, "num_updates": num_updates}, step=num_updates)
 
         else:
             auc = roc_auc_score(
@@ -837,13 +866,13 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
                 multi_class="ovr",
                 average="macro",
             )
-            wandb.log({"eval/AUC": auc, "num_updates": num_updates})
+            wandb.log({"eval/AUC": auc, "num_updates": num_updates}, step=num_updates)
 
         for key, value in metrics.items():
             metrics[key] = np.mean(value)
         wandb_log = {f"eval/{k}": v for k, v in metrics.items()}
         wandb_log["num_updates"] = num_updates
-        wandb.log(wandb_log)
+        wandb.log(wandb_log, step=num_updates)
 
         # ---- Flatten and Prepare Data ----
         if len(X) == 0 or len(y) == 0:
@@ -903,7 +932,10 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
         plt.legend(loc="best", fontsize=8, frameon=True)
         plt.tight_layout()
 
-        wandb.log({"umap_plot": wandb.Image(plt), "num_updates": num_updates})
+        wandb.log(
+            {"umap_plot": wandb.Image(plt), "num_updates": num_updates},
+            step=num_updates,
+        )
         plt.close()
 
         with torch.no_grad():
