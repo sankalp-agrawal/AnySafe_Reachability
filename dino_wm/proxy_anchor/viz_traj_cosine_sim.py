@@ -329,6 +329,8 @@ if __name__ == "__main__":
         "front": database[1]["agentview_image"][108],
     }  # unsafe frame
 
+    scale = 1.0
+
     for data, constraint, t in zip(
         [database[7], database[1]], [constraint1, constraint2], [82, 108]
     ):
@@ -441,16 +443,18 @@ if __name__ == "__main__":
             output["imagination"]["ken_fail"].append(
                 pred_fail.detach().squeeze().cpu().numpy()[-1]
             )
-            output["imagination"]["cosine_sim_prox"].append(cos_sim_fail)
+            output["imagination"]["cosine_sim_prox"].append(cos_sim_fail * scale)
             output["imagination"]["cosine_sim_const1"].append(
                 -F.cosine_similarity(
                     semantic_features.squeeze()[-1], constraint1["semantic_feat"], dim=0
                 ).item()
+                * scale
             )
             output["imagination"]["cosine_sim_const2"].append(
                 -F.cosine_similarity(
                     semantic_features.squeeze()[-1], constraint2["semantic_feat"], dim=0
                 ).item()
+                * scale
             )
             output["imagination"]["gt_fail_label"].append(
                 -2 * data["failure"][t + BL - 1].cpu().numpy() + 1
@@ -533,17 +537,19 @@ if __name__ == "__main__":
                 -F.cosine_similarity(
                     semantic_features.squeeze()[-1], constraint1["semantic_feat"], dim=0
                 ).item()
+                * scale
             )
             output["ground_truth"]["cosine_sim_const2"].append(
                 -F.cosine_similarity(
                     semantic_features.squeeze()[-1], constraint2["semantic_feat"], dim=0
                 ).item()
+                * scale
             )
-            output["ground_truth"]["cosine_sim_prox"].append(cos_sim_fail)
+            output["ground_truth"]["cosine_sim_prox"].append(cos_sim_fail * scale)
             output["ground_truth"]["gt_fail_label"].append(
                 -2 * data["failure"][t + BL - 1].cpu().numpy() + 1
             )
 
         make_comparison_video(
-            output_dict=output, save_path=f"results/output_video_{traj_id}.mp4", fps=5
+            output_dict=output, save_path=f"results/output_video_{traj_id}.mp4", fps=10
         )

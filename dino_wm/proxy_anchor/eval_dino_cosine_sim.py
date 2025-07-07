@@ -98,7 +98,9 @@ if __name__ == "__main__":
 
     # hdf5_file = "/home/sunny/data/skittles/consolidated.h5"
     # expert_data = SplitTrajectoryDataset(hdf5_file, BL, split="test", num_test=10)
-    expert_loader = iter(DataLoader(expert_data, batch_size=BS, shuffle=True))
+    expert_loader = iter(
+        DataLoader(expert_data, batch_size=BS, shuffle=True, num_workers=4)
+    )
 
     device = "cuda:0"
 

@@ -26,7 +26,7 @@ from sklearn.metrics import (
 )
 from torch.utils.data import DataLoader, Subset
 from tqdm import *
-from utils import load_state_dict_flexible
+from utils import iou_kde, load_state_dict_flexible
 from viz_traj_cosine_sim import data_from_traj
 
 base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -99,6 +99,18 @@ def make_parser():
     parser.add_argument(
         "--mrg", default=0.1, type=float, help="Margin parameter setting"
     )
+    parser.add_argument(
+        "--temp",
+        default=0.05,
+        type=float,
+        help="Temperature for softmax in Proxy Anchor",
+    )
+    parser.add_argument(
+        "--beta",
+        default=0.1,
+        type=float,
+        help="Beta parameter for Proxy Anchor loss, controls the influence of unlabeled data",
+    )
     parser.add_argument("--IPC", type=int, help="Balanced sampling, images per class")
     parser.add_argument("--warm", default=1, type=int, help="Warmup training epochs")
     parser.add_argument(
@@ -118,6 +130,18 @@ def make_parser():
         default=None,
         help="Number of examples per class for training",
     )
+    parser.add_argument(
+        "--use-unlabeled-data",
+        action="store_true",
+        default=False,
+        help="Use unlabeled data for training",
+    )
+    parser.add_argument(
+        "--unlabeled-ratio",
+        type=float,
+        default=1.5,
+        help="Ratio of unlabeled data to labeled data for training",
+    )
     return parser
 
 
@@ -130,18 +154,28 @@ if args.gpu_id != -1:
 # Wandb Initialization
 wandb_name_kwargs = {
     "mrg": args.mrg,
-    "alpha": args.alpha,
+    "alpha": int(args.alpha),
     "num_ex": (
         args.num_examples_per_class
         if args.num_examples_per_class is not None
         else "all"
     ),
+    "ul": "F",
 }
+if args.use_unlabeled_data:
+    wandb_name_kwargs["ul"] = "T"
+    wandb_name_kwargs["ul_ratio"] = args.unlabeled_ratio
+    wandb_name_kwargs["beta"] = args.beta
+    wandb_name_kwargs["temp"] = args.temp
+
 wandb_name = "".join(
     f"{key}_{value}_" for key, value in wandb_name_kwargs.items() if value is not None
 ).rstrip("_")
 wandb.init(name=wandb_name, project="ProxyAnchor")
 wandb.config.update(args)
+
+wandb.define_metric("num_updates", step_metric="num_updates")
+wandb.define_metric("*", step_metric="num_updates")
 
 # Dataset Loader and Sampler
 BS = args.sz_batch  # batch size
@@ -158,14 +192,15 @@ train_data_labeled = SplitTrajectoryDataset(
     provide_labels=True,  # Labeled data
     num_examples_per_class=args.num_examples_per_class,
 )
-train_data_unlabeled = SplitTrajectoryDataset(
-    hdf5_file,
-    BL,
-    split="train",
-    num_test=0,
-    provide_labels=False,  # Unlabeled data
-    num_examples_per_class=None,
-)
+if args.use_unlabeled_data:
+    train_data_unlabeled = SplitTrajectoryDataset(
+        hdf5_file,
+        BL,
+        split="train",
+        num_test=0,
+        provide_labels=False,  # Unlabeled data
+        num_examples_per_class=int(args.num_examples_per_class * args.unlabeled_ratio),
+    )
 test_data = SplitTrajectoryDataset(
     hdf5_file_test,
     BL,
@@ -177,9 +212,10 @@ test_data = SplitTrajectoryDataset(
 train_loader_labeled = DataLoader(
     train_data_labeled, batch_size=BS, shuffle=True, num_workers=args.nb_workers
 )
-train_loader_unlabeled = DataLoader(
-    train_data_unlabeled, batch_size=BS, shuffle=True, num_workers=args.nb_workers
-)
+if args.use_unlabeled_data:
+    train_loader_unlabeled = DataLoader(
+        train_data_unlabeled, batch_size=BS, shuffle=True, num_workers=args.nb_workers
+    )
 test_loader = DataLoader(
     test_data, batch_size=BS, shuffle=True, num_workers=args.nb_workers
 )
@@ -256,6 +292,8 @@ losses_list = []
 best_epoch = 0
 best_eval = -float("inf")
 
+num_updates = 0
+
 for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
     model.train()
 
@@ -265,19 +303,23 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
     # Warmup: Train only new params, helps stabilize learning.
     # TODO: implement warmup training if needed
 
-    max_timesteps = 10_000  # Maximum number of timesteps to sample
-    total_trajectories = len(train_data_labeled)
-    if total_trajectories < max_timesteps:
-        loader_subset = train_loader_labeled
-    else:
-        subset_indices = random.sample(range(total_trajectories), max_timesteps)
-        subset = Subset(train_data_labeled, subset_indices)
-        loader_subset = DataLoader(subset, batch_size=BS, shuffle=True)
-
     # pbar = tqdm(enumerate(expert_loader))
+    max_timesteps = 10_000  # Maximum number of timesteps to sample
+    total_timesteps = len(train_data_labeled)
+    if total_timesteps > max_timesteps:
+        subset_indices = random.sample(range(total_timesteps), max_timesteps)
+        subset = Subset(train_data_labeled, subset_indices)
+        train_loader_labeled = DataLoader(
+            subset, batch_size=BS, shuffle=True, num_workers=args.nb_workers
+        )
     pbar = tqdm(
-        enumerate(loader_subset), total=len(loader_subset), position=1, leave=False
+        enumerate(train_loader_labeled),
+        total=len(train_loader_labeled),
+        position=1,
+        leave=False,
     )
+
+    # args.beta = np.linspace(0.2, 1.0, args.nb_epochs)[epoch]  # Linear increase of beta
 
     for batch_idx, data in pbar:
         labels_gt = data["failure"][:].to(device, dtype=torch.float32)
@@ -298,17 +340,20 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
             semantic_features = model.semantic_embed(
                 inp1=inputs1, inp2=inputs2, state=states
             )
-            semantic_features_unlabeled_tensor = []
-            for idx, data_unlabeled in enumerate(train_loader_unlabeled):
-                semantic_features_unlabeled = model.semantic_embed(
-                    inp1=data_unlabeled["cam_zed_embd"][:, -1:].to(device),
-                    inp2=data_unlabeled["cam_rs_embd"][:, -1:].to(device),
-                    state=data_unlabeled["state"][:, -1:].to(device),
-                )
-                semantic_features_unlabeled_tensor.append(semantic_features_unlabeled)
-            semantic_features_unlabeled_tensor = torch.cat(
-                semantic_features_unlabeled_tensor, dim=0
-            )  # Concatenate all unlabeled features
+            if args.use_unlabeled_data:  # and epoch >= 20:
+                semantic_features_unlabeled_tensor = []
+                for idx, data_unlabeled in enumerate(train_loader_unlabeled):
+                    semantic_features_unlabeled = model.semantic_embed(
+                        inp1=data_unlabeled["cam_zed_embd"][:, -1:].to(device),
+                        inp2=data_unlabeled["cam_rs_embd"][:, -1:].to(device),
+                        state=data_unlabeled["state"][:, -1:].to(device),
+                    )
+                    semantic_features_unlabeled_tensor.append(
+                        semantic_features_unlabeled
+                    )
+                semantic_features_unlabeled_tensor = torch.cat(
+                    semantic_features_unlabeled_tensor, dim=0
+                )  # Concatenate all unlabeled features
 
         unsafe_weak_mask = labels_gt == 2.0
         labels_gt_masked = copy.deepcopy(labels_gt)
@@ -316,7 +361,10 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
         loss = criterion(
             X=semantic_features.float(),
             T=labels_gt_masked.squeeze().cuda(),
-            # U=semantic_features_unlabeled_tensor.float(),
+            U=semantic_features_unlabeled_tensor.float()
+            if args.use_unlabeled_data  # and epoch >= 20
+            else None,  # Warmup
+            args=args,
         )
 
         P = criterion.proxies.detach()  # Ensure P is in the same dtype as X
@@ -354,6 +402,7 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
 
         opt.zero_grad()
         loss.backward()
+        num_updates += 1
 
         torch.nn.utils.clip_grad_value_(model.semantic_encoder.parameters(), 10)
         torch.nn.utils.clip_grad_value_(criterion.parameters(), 10)
@@ -370,8 +419,8 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
         )
 
     losses_list.append(np.mean(losses_per_epoch))
-    wandb.log({"train/Proxy Anchor Loss": losses_list[-1]})
-    wandb.log({"train/AUC": np.mean(auc_per_epoch)})
+    wandb.log({"train/Proxy Anchor Loss": losses_list[-1], "num_updates": num_updates})
+    wandb.log({"train/AUC": np.mean(auc_per_epoch), "num_updates": num_updates})
 
     scheduler.step()
 
@@ -480,6 +529,7 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
                 criterion(
                     X=torch.tensor(X, device=device),
                     T=torch.tensor(y_gt_masked, device=device),
+                    args=args,
                 )
                 .detach()
                 .cpu()
@@ -519,6 +569,8 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
             cmap = plt.cm.rainbow
             colors = [cmap(i / len(class_pairs)) for i in range(len(class_pairs))]
 
+            kde_dict = {}
+
             for idx, (i, j) in enumerate(class_pairs):
                 cos_sim = X_class[i] @ X_class[j].T
 
@@ -534,6 +586,7 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
                     cos_sim_sampled = cos_sim
 
                 kde_cs = gaussian_kde(cos_sim_sampled)
+                kde_dict[(i, j)] = kde_cs
                 x_cs = np.linspace(cos_sim.min() - 1e-3, 1, 1000)
                 y_pdf = kde_cs(x_cs)
 
@@ -585,7 +638,20 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
 
             ax.legend()
             plt.tight_layout()
-            wandb.log({"eval/cosine_sim_plot": wandb.Image(fig)})
+            wandb.log(
+                {"eval/cosine_sim_plot": wandb.Image(fig), "num_updates": num_updates}
+            )
+            wandb.log(
+                {
+                    "eval/avg_IoU": (
+                        iou_kde(p_kde=kde_dict[(0, 0)], q_kde=kde_dict[(0, 1)])
+                        + iou_kde(p_kde=kde_dict[(1, 1)], q_kde=kde_dict[(0, 1)])
+                    )
+                    / 2.0,
+                    "num_updates": num_updates,
+                }
+            )
+            plt.close()
 
         cosine_sim_plot_eval(X, y)
 
@@ -646,6 +712,7 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
                     data["fp_rates"].append(fp / (fp + tn) if (fp + tn) > 0 else 0)
                     data["fn_rates"].append(fn / (fn + tp) if (fn + tp) > 0 else 0)
 
+            intersect_thresholds = []
             for data in [fail_proxy_data, const1_data, const2_data]:
                 data["tp_rates"] = np.array(data["tp_rates"])
                 data["tn_rates"] = np.array(data["tn_rates"])
@@ -657,6 +724,7 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
                     intersect_idx
                 ]  # or tn_rates[intersect_idx]
                 data["intersect_threshold"] = intersect_threshold
+                intersect_thresholds.append(intersect_threshold)
                 data["intersect_value"] = intersect_value
 
             # Plot all the metrics
@@ -712,7 +780,16 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
                 ax.legend()
             plt.tight_layout()
 
-            wandb.log({"eval/metric_plot": wandb.Image(fig)})
+            wandb.log(
+                {"eval/metric_plot": wandb.Image(fig), "num_updates": num_updates}
+            )
+            wandb.log(
+                {
+                    "eval/intersect_threshold_variance": np.var(intersect_thresholds),
+                    "num_updates": num_updates,
+                }
+            )
+            plt.close()
 
             # Plot AUC curve
             fig, axes = plt.subplots(1, 3, figsize=(30, 8))
@@ -733,7 +810,8 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
                 ax.set_title(title)
                 ax.legend()
             plt.tight_layout()
-            wandb.log({"eval/roc_curve": wandb.Image(fig)})
+            wandb.log({"eval/roc_curve": wandb.Image(fig), "num_updates": num_updates})
+            plt.close()
             return cos_sim_fail
 
         cos_sim_fail = TP_TN_plot(X, y, constraint1, constraint2)
@@ -745,7 +823,7 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
                 y_true=y_masked,
                 y_score=-cos_sim_fail.cpu().numpy(),
             )
-            wandb.log({"eval/AUC": auc})
+            wandb.log({"eval/AUC": auc, "num_updates": num_updates})
 
         else:
             auc = roc_auc_score(
@@ -759,11 +837,13 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
                 multi_class="ovr",
                 average="macro",
             )
-            wandb.log({"eval/AUC": auc})
+            wandb.log({"eval/AUC": auc, "num_updates": num_updates})
 
         for key, value in metrics.items():
             metrics[key] = np.mean(value)
-        wandb.log({f"eval/{k}": v for k, v in metrics.items()})
+        wandb_log = {f"eval/{k}": v for k, v in metrics.items()}
+        wandb_log["num_updates"] = num_updates
+        wandb.log(wandb_log)
 
         # ---- Flatten and Prepare Data ----
         if len(X) == 0 or len(y) == 0:
@@ -823,7 +903,7 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
         plt.legend(loc="best", fontsize=8, frameon=True)
         plt.tight_layout()
 
-        wandb.log({"umap_plot": wandb.Image(plt)})
+        wandb.log({"umap_plot": wandb.Image(plt), "num_updates": num_updates})
         plt.close()
 
         with torch.no_grad():

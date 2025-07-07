@@ -42,7 +42,7 @@ class Proxy_Anchor(torch.nn.Module):
         self.mrg = mrg
         self.alpha = alpha
 
-    def forward(self, X, T, U=None):
+    def forward(self, X, T, args, U=None):
         """
         Forward pass for Proxy Anchor loss calculation.
         Args:
@@ -66,7 +66,10 @@ class Proxy_Anchor(torch.nn.Module):
                 U, "B T Z -> (B T) Z"
             )  # Ensure U is in the correct shape
 
-        X_combined = torch.cat([X, U], dim=0) if use_unlabeled_data else X  # [B*, Z]
+        num_labeled = X.shape[0]  # Number of labeled samples
+        num_unlabeled = U.shape[0] if use_unlabeled_data else 0
+        num_combined = num_labeled + num_unlabeled
+
         cos_labeled = F.linear(  # Calculate cosine similarity [B, N]
             l2_norm(X), l2_norm(P)
         )
@@ -78,7 +81,7 @@ class Proxy_Anchor(torch.nn.Module):
             else None
         )
         soft_labels = (
-            F.softmax(cos_unlabeled, dim=1) if use_unlabeled_data else None
+            F.softmax(cos_unlabeled / args.temp, dim=1) if use_unlabeled_data else None
         )  # [B, N]
 
         P_one_hot = binarize(T=T, nb_classes=self.nb_classes)  # [B, N]
@@ -93,12 +96,24 @@ class Proxy_Anchor(torch.nn.Module):
         neg_exp = torch.exp(self.alpha * (cos_combined + self.mrg))
 
         P_combined = (  # [B*, N]
-            torch.cat([P_one_hot, soft_labels], dim=0)
+            torch.cat(
+                [
+                    P_one_hot,
+                    args.beta * num_labeled / num_combined * soft_labels,
+                ],
+                dim=0,
+            )
             if use_unlabeled_data
             else P_one_hot
         )
         N_combined = (
-            torch.cat([N_one_hot, soft_labels], dim=0)
+            torch.cat(
+                [
+                    N_one_hot,
+                    args.beta * num_labeled / num_combined * (1 - soft_labels),
+                ],
+                dim=0,
+            )
             if use_unlabeled_data
             else N_one_hot
         )
