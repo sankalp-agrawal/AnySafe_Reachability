@@ -150,25 +150,39 @@ BL = 1
 hdf5_file = "/home/sunny/data/skittles/consolidated.h5"
 hdf5_file_test = "/home/sunny/data/skittles/vlog-test-labeled/consolidated.h5"
 
-expert_data = SplitTrajectoryDataset(
+train_data_labeled = SplitTrajectoryDataset(
     hdf5_file,
     BL,
     split="train",
     num_test=0,
+    provide_labels=True,  # Labeled data
     num_examples_per_class=args.num_examples_per_class,
 )
-expert_data_eval = SplitTrajectoryDataset(
+train_data_unlabeled = SplitTrajectoryDataset(
+    hdf5_file,
+    BL,
+    split="train",
+    num_test=0,
+    provide_labels=False,  # Unlabeled data
+    num_examples_per_class=None,
+)
+test_data = SplitTrajectoryDataset(
     hdf5_file_test,
     BL,
     split="train",
     num_test=0,
+    provide_labels=True,
     num_examples_per_class=None,  # Don't limit number of examples per class for evaluation
 )
-# expert_data_eval = SplitTrajectoryDataset(hdf5_file, BL, split="test", num_test=30)
-
-expert_loader = DataLoader(expert_data, batch_size=BS, shuffle=True)
-expert_loader_eval = DataLoader(expert_data_eval, batch_size=10, shuffle=True)
-# expert_loader_eval = DataLoader(expert_data_eval, batch_size=BS, shuffle=True)
+train_loader_labeled = DataLoader(
+    train_data_labeled, batch_size=BS, shuffle=True, num_workers=args.nb_workers
+)
+train_loader_unlabeled = DataLoader(
+    train_data_unlabeled, batch_size=BS, shuffle=True, num_workers=args.nb_workers
+)
+test_loader = DataLoader(
+    test_data, batch_size=BS, shuffle=True, num_workers=args.nb_workers
+)
 
 device = "cuda:0"
 
@@ -252,12 +266,12 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
     # TODO: implement warmup training if needed
 
     max_timesteps = 10_000  # Maximum number of timesteps to sample
-    total_trajectories = len(expert_data)
+    total_trajectories = len(train_data_labeled)
     if total_trajectories < max_timesteps:
-        loader_subset = expert_loader
+        loader_subset = train_loader_labeled
     else:
         subset_indices = random.sample(range(total_trajectories), max_timesteps)
-        subset = Subset(expert_data, subset_indices)
+        subset = Subset(train_data_labeled, subset_indices)
         loader_subset = DataLoader(subset, batch_size=BS, shuffle=True)
 
     # pbar = tqdm(enumerate(expert_loader))
@@ -284,12 +298,26 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
             semantic_features = model.semantic_embed(
                 inp1=inputs1, inp2=inputs2, state=states
             )
+            semantic_features_unlabeled_tensor = []
+            for idx, data_unlabeled in enumerate(train_loader_unlabeled):
+                semantic_features_unlabeled = model.semantic_embed(
+                    inp1=data_unlabeled["cam_zed_embd"][:, -1:].to(device),
+                    inp2=data_unlabeled["cam_rs_embd"][:, -1:].to(device),
+                    state=data_unlabeled["state"][:, -1:].to(device),
+                )
+                semantic_features_unlabeled_tensor.append(semantic_features_unlabeled)
+            semantic_features_unlabeled_tensor = torch.cat(
+                semantic_features_unlabeled_tensor, dim=0
+            )  # Concatenate all unlabeled features
 
         unsafe_weak_mask = labels_gt == 2.0
         labels_gt_masked = copy.deepcopy(labels_gt)
         labels_gt_masked[unsafe_weak_mask] = 1.0  # Set
-
-        loss = criterion(semantic_features.float(), labels_gt_masked.squeeze().cuda())
+        loss = criterion(
+            X=semantic_features.float(),
+            T=labels_gt_masked.squeeze().cuda(),
+            # U=semantic_features_unlabeled_tensor.float(),
+        )
 
         P = criterion.proxies.detach()  # Ensure P is in the same dtype as X
         semantic_features = einops.rearrange(
@@ -372,8 +400,8 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
         y_pred = []
         with torch.no_grad():
             pbar = tqdm(
-                enumerate(expert_loader_eval),
-                total=len(expert_loader_eval),
+                enumerate(test_loader),
+                total=len(test_loader),
                 desc="Evaluation",
                 position=2,
                 leave=False,

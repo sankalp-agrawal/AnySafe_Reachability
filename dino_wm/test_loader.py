@@ -13,6 +13,7 @@ class SplitTrajectoryDataset(Dataset):
         segment_length,
         split="train",
         num_test=100,
+        provide_labels=True,
         num_examples_per_class=None,
     ):
         """
@@ -28,6 +29,7 @@ class SplitTrajectoryDataset(Dataset):
         self.segment_length = segment_length
         self.split = split
         self.num_test = num_test
+        self.provide_labels = provide_labels
 
         # Open HDF5 file to get a list of trajectory groups
         with h5py.File(self.hdf5_file, "r") as hf:
@@ -120,7 +122,7 @@ class SplitTrajectoryDataset(Dataset):
             segment_obs_tensor["action"] = torch.tensor(
                 segment_actions, dtype=torch.float32
             )
-            if "labels" in trajectory.keys():
+            if "labels" in trajectory.keys() and self.provide_labels:
                 segment_obs_tensor["failure"] = torch.tensor(
                     np.array(trajectory["labels"][start_idx:end_idx]),
                     dtype=torch.float32,
