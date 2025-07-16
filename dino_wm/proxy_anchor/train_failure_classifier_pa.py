@@ -15,6 +15,7 @@ import wandb
 from dino_wm.dino_models import VideoTransformer, normalize_acs
 from dino_wm.test_loader import SplitTrajectoryDataset
 from matplotlib import colormaps
+from matplotlib.cm import rainbow
 from proxy_anchor.code import losses
 from scipy.stats import gaussian_kde
 from sklearn.metrics import (
@@ -26,7 +27,7 @@ from sklearn.metrics import (
 )
 from torch.utils.data import DataLoader, Subset
 from tqdm import *
-from utils import iou_kde, load_state_dict_flexible
+from utils import compare_kdes, load_state_dict_flexible
 from viz_traj_cosine_sim import data_from_traj
 
 base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -127,7 +128,7 @@ def make_parser():
     parser.add_argument(
         "--num-examples-per-class",
         type=int,
-        default=None,
+        default=None,  # None means all examples
         help="Number of examples per class for training",
     )
     parser.add_argument(
@@ -141,6 +142,13 @@ def make_parser():
         type=float,
         default=1.5,
         help="Ratio of unlabeled data to labeled data for training",
+    )
+    parser.add_argument(
+        "--ratio-schedule",
+        type=str,
+        default="const",
+        choices=["const", "lin", "exp"],
+        help="Schedule for the ratio of unlabeled data to labeled data",
     )
     return parser
 
@@ -164,7 +172,11 @@ wandb_name_kwargs = {
 }
 if args.use_unlabeled_data:
     wandb_name_kwargs["ul"] = "T"
-    wandb_name_kwargs["ul_ratio"] = args.unlabeled_ratio
+    wandb_name_kwargs["ul_ratio"] = (
+        args.unlabeled_ratio
+        if args.unlabeled_ratio != -1.0
+        else f"all_{args.ratio_schedule}"
+    )
     wandb_name_kwargs["beta"] = args.beta
     wandb_name_kwargs["temp"] = args.temp
 
@@ -199,7 +211,9 @@ if args.use_unlabeled_data:
         split="train",
         num_test=0,
         provide_labels=False,  # Unlabeled data
-        num_examples_per_class=int(args.num_examples_per_class * args.unlabeled_ratio),
+        num_examples_per_class=int(args.num_examples_per_class * args.unlabeled_ratio)
+        if args.unlabeled_ratio != -1.0
+        else None,
     )
 test_data = SplitTrajectoryDataset(
     hdf5_file_test,
@@ -212,10 +226,6 @@ test_data = SplitTrajectoryDataset(
 train_loader_labeled = DataLoader(
     train_data_labeled, batch_size=BS, shuffle=True, num_workers=args.nb_workers
 )
-if args.use_unlabeled_data:
-    train_loader_unlabeled = DataLoader(
-        train_data_unlabeled, batch_size=BS, shuffle=True, num_workers=args.nb_workers
-    )
 test_loader = DataLoader(
     test_data, batch_size=BS, shuffle=True, num_workers=args.nb_workers
 )
@@ -236,7 +246,7 @@ model = VideoTransformer(
     depth=6,
     heads=16,
     mlp_dim=2048,
-    num_frames=BL - 1,
+    num_frames=3,
     dropout=0.1,
 ).to(device)
 # model.load_state_dict(torch.load("../checkpoints/best_classifier.pth"), strict=False)
@@ -313,7 +323,9 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
         train_loader_labeled = DataLoader(
             subset, batch_size=BS, shuffle=True, num_workers=args.nb_workers
         )
-    elif total_timesteps < min_timesteps:
+    elif (  # If small dataset and using unlabeled data
+        total_timesteps < min_timesteps
+    ):
         # Step 1: Include all original samples once
         all_indices = list(range(total_timesteps))
         extra_needed = min_timesteps - total_timesteps
@@ -324,7 +336,37 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
         train_loader_labeled = DataLoader(
             bootstrapped_subset,
             batch_size=BS,
-            shuffle=True,  # optional: can use RandomSampler instead
+            shuffle=True,
+            num_workers=args.nb_workers,
+        )
+
+    if (  # If using full dataset
+        args.use_unlabeled_data and args.unlabeled_ratio == -1.0
+    ):
+        if args.ratio_schedule == "const":
+            num_to_sample = max_timesteps
+        elif args.ratio_schedule == "lin":
+            num_to_sample = (max_timesteps * epoch / args.nb_epochs).astype(int)
+        elif args.ratio_schedule == "exp":
+            num_to_sample = (
+                max_timesteps * np.exp(-5 * (1 - epoch / args.nb_epochs) ** 2)
+            ).astype(int)
+        else:
+            raise ValueError("Invalid ratio schedule: {}".format(args.ratio_schedule))
+        subset_indices_unlabeled = random.sample(
+            range(len(train_data_unlabeled)),
+            num_to_sample,
+        )
+        subset_unlabeled = Subset(train_data_unlabeled, subset_indices_unlabeled)
+        train_loader_unlabeled = DataLoader(
+            subset_unlabeled, batch_size=BS, shuffle=True, num_workers=args.nb_workers
+        )
+
+    elif args.use_unlabeled_data and args.unlabeled_ratio != -1.0:
+        train_loader_unlabeled = DataLoader(
+            dataset=train_data_unlabeled,
+            batch_size=BS,
+            shuffle=True,
             num_workers=args.nb_workers,
         )
 
@@ -371,6 +413,25 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
                     semantic_features_unlabeled_tensor, dim=0
                 )  # Concatenate all unlabeled features
 
+                # If ratio is specified, sample the correct amount of unlabeled data
+                if args.use_unlabeled_data and args.unlabeled_ratio != -1.0:
+                    # Ensure that correct amount of unlabeled data is given
+                    all_indices = list(range(len(semantic_features_unlabeled_tensor)))
+                    needed_datapoints = int(
+                        semantic_features.shape[0] * args.unlabeled_ratio
+                    )
+                    if needed_datapoints > len(all_indices):
+                        extra_needed = needed_datapoints - len(all_indices)
+                        extra_indices = random.choices(all_indices, k=extra_needed)
+                        combined_indices = all_indices + extra_indices
+                    else:
+                        combined_indices = all_indices[
+                            random.sample(range(len(all_indices)), k=needed_datapoints)
+                        ]
+                    semantic_features_unlabeled_tensor = (
+                        semantic_features_unlabeled_tensor[combined_indices]
+                    )
+
         unsafe_weak_mask = labels_gt == 2.0
         labels_gt_masked = copy.deepcopy(labels_gt)
         labels_gt_masked[unsafe_weak_mask] = 1.0  # Set
@@ -382,6 +443,15 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
             else None,  # Warmup
             args=args,
         )
+
+        if args.use_unlabeled_data:
+            wandb.log(
+                {
+                    "train/data_ratio": semantic_features_unlabeled_tensor.shape[0]
+                    / semantic_features.shape[0]
+                },
+                step=num_updates,
+            )
 
         P = criterion.proxies.detach()  # Ensure P is in the same dtype as X
         semantic_features = einops.rearrange(
@@ -581,7 +651,7 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
 
             plt.title("Cosine Similarity Distribution per Class")
             plt.xlabel("Cosine Similarity")
-            plt.ylabel("Density")
+            plt.ylabel("Normalized Density")
 
             class_pairs = []
             for i in range(len(np.unique(y_masked))):
@@ -609,25 +679,27 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
 
                 kde_cs = gaussian_kde(cos_sim_sampled)
                 kde_dict[(i, j)] = kde_cs
-                x_cs = np.linspace(cos_sim.min() - 1e-3, 1, 1000)
+                x_cs = np.linspace(-1 - 1e-3, 1 + 1e-3, 1000)
                 y_pdf = kde_cs(x_cs)
+                dx = x_cs[1] - x_cs[0]
+                y_pdf_normalized = y_pdf / (np.sum(y_pdf) * dx)
 
                 color = colors[idx]
                 label = f"{class_to_label[i]}-{class_to_label[j]}"
-                ax.plot(x_cs, y_pdf, label=label, color=color)
+                ax.plot(x_cs, y_pdf_normalized, label=label, color=color)
 
                 # Statistics
-                mean_val = np.mean(cos_sim_sampled)
+                median_val = np.median(cos_sim_sampled)
                 lower, upper = np.percentile(cos_sim_sampled, [2.5, 97.5])
 
                 # Get KDE values at stat locations
-                mean_y = kde_cs(mean_val)
-                lower_y = kde_cs(lower)
-                upper_y = kde_cs(upper)
+                median_y = kde_cs(median_val) / (np.sum(y_pdf) * dx)
+                lower_y = kde_cs(lower) / (np.sum(y_pdf) * dx)
+                upper_y = kde_cs(upper) / (np.sum(y_pdf) * dx)
 
                 # Plot short vertical lines
                 ax.vlines(
-                    mean_val, 0, mean_y, color=color, linestyle="dashed", alpha=0.8
+                    median_val, 0, median_y, color=color, linestyle="dashed", alpha=0.8
                 )
                 ax.vlines(lower, 0, lower_y, color=color, linestyle="dotted", alpha=0.5)
                 ax.vlines(upper, 0, upper_y, color=color, linestyle="dotted", alpha=0.5)
@@ -639,9 +711,9 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
                     bbox=dict(facecolor="white", edgecolor="none", alpha=1.0),
                 )
                 ax.text(
-                    mean_val,
-                    mean_y + 0.01,
-                    f"μ={mean_val:.2f}",
+                    median_val,
+                    median_y + 0.01,
+                    f"m={median_val:.2f}",
                     color=color,
                     **label_kwargs,
                 )
@@ -653,7 +725,7 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
                 )
 
             # Add dummy lines for legend explanation
-            ax.plot([], [], linestyle="dashed", color="black", label="μ = Mean")
+            ax.plot([], [], linestyle="dashed", color="black", label="m = Median")
             ax.plot(
                 [], [], linestyle="dotted", color="black", label="↓ ↑ = 95% Interval"
             )
@@ -664,13 +736,16 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
                 {"eval/cosine_sim_plot": wandb.Image(fig), "num_updates": num_updates},
                 step=num_updates,
             )
+            js_div1, ws_dist_1 = compare_kdes(
+                kde1=kde_dict[(0, 0)], kde2=kde_dict[(0, 1)]
+            )
+            js_div2, ws_dist_2 = compare_kdes(
+                kde1=kde_dict[(1, 1)], kde2=kde_dict[(0, 1)]
+            )
             wandb.log(
                 {
-                    "eval/avg_IoU": (
-                        iou_kde(p_kde=kde_dict[(0, 0)], q_kde=kde_dict[(0, 1)])
-                        + iou_kde(p_kde=kde_dict[(1, 1)], q_kde=kde_dict[(0, 1)])
-                    )
-                    / 2.0,
+                    "eval/avg_JS": (js_div1 + js_div2) / 2.0,
+                    "eval/avg_wass_dist": (ws_dist_1 + ws_dist_2) / 2.0,
                     "num_updates": num_updates,
                 },
                 step=num_updates,
@@ -679,7 +754,7 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
 
         cosine_sim_plot_eval(X, y)
 
-        def TP_TN_plot(X, y, const1, const2):
+        def const_conditioned_plots(X, y, const1, const2):
             y_masked = copy.deepcopy(y)
             y_masked[y == 2] = 1  # Set weak unsafe to unsafe
 
@@ -841,9 +916,86 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
                 step=num_updates,
             )
             plt.close()
+
+            # Plot cosine similarity distribution
+            fig, axes = plt.subplots(1, 3, figsize=(30, 8))
+
+            # Unique class labels
+            class_labels = np.unique(y)
+            n_classes = len(class_labels)
+
+            # Generate distinct rainbow colors
+            colors = [rainbow(i / n_classes) for i in range(n_classes)]
+
+            used_labels = set()
+            global_handles = []
+            global_labels = []
+            label_to_str = {
+                0: "Safe",
+                1: "Fail",
+                2: "Weak Fail",
+            }
+
+            for ax, (data, title) in zip(
+                axes,
+                [
+                    (fail_proxy_data, "Fail Proxy"),
+                    (const1_data, "Const 1 (Weak Unsafe) Conditioned"),
+                    (const2_data, "Const2 (Unsafe) Conditioned"),
+                ],
+            ):
+                ax.set_aspect("auto")
+                cos_sim = -data[
+                    "cos_sim"
+                ]  # It's already negative cosine similarity, so we make it positive for plotting
+
+                for idx, label in enumerate(class_labels):
+                    class_data = cos_sim[y == label]
+                    if len(class_data) < 2:
+                        continue
+                    kde = gaussian_kde(class_data)
+                    x_vals = np.linspace(-1, 1, 200)
+                    y_vals = kde(x_vals)
+                    color = colors[idx]
+
+                    plot_label = f"{label_to_str[label]}"
+                    (line,) = ax.plot(
+                        x_vals, y_vals, label=plot_label, color=color, alpha=0.7
+                    )
+
+                    if plot_label not in used_labels:
+                        used_labels.add(plot_label)
+                        global_handles.append(line)
+                        global_labels.append(plot_label)
+
+                ax.set_title(title)
+                ax.set_xlabel("Cosine Similarity")
+                ax.set_ylabel("Density")
+
+            # Global legend above all subplots
+            fig.legend(
+                global_handles,
+                global_labels,
+                loc="upper center",
+                ncol=len(global_labels),
+                fontsize="x-large",
+            )
+            plt.tight_layout(rect=[0, 0, 1, 0.95])
+
+            wandb.log(
+                {
+                    "eval/const_conditioned_cosine_sim": wandb.Image(fig),
+                    "num_updates": num_updates,
+                },
+                step=num_updates,
+            )
+            plt.close()
+
             return cos_sim_fail
 
-        cos_sim_fail = TP_TN_plot(X, y, constraint1, constraint2)
+        cos_sim_fail = const_conditioned_plots(
+            X, y, const1=constraint1, const2=constraint2
+        )
 
         if nb_classes == 2:
             y_masked = copy.deepcopy(y)
@@ -942,15 +1094,18 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
             model.proxies.copy_(criterion.proxies)
 
         if args.save_model:
+            model_name = wandb_name
+
             torch.save(
                 model.state_dict(),
-                f"../checkpoints_pa/encoder_mrg_{args.mrg}_num_ex_{args.num_examples_per_class}.pth",
+                f"../checkpoints_pa/encoder_{model_name}.pth",
             )
+            tqdm.write(f"Model saved to /checkpoints_pa/encoder_{model_name}.pth")
 
             if balanced_accuracy < best_eval:
                 best_eval = balanced_accuracy
                 print(f"New best at iter {i}, saving model.")
                 torch.save(
                     model.state_dict(),
-                    f"../checkpoints/best_encoder_mrg_{args.mrg}_num_ex_{args.num_examples_per_class}.pth",
+                    f"../checkpoints_pa/best_encoder_{model_name}.pth",
                 )

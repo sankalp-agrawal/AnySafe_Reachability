@@ -25,14 +25,12 @@ from datetime import datetime
 import models
 import ruamel.yaml as yaml
 import tools
+import wandb
 
 # note: need to include the dreamerv3 repo for this
 from dreamer import make_dataset
 from generate_data_traj_cont import get_frame
 from PIL import Image
-from termcolor import cprint
-
-import wandb
 from PyHJ.data import Collector, VectorReplayBuffer
 from PyHJ.env import DummyVectorEnv
 from PyHJ.exploration import GaussianNoise
@@ -40,6 +38,7 @@ from PyHJ.trainer import offpolicy_trainer
 from PyHJ.utils import TensorboardLogger, WandbLogger
 from PyHJ.utils.net.common import Net
 from PyHJ.utils.net.continuous import Actor, Critic
+from termcolor import cprint
 
 # NOTE: all the reach-avoid gym environments are in reach_rl_gym, the constraint information is output as an element of the info dictionary in gym.step() function
 """
@@ -408,17 +407,13 @@ for iter in range(warmup + args.total_episodes):
     epoch = epoch + args.epoch
     print("log_path: ", log_path + "/epoch_id_{}".format(epoch))
     if args.total_episodes > 1:
-        writer = SummaryWriter(
-            log_path + "/epoch_id_{}".format(epoch)
-        )  # filename_suffix="_"+timestr+"_epoch_id_{}".format(epoch))
+        writer = SummaryWriter(log_path + "/epoch_id_{}".format(epoch))
     else:
         if not os.path.exists(log_path + "/total_epochs_{}".format(epoch)):
             print("Just created the log directory!")
             print("log_path: ", log_path + "/total_epochs_{}".format(epoch))
             os.makedirs(log_path + "/total_epochs_{}".format(epoch))
-        writer = SummaryWriter(
-            log_path + "/total_epochs_{}".format(epoch)
-        )  # filename_suffix="_"+timestr+"_epoch_id_{}".format(epoch))
+        writer = SummaryWriter(log_path + "/total_epochs_{}".format(epoch))
     if logger is None:
         task_name = (
             args.task

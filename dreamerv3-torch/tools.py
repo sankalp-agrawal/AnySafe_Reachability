@@ -10,13 +10,12 @@ from typing import Any, Callable, Union
 
 import numpy as np
 import torch
+import wandb
 from termcolor import cprint
 from torch import distributions as torchd
 from torch import nn
 from torch.nn import functional as F
 from tqdm import tqdm
-
-import wandb
 
 to_np = lambda x: x.detach().cpu().numpy()
 

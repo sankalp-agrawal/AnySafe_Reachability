@@ -360,6 +360,7 @@ class VideoTransformer(nn.Module):
         video2: torch.Tensor,
         states: torch.Tensor,
         actions: torch.Tensor,
+        return_latent: bool = False,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         x = self.forward_features(video1, video2, states, actions)
 
@@ -373,7 +374,17 @@ class VideoTransformer(nn.Module):
             inp1=pred1, inp2=pred2, state=state_preds
         )
 
-        return pred1, pred2, state_preds, failure_preds, semantic_features
+        if return_latent:
+            return (
+                pred1,
+                pred2,
+                state_preds,
+                failure_preds,
+                semantic_features,
+                x,  # Return latent features
+            )
+        else:
+            return pred1, pred2, state_preds, failure_preds, semantic_features
 
     def forward_features(
         self,

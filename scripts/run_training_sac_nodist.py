@@ -7,8 +7,6 @@ import gymnasium as gym
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from torch.utils.tensorboard import SummaryWriter
-
 import wandb
 from PyHJ.data import Collector, VectorReplayBuffer
 from PyHJ.env import DummyVectorEnv
@@ -16,6 +14,7 @@ from PyHJ.trainer import offpolicy_trainer
 from PyHJ.utils import WandbLogger
 from PyHJ.utils.net.common import Net
 from PyHJ.utils.net.continuous import ActorProb, Critic
+from torch.utils.tensorboard import SummaryWriter
 
 print("CUDA_VISIBLE_DEVICES =", os.environ.get("CUDA_VISIBLE_DEVICES"))
 
@@ -322,17 +321,13 @@ for iter in range(args.total_episodes):
     epoch = epoch + args.epoch
     print("log_path: ", log_path + "/epoch_id_{}".format(epoch))
     if args.total_episodes > 1:
-        writer = SummaryWriter(
-            log_path + "/epoch_id_{}".format(epoch)
-        )  # filename_suffix="_"+timestr+"_epoch_id_{}".format(epoch))
+        writer = SummaryWriter(log_path + "/epoch_id_{}".format(epoch))
     else:
         if not os.path.exists(log_path + "/total_epochs_{}".format(epoch)):
             print("Just created the log directory!")
             print("log_path: ", log_path + "/total_epochs_{}".format(epoch))
             os.makedirs(log_path + "/total_epochs_{}".format(epoch))
-        writer = SummaryWriter(
-            log_path + "/total_epochs_{}".format(epoch)
-        )  # filename_suffix="_"+timestr+"_epoch_id_{}".format(epoch))
+        writer = SummaryWriter(log_path + "/total_epochs_{}".format(epoch))
     if logger is None:
         task_name = args.task.split("-")[-1]  # Take everything before the last dash
         wandb_name = f"{task_name}_SAC_dist_type_{args.env_dist_type}"

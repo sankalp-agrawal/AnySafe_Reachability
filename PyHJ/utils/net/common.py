@@ -197,7 +197,7 @@ class Net(nn.Module):
     def __init__(
         self,
         state_shape: Union[int, Sequence[int]],
-        obs_inputs: Sequence[str],
+        obs_inputs: Sequence[str] = ["state"],
         action_shape: Union[int, Sequence[int]] = 0,
         hidden_sizes: Sequence[int] = (),
         constraint_dim: Optional[Union[int, Sequence[int]]] = 0,

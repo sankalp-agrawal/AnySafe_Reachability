@@ -12,6 +12,7 @@ from scipy.stats import gaussian_kde
 from torch.utils.data import DataLoader
 from torchvision import transforms
 from tqdm import tqdm
+from utils import load_state_dict_flexible
 
 # Add directories to system path
 base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -115,7 +116,9 @@ if __name__ == "__main__":
         num_frames=BL - 1,
         dropout=0.1,
     ).to(device)
-    transition.load_state_dict(torch.load("../checkpoints_pa/encoder_0.1.pth"))
+    load_state_dict_flexible(
+        transition, "../checkpoints_pa/encoder_mrg_0.1_num_ex_20.pth"
+    )
     transition.eval()
 
     decoder = VQVAE().to(device)

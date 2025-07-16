@@ -2,6 +2,7 @@ import warnings
 
 import numpy as np
 import torch
+from scipy.stats import entropy, wasserstein_distance
 
 
 def load_state_dict_flexible(model, checkpoint_path):
@@ -69,37 +70,42 @@ def kl_divergence_kde(p_kde, q_kde, num_samples=10_000):
     return kl_div
 
 
-def iou_kde(p_kde, q_kde, num_samples=10000):
+def compare_kdes(kde1, kde2, grid_size=1000, num_samples=1000, eps=1e-12):
     """
-    Approximate IoU(P, Q) between two gaussian_kde distributions.
+    Compare two gaussian_kde objects using:
+    - Jensen-Shannon Divergence
+    - Wasserstein Distance
 
     Args:
-        p_kde: gaussian_kde object (distribution P)
-        q_kde: gaussian_kde object (distribution Q)
-        samples: Optional sample locations (shape: [d, N])
-        num_samples: Number of samples to draw if samples is None
+        kde1, kde2: gaussian_kde objects
+        grid_size: number of points for JSD grid
+        num_samples: number of samples to draw for Wasserstein
+        eps: small constant to avoid log(0)
 
     Returns:
-        Approximate IoU value
+        jsd (float): Jensen-Shannon Divergence
+        wass (float): Wasserstein distance
     """
-    # Draw from both distributions and merge
-    samples_p = p_kde.resample(num_samples // 2)
-    samples_q = q_kde.resample(num_samples // 2)
-    samples = np.hstack([samples_p, samples_q])  # shape: [d, N]
+    # Determine joint support range
+    data_min = min(kde1.dataset.min(), kde2.dataset.min())
+    data_max = max(kde1.dataset.max(), kde2.dataset.max())
+    x = np.linspace(data_min, data_max, grid_size)
 
-    # Evaluate densities at sample points
-    p_vals = p_kde.evaluate(samples)
-    q_vals = q_kde.evaluate(samples)
+    # Evaluate KDEs on the grid
+    p = kde1(x) + eps
+    q = kde2(x) + eps
 
-    # Avoid numerical issues
-    eps = 1e-10
-    p_vals = np.clip(p_vals, eps, None)
-    q_vals = np.clip(q_vals, eps, None)
+    # Normalize
+    p /= p.sum()
+    q /= q.sum()
+    m = 0.5 * (p + q)
 
-    # Compute pointwise min and max
-    intersection = np.minimum(p_vals, q_vals)
-    union = np.maximum(p_vals, q_vals)
+    # Jensen-Shannon Divergence
+    jsd = 0.5 * entropy(p, m) + 0.5 * entropy(q, m)
 
-    # Approximate IoU
-    iou = np.sum(intersection) / np.sum(union)
-    return iou
+    # Wasserstein Distance using samples
+    samples1 = kde1.resample(num_samples)[0]
+    samples2 = kde2.resample(num_samples)[0]
+    wass = wasserstein_distance(samples1, samples2)
+
+    return jsd, wass

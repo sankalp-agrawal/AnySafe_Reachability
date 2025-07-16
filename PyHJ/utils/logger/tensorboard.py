@@ -55,8 +55,9 @@ class TensorboardLogger(BaseLogger):
             self.write("save/epoch", epoch, {"save/epoch": epoch})
             self.write("save/env_step", env_step, {"save/env_step": env_step})
             self.write(
-                "save/gradient_step", gradient_step,
-                {"save/gradient_step": gradient_step}
+                "save/gradient_step",
+                gradient_step,
+                {"save/gradient_step": gradient_step},
             )
 
     def restore_data(self) -> Tuple[int, int, int]:
