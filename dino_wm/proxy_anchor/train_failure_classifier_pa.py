@@ -204,6 +204,9 @@ train_data_labeled = SplitTrajectoryDataset(
     provide_labels=True,  # Labeled data
     num_examples_per_class=args.num_examples_per_class,
 )
+import ipdb
+
+ipdb.set_trace()
 if args.use_unlabeled_data:
     train_data_unlabeled = SplitTrajectoryDataset(
         hdf5_file,

@@ -57,8 +57,8 @@ class Franka_DINOWM_Env(gym.Env):
         self.wrist_hist = torch.cat([self.wrist_hist[:, 1:], inp2[:, [-1]]], dim=1)
         self.state_hist = torch.cat([self.state_hist[:, 1:], state[:, [-1]]], dim=1)
 
-        # rew = self.safety_margin_pa(latent)  # rew is negative if unsafe
-        rew = self.safety_margin_ken(latent)  # rew is negative if unsafe
+        rew = self.safety_margin_pa(latent)  # rew is negative if unsafe
+        # rew = self.safety_margin_ken(latent)  # rew is negative if unsafe
         self.latent = latent[:, [-1]].mean(dim=2).detach().cpu().numpy()
         terminated = False
         truncated = False
