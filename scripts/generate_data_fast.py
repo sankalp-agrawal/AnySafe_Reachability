@@ -1,16 +1,17 @@
 import argparse
-import io
 import os
 import pathlib
 import pickle
 import sys
 
+import matplotlib
+
+matplotlib.use("Agg")
 import matplotlib.patches as patches
 import matplotlib.pyplot as plt
 import numpy as np
 import ruamel.yaml as yaml
 import torch
-from PIL import Image
 
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(parent_dir)
@@ -22,17 +23,13 @@ import tools
 from tqdm import tqdm
 
 
-def get_frame(states, config):
-    if states.shape[-1] != 3:
-        raise ValueError("States must have shape (3,) for x, y, theta.")
-    dt = config.dt
-    v = config.speed
+def init_renderer(config):
     fig, ax = plt.subplots()
     plt.xlim([config.x_min, config.x_max])
     plt.ylim([config.y_min, config.y_max])
     plt.axis("off")
     fig.set_size_inches(1, 1)
-    # Create the circle patch
+
     if config.show_constraint:
         circle = patches.Circle(
             [config.obs_x, config.obs_y],
@@ -40,16 +37,17 @@ def get_frame(states, config):
             edgecolor=config.constraint_color,
             facecolor="none",
         )
-        # Add the circle patch to the axis
         ax.add_patch(circle)
     else:
         circle = None
+
     agent_color = "black"
-    plt.quiver(
-        states[0],
-        states[1],
-        dt * v * torch.cos(states[2]),
-        dt * v * torch.sin(states[2]),
+    agent_point = ax.scatter([], [], s=20, c=agent_color, zorder=3)
+    agent_quiver = ax.quiver(
+        [],
+        [],
+        [],
+        [],
         angles="xy",
         scale_units="xy",
         minlength=0,
@@ -58,17 +56,30 @@ def get_frame(states, config):
         color=agent_color,
         zorder=3,
     )
-    plt.scatter(states[0], states[1], s=20, c=agent_color, zorder=3)
+
     plt.subplots_adjust(left=0, right=1, top=1, bottom=0)
 
-    buf = io.BytesIO()
-    plt.savefig(buf, format="png", dpi=config.size[0])
-    buf.seek(0)
+    return fig, ax, circle, agent_point, agent_quiver
 
-    # Load the buffer content as an RGB image
-    img = Image.open(buf).convert("RGB")
-    img_array = np.array(img)
-    plt.close(fig)
+
+def render_frame(states, config, fig, ax, circle, agent_point, agent_quiver):
+    dt = config.dt
+    v = config.speed
+
+    agent_point.set_offsets([states[0], states[1]])
+
+    agent_quiver.set_offsets([states[0], states[1]])
+    agent_quiver.set_UVC(
+        dt * v * torch.cos(states[2]).item(), dt * v * torch.sin(states[2]).item()
+    )
+
+    fig.canvas.draw()
+    buf = fig.canvas.buffer_rgba()
+    img_array = np.frombuffer(buf, dtype=np.uint8).reshape(
+        fig.canvas.get_width_height()[::-1] + (4,)
+    )
+    img_array = img_array[..., :3]  # Drop alpha channel
+
     return img_array
 
 
@@ -91,7 +102,7 @@ def get_init_state(config):
     return states
 
 
-def gen_one_traj_img(config):
+def gen_one_traj_img(config, fig, ax, circle, agent_point, agent_quiver):
     states = get_init_state(config)
 
     state_obs = []
@@ -99,55 +110,66 @@ def gen_one_traj_img(config):
     state_gt = []
     dones = []
     acs = []
-    u_max = final_config.turnRate
+
+    u_max = config.turnRate
     dt = config.dt
     v = config.speed
 
     for t in range(config.data_length):
-        # random between -u_max and u_max
-        ac = torch.rand(1) * 2 * u_max - u_max
+        ac = ac = (torch.rand(1) * 2 * u_max - u_max).item()  # convert to scalar
 
-        states_next = torch.rand(3)
-        states_next[0] = states[0] + v * dt * torch.cos(states[2])
-        states_next[1] = states[1] + v * dt * torch.sin(states[2])
-        states_next[2] = states[2] + dt * ac
+        states_next = torch.clone(states)
+        states_next[0] += v * dt * torch.cos(states[2])
+        states_next[1] += v * dt * torch.sin(states[2])
+        states_next[2] += dt * ac
 
-        # the data is (o_t, a_t), don't observe o_t+1 yet
-        state_obs.append(states[2].numpy())  # get to observe theta
-        state_gt.append(states.numpy())  # gt state for debugging
+        state_obs.append(states[2].numpy())
+        state_gt.append(states.numpy())
+
         if t == config.data_length - 1:
             dones.append(1)
         elif (
             torch.abs(states[0]) > config.x_max - config.buffer
             or torch.abs(states[1]) > config.y_max - config.buffer
-        ):  # out of bounds
+        ):
             dones.append(1)
         else:
             dones.append(0)
 
         acs.append(ac)
-        img_array = get_frame(states, config)
+
+        img_array = render_frame(
+            states, config, fig, ax, circle, agent_point, agent_quiver
+        )
         img_obs.append(img_array)
+
         states = states_next
         if dones[-1] == 1:
             break
+
     return state_obs, acs, state_gt, img_obs, dones
 
 
 def generate_trajs(config):
     demos = []
-    # use tqdm
+
+    fig, ax, circle, agent_point, agent_quiver = init_renderer(config)
+
     for i in tqdm(range(config.num_trajs), desc="Generating trajectories"):
-        state_obs, acs, state_gt, img_obs, dones = gen_one_traj_img(config)
-        demo = {}
-        demo["obs"] = {"image": img_obs, "state": state_obs, "priv_state": state_gt}
-        demo["actions"] = acs
-        demo["dones"] = dones
+        state_obs, acs, state_gt, img_obs, dones = gen_one_traj_img(
+            config, fig, ax, circle, agent_point, agent_quiver
+        )
+
+        demo = {
+            "obs": {"image": img_obs, "state": state_obs, "priv_state": state_gt},
+            "actions": acs,
+            "dones": dones,
+        }
         demos.append(demo)
-        # print('demo: ', i, "timesteps: ", len(state_obs))
 
     with open(config.dataset_path, "wb") as f:
         pickle.dump(demos, f)
+        print(f"Saved {len(demos)} trajectories to {config.dataset_path}")
 
 
 def recursive_update(base, update):
@@ -163,8 +185,8 @@ if __name__ == "__main__":
 
     config, remaining = parser.parse_known_args()
 
-    yaml = yaml.YAML(typ="safe", pure=True)
-    configs = yaml.load(
+    yaml_loader = yaml.YAML(typ="safe", pure=True)
+    configs = yaml_loader.load(
         (pathlib.Path(sys.argv[0]).parent / "../configs.yaml").read_text()
     )
 
@@ -173,12 +195,13 @@ if __name__ == "__main__":
     defaults = {}
     for name in name_list:
         recursive_update(defaults, configs[name])
+
     parser = argparse.ArgumentParser()
     for key, value in sorted(defaults.items(), key=lambda x: x[0]):
         arg_type = tools.args_type(value)
         parser.add_argument(f"--{key}", type=arg_type, default=arg_type(value))
-    final_config = parser.parse_args(remaining)
 
+    final_config = parser.parse_args(remaining)
     final_config = tools.set_wm_name(final_config)
 
-    demos = generate_trajs(final_config)
+    generate_trajs(final_config)

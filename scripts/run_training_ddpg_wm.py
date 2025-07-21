@@ -11,7 +11,7 @@ from torch.utils.tensorboard import SummaryWriter
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(parent_dir)
 dreamer_dir = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "../dreamerv3-torch")
+    os.path.join(os.path.dirname(__file__), "../dreamerv3_torch")
 )
 sys.path.append(dreamer_dir)
 saferl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "/PyHJ"))
@@ -29,7 +29,7 @@ import wandb
 
 # note: need to include the dreamerv3 repo for this
 from dreamer import make_dataset
-from generate_data_traj_cont import get_frame
+from generate_data_fast import init_renderer, render_frame
 from PIL import Image
 from PyHJ.data import Collector, VectorReplayBuffer
 from PyHJ.env import DummyVectorEnv
@@ -112,12 +112,17 @@ def get_args():
 args = get_args()
 config = args
 
+import ipdb
 
+ipdb.set_trace()
 env = gymnasium.make(args.task, params=[config])
 config.num_actions = (
     env.action_space.n if hasattr(env.action_space, "n") else env.action_space.shape[0]
 )
 wm = models.WorldModel(env.observation_space_full, env.action_space, 0, config)
+import ipdb
+
+ipdb.set_trace()
 
 config = tools.set_wm_name(config)
 
@@ -342,31 +347,47 @@ if not os.path.exists(log_path + "/epoch_id_{}".format(epoch)):
 def make_cache(config, thetas):
     nx, ny = config.nx, config.ny
     cache = {}
+
+    # Initialize renderer once
+    fig, ax, circle, agent_point, agent_quiver = init_renderer(config)
+
+    xs = np.linspace(-1.1, 1.1, nx, endpoint=True)
+    ys = np.linspace(-1.1, 1.1, ny, endpoint=True)
+
     for theta in thetas:
         v = np.zeros((nx, ny))
-        xs = np.linspace(-1.1, 1.1, nx, endpoint=True)
-        ys = np.linspace(-1.1, 1.1, ny, endpoint=True)
         key = theta
-        print("creating cache for key", key)
-        idxs, imgs_prev, thetas, thetas_prev = [], [], [], []
+        print("Creating cache for key", key)
+
+        idxs, imgs_prev, thetas_list, thetas_prev = [], [], [], []
+
         xs_prev = xs - config.dt * config.speed * np.cos(theta)
         ys_prev = ys - config.dt * config.speed * np.sin(theta)
         theta_prev = theta
+
         it = np.nditer(v, flags=["multi_index"])
         while not it.finished:
             idx = it.multi_index
             x_prev = xs_prev[idx[0]]
             y_prev = ys_prev[idx[1]]
-            thetas.append(theta)
-            thetas_prev.append(theta_prev)
-            imgs_prev.append(
-                get_frame(torch.tensor([x_prev, y_prev, theta_prev]), config)
+
+            state = torch.tensor([x_prev, y_prev, theta_prev])
+            img = render_frame(
+                state, config, fig, ax, circle, agent_point, agent_quiver
             )
+
+            imgs_prev.append(img)
             idxs.append(idx)
+            thetas_list.append(theta)
+            thetas_prev.append(theta_prev)
+
             it.iternext()
+
         idxs = np.array(idxs)
         theta_prev_lin = np.array(thetas_prev)
-        cache[theta] = [idxs, imgs_prev, theta_prev_lin]
+
+        cache[key] = [idxs, imgs_prev, theta_prev_lin]
+
     return cache
 
 

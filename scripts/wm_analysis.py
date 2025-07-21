@@ -5,17 +5,16 @@ import sys
 import einops
 import gymnasium  # as gym
 import numpy as np
+import PyHJ
 import torch
 import torch.nn as nn
-
-import PyHJ
 import wandb
 from PyHJ.utils import WandbLogger
 
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(parent_dir)
 dreamer_dir = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "../dreamerv3-torch")
+    os.path.join(os.path.dirname(__file__), "../dreamerv3_torch")
 )
 sys.path.append(dreamer_dir)
 saferl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "/PyHJ"))

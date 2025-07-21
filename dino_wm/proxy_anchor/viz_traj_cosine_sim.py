@@ -19,13 +19,13 @@ sys.path.append(parent_dir)
 # Import custom modules
 from dino_wm.dino_decoder import VQVAE
 from dino_wm.dino_models import VideoTransformer, normalize_acs
+from dino_wm.proxy_anchor.utils import load_state_dict_flexible
 from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 from PyHJ.exploration import GaussianNoise
 from PyHJ.utils.net.common import Net
 from PyHJ.utils.net.continuous import Actor, Critic
 from torchvision import transforms
 from tqdm import tqdm
-from utils import load_state_dict_flexible
 
 # Add directories to system path
 base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))

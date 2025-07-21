@@ -1,22 +1,42 @@
 import argparse
-import copy
+import collections
 import os
 import random
 import sys
+from datetime import datetime
 
 import einops
-import h5py
+import gymnasium  # as gym
 import matplotlib.pyplot as plt
 import numpy as np
+import PyHJ
+import ruamel.yaml as yaml
 import torch
 import torch.nn.functional as F
 import umap.umap_ as umap
 import wandb
-from dino_wm.dino_models import VideoTransformer, normalize_acs
-from dino_wm.test_loader import SplitTrajectoryDataset
+from dino_wm.dino_models import normalize_acs
+from sklearn.model_selection import train_test_split
+
+# note: need to include the dreamerv3 repo for this
+from termcolor import cprint
+
+dreamer_dir = os.path.abspath(
+    "/home/sunny/anysafe_project/AnySafe_Reachability/dreamerv3_torch"
+)
+sys.path.append(dreamer_dir)
+saferl_dir = os.path.abspath("/home/sunny/anysafe_project/AnySafe_Reachability/PyHJ")
+sys.path.append(saferl_dir)
+print(sys.path)
+import models
+import tools
+from dino_wm.proxy_anchor.utils import compare_kdes
+from dreamer import make_dataset
 from matplotlib import colormaps
 from matplotlib.cm import rainbow
 from proxy_anchor.code import losses
+
+# note: need to include the dreamerv3 repo for this
 from scipy.stats import gaussian_kde
 from sklearn.metrics import (
     accuracy_score,
@@ -25,10 +45,7 @@ from sklearn.metrics import (
     recall_score,
     roc_auc_score,
 )
-from torch.utils.data import DataLoader, Subset
 from tqdm import *
-from utils import compare_kdes, load_state_dict_flexible
-from viz_traj_cosine_sim import data_from_traj
 
 base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.extend(
@@ -189,77 +206,185 @@ wandb.config.update(args)
 wandb.define_metric("num_updates", step_metric="num_updates")
 wandb.define_metric("*", step_metric="num_updates")
 
-# Dataset Loader and Sampler
-BS = args.sz_batch  # batch size
-BL = 1
-
-hdf5_file = "/home/sunny/data/skittles/consolidated.h5"
-hdf5_file_test = "/home/sunny/data/skittles/vlog-test-labeled/consolidated.h5"
-
-train_data_labeled = SplitTrajectoryDataset(
-    hdf5_file,
-    BL,
-    split="train",
-    num_test=0,
-    provide_labels=True,  # Labeled data
-    num_examples_per_class=args.num_examples_per_class,
-)
-
-if args.use_unlabeled_data:
-    train_data_unlabeled = SplitTrajectoryDataset(
-        hdf5_file,
-        BL,
-        split="train",
-        num_test=0,
-        provide_labels=False,  # Unlabeled data
-        num_examples_per_class=int(args.num_examples_per_class * args.unlabeled_ratio)
-        if args.unlabeled_ratio != -1.0
-        else None,
-    )
-test_data = SplitTrajectoryDataset(
-    hdf5_file_test,
-    BL,
-    split="train",
-    num_test=0,
-    provide_labels=True,
-    num_examples_per_class=None,  # Don't limit number of examples per class for evaluation
-)
-train_loader_labeled = DataLoader(
-    train_data_labeled, batch_size=BS, shuffle=True, num_workers=args.nb_workers
-)
-test_loader = DataLoader(
-    test_data, batch_size=BS, shuffle=True, num_workers=args.nb_workers
-)
-
 device = "cuda:0"
-
-nb_classes = 2  # Safe and Failure
 
 # Backbone Model
 LOG_DIR = "logs_pa"
 
 
-model = VideoTransformer(
-    image_size=(224, 224),
-    dim=384,  # DINO feature dimension
-    ac_dim=10,  # Action embedding dimension
-    state_dim=8,  # State dimension
-    depth=6,
-    heads=16,
-    mlp_dim=2048,
-    num_frames=3,
-    dropout=0.1,
-).to(device)
-# model.load_state_dict(torch.load("../checkpoints/best_classifier.pth"), strict=False)
-load_state_dict_flexible(model, "../checkpoints/best_classifier.pth")
-# model.load_state_dict(torch.load("../checkpoints_pa/encoder_0.1.pth"))
+def recursive_update(base, update):
+    for key, value in update.items():
+        if isinstance(value, dict) and key in base:
+            recursive_update(base[key], value)
+        else:
+            base[key] = value
+
+
+def get_args():
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument("--configs", nargs="+")
+    parser.add_argument("--expt_name", type=str, default=None)
+    parser.add_argument("--resume_run", type=bool, default=False)
+    parser.add_argument("--debug", action="store_true", default=False)
+    # environment parameters
+    config, remaining = parser.parse_known_args()
+
+    if not config.resume_run:
+        curr_time = datetime.now().strftime("%m%d/%H%M%S")
+        config.expt_name = (
+            f"{curr_time}_{config.expt_name}" if config.expt_name else curr_time
+        )
+    else:
+        assert config.expt_name, "Need to provide experiment name to resume run."
+
+    yml = yaml.YAML(typ="safe", pure=True)
+    with open(
+        "/home/sunny/anysafe_project/AnySafe_Reachability/configs.yaml", "r"
+    ) as f:
+        configs = yml.load(f)
+
+    name_list = ["defaults", *config.configs] if config.configs else ["defaults"]
+
+    defaults = {}
+    for name in name_list:
+        recursive_update(defaults, configs[name])
+    parser = argparse.ArgumentParser()
+    for key, value in sorted(defaults.items(), key=lambda x: x[0]):
+        arg_type = tools.args_type(value)
+        parser.add_argument(f"--{key}", type=arg_type, default=arg_type(value))
+    final_config = parser.parse_args(remaining)
+
+    final_config.logdir = f"{final_config.logdir + '/PyHJ'}/{config.expt_name}"
+    # final_config.time_limit = HORIZONS[final_config.task.split("_")[-1]]
+
+    print("---------------------")
+    cprint(f"Experiment name: {config.expt_name}", "red", attrs=["bold"])
+    cprint(f"Task: {final_config.task}", "cyan", attrs=["bold"])
+    cprint(f"Logging to: {final_config.logdir + '/PyHJ'}", "cyan", attrs=["bold"])
+    print("---------------------")
+    return final_config
+
+
+dummy_variable = PyHJ
+
+config = get_args()
+config.nb_classes = 4  # four quadrants in the 2D space
+
+env = gymnasium.make(config.task, params=[config])
+
+config.num_actions = (
+    env.action_space.n if hasattr(env.action_space, "n") else env.action_space.shape[0]
+)
+model = models.WorldModel(env.observation_space_full, env.action_space, 0, config)
+ckpt_path = "/home/sunny/anysafe_project/AnySafe_Reachability/logs/dreamer_dubins/dubins_mlp_obs_state_cnn_image_lz_None_sc_F_arrow_0.15/best_rssm_ckpt_9999_0_12.pt"
+checkpoint = torch.load(ckpt_path)
+state_dict = {
+    k[14:]: v for k, v in checkpoint["agent_state_dict"].items() if "_wm" in k
+}
+
+model.load_state_dict(state_dict, strict=False)
+model.to(device)
+model.eval()
+
+config = tools.set_wm_name(config)
 
 for name, param in model.named_parameters():
     param.requires_grad = name.startswith("semantic_encoder")
 
+offline_eps = collections.OrderedDict()
+config.batch_size = 1
+config.batch_length = 2
+tools.fill_expert_dataset_dubins(config, offline_eps)
+offline_dataset = make_dataset(offline_eps, config)
+
+
+# 1. Flatten Trajectories to Timesteps
+def flatten_trajectories(trajectories):
+    flat_data = {}
+    keys = next(iter(trajectories.values())).keys()
+
+    for key in keys:
+        flat_data[key] = []
+
+    for traj in trajectories.values():
+        for key in keys:
+            # Assume traj[key] is tensor or array with shape (T, ...)
+            # We want to concatenate timesteps (dim=0) across trajectories
+            # So just append the whole array, not flatten inside dimensions
+            flat_data[key].append(torch.tensor(np.array(traj[key])))
+
+    # Concatenate along time dimension (dim=0)
+    for key in keys:
+        flat_data[key] = torch.cat(flat_data[key], dim=0)
+        if flat_data[key].ndim == 1:
+            flat_data[key] = flat_data[key].unsqueeze(-1)
+
+    # class labels
+    points = flat_data["privileged_state"][:, :2]  # [B 2]
+    x = points[:, 0]
+    y = points[:, 1]
+
+    x_mask, y_mask = (x > 0), (y > 0)
+    flat_data["label"] = torch.zeros_like(x, dtype=torch.float32).unsqueeze(-1)
+    flat_data["label"][x_mask & y_mask] = 1.0  # Quadrant 1
+    flat_data["label"][~x_mask & y_mask] = 2.0  # Quadrant 2
+    flat_data["label"][~x_mask & ~y_mask] = 3.0  # Quadrant 3
+    flat_data["label"][x_mask & ~y_mask] = 4.0  # Quadrant 4
+    flat_data["label"].unsqueeze(-1)
+    return flat_data
+
+
+# 2. Split at Timestep Level
+def split_flat_data(flat_data, test_size=0.2, seed=42):
+    N = len(next(iter(flat_data.values())))
+    indices = np.arange(N)
+
+    train_idx, test_idx = train_test_split(
+        indices, test_size=test_size, random_state=seed
+    )
+
+    def extract(idx):
+        return {k: v[idx] for k, v in flat_data.items()}
+
+    return extract(train_idx), extract(test_idx)
+
+
+# 3. Batch Generator
+def timestep_batch_generator(data_dict, batch_size, shuffle=True):
+    N = len(next(iter(data_dict.values())))
+    indices = np.arange(N)
+
+    if shuffle:
+        np.random.shuffle(indices)
+
+    for start in range(0, N, batch_size):
+        end = start + batch_size
+        batch_idx = indices[start:end]
+
+        yield {k: v[batch_idx] for k, v in data_dict.items()}
+
+
+# Flatten trajectories to timestep-level data
+offline_eps = flatten_trajectories(offline_eps)
+
+# Split into train/test
+train_data_labeled, test_data = split_flat_data(offline_eps, test_size=0.2)
+
+# Create batch generator
+train_loader_labeled = timestep_batch_generator(
+    train_data_labeled, batch_size=args.sz_batch, shuffle=True
+)
+
+# Get a batch
+batch = next(train_loader_labeled)
+
+for key, value in batch.items():
+    print(f"{key}: {value.shape}")
+
 # DML Losses
 criterion = losses.Proxy_Anchor(
-    nb_classes=nb_classes,
+    nb_classes=config.nb_classes,
     sz_embed=args.sz_embedding,
     mrg=args.mrg,
     alpha=args.alpha,
@@ -280,22 +405,9 @@ scheduler = torch.optim.lr_scheduler.StepLR(
     opt, step_size=args.lr_decay_step, gamma=args.lr_decay_gamma
 )
 
-database = {}
-with h5py.File(hdf5_file_test, "r") as hf:
-    trajectory_ids = list(hf.keys())
-    database = {
-        i: data_from_traj(hf[traj_id]) for i, traj_id in enumerate(trajectory_ids)
-    }
-
-constraint1 = {
-    "wrist": database[7]["robot0_eye_in_hand_image"][82],
-    "front": database[7]["agentview_image"][82],
-}  # weak unsafe frame
-constraint2 = {
-    "wrist": database[1]["robot0_eye_in_hand_image"][108],
-    "front": database[1]["agentview_image"][108],
-}  # unsafe frame
-
+# Dataset Loader and Sampler
+BS = args.sz_batch  # batch size
+BL = 1
 
 print("Training parameters: {}".format(vars(args)))
 print("Training for {} epochs.".format(args.nb_epochs))
@@ -314,16 +426,18 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
     # Warmup: Train only new params, helps stabilize learning.
     # TODO: implement warmup training if needed
 
-    # pbar = tqdm(enumerate(expert_loader))
+    # # pbar = tqdm(enumerate(expert_loader))
     max_timesteps = 10_000  # Maximum number of timesteps to sample
     min_timesteps = 1_000  # Minimum number of timesteps to sample
-    total_timesteps = len(train_data_labeled)
+    total_timesteps = len(train_data_labeled["discount"])
+
     if total_timesteps > max_timesteps:
         subset_indices = random.sample(range(total_timesteps), max_timesteps)
-        subset = Subset(train_data_labeled, subset_indices)
-        train_loader_labeled = DataLoader(
-            subset, batch_size=BS, shuffle=True, num_workers=args.nb_workers
+        subset = {k: v[subset_indices] for k, v in train_data_labeled.items()}
+        train_loader_labeled = timestep_batch_generator(
+            subset, batch_size=BS, shuffle=True
         )
+        total_timesteps = max_timesteps
     elif (  # If small dataset and using unlabeled data
         total_timesteps < min_timesteps
     ):
@@ -332,48 +446,48 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
         extra_needed = min_timesteps - total_timesteps
         extra_indices = random.choices(all_indices, k=extra_needed)
         combined_indices = all_indices + extra_indices
-        bootstrapped_subset = Subset(train_data_labeled, combined_indices)
+        bootstrapped_subset = {
+            k: v[combined_indices] for k, v in train_data_labeled.items()
+        }
 
-        train_loader_labeled = DataLoader(
-            bootstrapped_subset,
-            batch_size=BS,
-            shuffle=True,
-            num_workers=args.nb_workers,
+        train_loader_labeled = timestep_batch_generator(
+            bootstrapped_subset, batch_size=BS, shuffle=True
         )
+        total_timesteps = min_timesteps
 
-    if (  # If using full dataset
-        args.use_unlabeled_data and args.unlabeled_ratio == -1.0
-    ):
-        if args.ratio_schedule == "const":
-            num_to_sample = max_timesteps
-        elif args.ratio_schedule == "lin":
-            num_to_sample = (max_timesteps * epoch / args.nb_epochs).astype(int)
-        elif args.ratio_schedule == "exp":
-            num_to_sample = (
-                max_timesteps * np.exp(-5 * (1 - epoch / args.nb_epochs) ** 2)
-            ).astype(int)
-        else:
-            raise ValueError("Invalid ratio schedule: {}".format(args.ratio_schedule))
-        subset_indices_unlabeled = random.sample(
-            range(len(train_data_unlabeled)),
-            num_to_sample,
-        )
-        subset_unlabeled = Subset(train_data_unlabeled, subset_indices_unlabeled)
-        train_loader_unlabeled = DataLoader(
-            subset_unlabeled, batch_size=BS, shuffle=True, num_workers=args.nb_workers
-        )
+    # if (  # If using full dataset
+    #     args.use_unlabeled_data and args.unlabeled_ratio == -1.0
+    # ):
+    #     if args.ratio_schedule == "const":
+    #         num_to_sample = max_timesteps
+    #     elif args.ratio_schedule == "lin":
+    #         num_to_sample = (max_timesteps * epoch / args.nb_epochs).astype(int)
+    #     elif args.ratio_schedule == "exp":
+    #         num_to_sample = (
+    #             max_timesteps * np.exp(-5 * (1 - epoch / args.nb_epochs) ** 2)
+    #         ).astype(int)
+    #     else:
+    #         raise ValueError("Invalid ratio schedule: {}".format(args.ratio_schedule))
+    #     subset_indices_unlabeled = random.sample(
+    #         range(len(train_data_unlabeled)),
+    #         num_to_sample,
+    #     )
+    #     subset_unlabeled = Subset(train_data_unlabeled, subset_indices_unlabeled)
+    #     train_loader_unlabeled = DataLoader(
+    #         subset_unlabeled, batch_size=BS, shuffle=True, num_workers=args.nb_workers
+    #     )
 
-    elif args.use_unlabeled_data and args.unlabeled_ratio != -1.0:
-        train_loader_unlabeled = DataLoader(
-            dataset=train_data_unlabeled,
-            batch_size=BS,
-            shuffle=True,
-            num_workers=args.nb_workers,
-        )
+    # elif args.use_unlabeled_data and args.unlabeled_ratio != -1.0:
+    #     train_loader_unlabeled = DataLoader(
+    #         dataset=train_data_unlabeled,
+    #         batch_size=BS,
+    #         shuffle=True,
+    #         num_workers=args.nb_workers,
+    #     )
 
     pbar = tqdm(
         enumerate(train_loader_labeled),
-        total=len(train_loader_labeled),
+        total=total_timesteps // BS,
         position=1,
         leave=False,
     )
@@ -381,24 +495,15 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
     # args.beta = np.linspace(0.2, 1.0, args.nb_epochs)[epoch]  # Linear increase of beta
 
     for batch_idx, data in pbar:
-        labels_gt = data["failure"][:].to(device, dtype=torch.float32)
+        labels_gt = data["label"][:].to(device, dtype=torch.float32)
 
-        data1 = data["cam_zed_embd"].to(device)  # [B 1, 256, 384]
-        data2 = data["cam_rs_embd"].to(device)  # [B 1, 256, 384]
-        inputs1 = data1[:, -1:]  # [B 1, 256, 384]
-        inputs2 = data2[:, -1:]  # [B 1, 256, 384]
-
-        data_state = data["state"].to(device)
-        states = data_state[:, -1:]  # [B 1, 8]
-
-        data_acs = data["action"].to(device)
-        acs = data_acs[:, -1:]  # [B 1, 10]
+        image = data["image"].to(device)  # [B H W 3]
+        state = data["obs_state"].to(device)  # [B, S]
+        acs = data["action"].to(device)  # [B, 1]
         acs = normalize_acs(acs, device)
 
         with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=True):
-            semantic_features = model.semantic_embed(
-                inp1=inputs1, inp2=inputs2, state=states
-            )
+            semantic_features = model.semantic_embed(data)
             if args.use_unlabeled_data:  # and epoch >= 20:
                 semantic_features_unlabeled_tensor = []
                 for idx, data_unlabeled in enumerate(train_loader_unlabeled):
@@ -433,12 +538,9 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
                         semantic_features_unlabeled_tensor[combined_indices]
                     )
 
-        unsafe_weak_mask = labels_gt == 2.0
-        labels_gt_masked = copy.deepcopy(labels_gt)
-        labels_gt_masked[unsafe_weak_mask] = 1.0  # Set
         loss = criterion(
             X=semantic_features.float(),
-            T=labels_gt_masked.squeeze().cuda(),
+            T=labels_gt.squeeze().cuda(),
             U=semantic_features_unlabeled_tensor.float()
             if args.use_unlabeled_data  # and epoch >= 20
             else None,  # Warmup
@@ -463,29 +565,14 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
             :, -1
         ]
 
-        if nb_classes == 2:
+        if config.nb_classes == 2:
             auc = roc_auc_score(
-                y_true=einops.rearrange(labels_gt_masked, "B T -> (B T)").cpu().numpy(),
+                y_true=einops.rearrange(labels_gt, "B T -> (B T)").cpu().numpy(),
                 y_score=cos_sim_fail.detach().cpu().numpy(),
             )
 
         else:
-            raise notImplementedError(
-                "AUC calculation for more than 2 classes is not implemented."
-            )
-            metrics["AUC"].append(
-                roc_auc_score(
-                    y_true=losses.binarize(
-                        einops.rearrange(labels_gt_masked, "B T -> (B T)"),
-                        nb_classes=nb_classes,
-                    )
-                    .cpu()
-                    .numpy(),
-                    y_score=einops.rearrange(logits, "B T L -> (B T) L").cpu().numpy(),
-                    multi_class="ovr",
-                    average="macro",
-                )
-            )
+            auc = 0.0
 
         opt.zero_grad()
         loss.backward()
@@ -518,56 +605,25 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
     scheduler.step()
 
     if epoch >= 0:
-        for data, constraint, t in zip(
-            [database[7], database[1]], [constraint1, constraint2], [82, 108]
-        ):
-            inputs2 = (  # [1, 1, 256, 384]
-                data["cam_rs_embd"][[t], :].to(device).unsqueeze(0)
-            )
-            inputs1 = (  # [1, 1, 256, 384]
-                data["cam_zed_embd"][[t], :].to(device).unsqueeze(0)
-            )
-            # acs = data["action"][t, :].to(device).unsqueeze(0)
-            # acs = normalize_acs(acs, device=device)
-            states = data["state"][[t], :].to(device).unsqueeze(0)  # [1, 1, 8]
-
-            semantic_feat = model.semantic_embed(  # [embedding_dim]
-                inp1=inputs1, inp2=inputs2, state=states
-            )
-            constraint.update({"semantic_feat": semantic_feat.squeeze()})
-
         metrics = {}
         X = []
         y = []
         y_pred = []
         with torch.no_grad():
+            test_loader = timestep_batch_generator(
+                test_data, batch_size=args.sz_batch, shuffle=False
+            )
             pbar = tqdm(
                 enumerate(test_loader),
-                total=len(test_loader),
+                total=len(test_data["discount"] // args.sz_batch),
                 desc="Evaluation",
                 position=2,
                 leave=False,
             )
             for batch_idx, data in pbar:
-                labels_gt = data["failure"][:, -1:].to(
-                    device, dtype=torch.float32
-                )  # [B, 1]
+                labels_gt = data["label"].to(device, dtype=torch.float32)  # [B, 1]
 
-                inputs2 = (  # [B, 1, 256, 384]
-                    data["cam_rs_embd"][:, -1:].to(device)
-                )
-                inputs1 = (  # [B, 1, 256, 384]
-                    data["cam_zed_embd"][:, -1:].to(device)
-                )
-                states = data["state"][:, -1:].to(device)  # [B, 1, 8]
-
-                semantic_features = model.semantic_embed(  # [embedding_dim]
-                    inp1=inputs1, inp2=inputs2, state=states
-                )
-
-                unsafe_weak_mask = labels_gt == 2.0
-                labels_gt_masked = copy.deepcopy(labels_gt)
-                labels_gt_masked[unsafe_weak_mask] = 1.0  # Set
+                semantic_features = model.semantic_embed(data)  # [B, 1, 512]
 
                 # Normalize all vectors for cosine similarity
                 semantic_features_norm = F.normalize(
@@ -601,27 +657,24 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
             y_pred = einops.rearrange(np.concatenate(y_pred, axis=0), "B T -> (B T)")
             num_classes_eval = len(np.unique(y))
 
-            y_gt_masked = copy.deepcopy(y)
-            y_gt_masked[y == 2] = 1  # Set weak unsafe to unsafe
-
             # Calculate metrics
             metrics["Accuracy"] = balanced_accuracy = accuracy_score(
-                y_gt_masked, y_pred
+                y_true=y, y_pred=y_pred
             )
             metrics["Precision"] = precision_score(
-                y_gt_masked, y_pred, average="macro", zero_division=0
+                y_true=y, y_pred=y_pred, average="macro", zero_division=0
             )
             metrics["Recall"] = recall_score(
-                y_gt_masked, y_pred, average="macro", zero_division=0
+                y_true=y, y_pred=y_pred, average="macro", zero_division=0
             )
             metrics["F1-score"] = f1_score(
-                y_gt_masked, y_pred, average="macro", zero_division=0
+                y_true=y, y_pred=y_pred, average="macro", zero_division=0
             )
-            metrics["Balanced Accuracy"] = accuracy_score(y_gt_masked, y_pred)
+            metrics["Balanced Accuracy"] = accuracy_score(y_true=y, y_pred=y_pred)
             metrics["Proxy Anchor Loss"] = (
                 criterion(
                     X=torch.tensor(X, device=device),
-                    T=torch.tensor(y_gt_masked, device=device),
+                    T=torch.tensor(y, device=device),
                     args=args,
                 )
                 .detach()
@@ -638,26 +691,23 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
         }
 
         def cosine_sim_plot_eval(X, y):
-            y_masked = copy.deepcopy(y)
-            y_masked[y == 2] = 1  # Set weak unsafe to unsafe
-
             X_class = {
-                k: X[y_masked == k]
-                / (np.linalg.norm(X[y_masked == k], axis=1, keepdims=True) + 1e-8)
-                for k in np.unique(y_masked)
+                k: X[y == k] / (np.linalg.norm(X[y == k], axis=1, keepdims=True) + 1e-8)
+                for k in np.unique(y)
             }
 
             fig, ax = plt.subplots(figsize=(10, 8))
-            class_to_label = {0: "Safe", 1: "Fail", 2: "Weak Fail"}
+            class_to_label = {k: f"Quad {k}" for k in range(1, 5)}
 
             plt.title("Cosine Similarity Distribution per Class")
             plt.xlabel("Cosine Similarity")
             plt.ylabel("Normalized Density")
 
             class_pairs = []
-            for i in range(len(np.unique(y_masked))):
-                for j in range(i, len(np.unique(y_masked))):
-                    class_pairs.append((i, j))
+            for i in np.unique(y):
+                for j in np.unique(y):
+                    if (j, i) not in class_pairs:
+                        class_pairs.append((i, j))
 
             cmap = plt.cm.rainbow
             colors = [cmap(i / len(class_pairs)) for i in range(len(class_pairs))]
@@ -737,16 +787,25 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
                 {"eval/cosine_sim_plot": wandb.Image(fig), "num_updates": num_updates},
                 step=num_updates,
             )
-            js_div1, ws_dist_1 = compare_kdes(
-                kde1=kde_dict[(0, 0)], kde2=kde_dict[(0, 1)]
-            )
-            js_div2, ws_dist_2 = compare_kdes(
-                kde1=kde_dict[(1, 1)], kde2=kde_dict[(0, 1)]
-            )
+            js_div_list = []
+            ws_dist_list = []
+            for y_query in np.unique(y):
+                class_pairs_subset = [
+                    pair
+                    for pair in class_pairs
+                    if (y_query in pair and pair != (y_query, y_query))
+                ]
+                for pair in class_pairs_subset:
+                    js_div, ws_dist = compare_kdes(
+                        kde1=kde_dict[(y_query, y_query)],
+                        kde2=kde_dict[pair],
+                    )
+                    js_div_list.append(js_div)
+                    ws_dist_list.append(ws_dist)
             wandb.log(
                 {
-                    "eval/avg_JS": (js_div1 + js_div2) / 2.0,
-                    "eval/avg_wass_dist": (ws_dist_1 + ws_dist_2) / 2.0,
+                    "eval/avg_JS": np.mean(js_div_list),
+                    "eval/avg_wass_dist": np.mean(ws_dist_list),
                     "num_updates": num_updates,
                 },
                 step=num_updates,
@@ -756,9 +815,6 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
         cosine_sim_plot_eval(X, y)
 
         def const_conditioned_plots(X, y, const1, const2):
-            y_masked = copy.deepcopy(y)
-            y_masked[y == 2] = 1  # Set weak unsafe to unsafe
-
             P = criterion.proxies.detach()  # Ensure P is in the same dtype as X
 
             cos_sim_fail = -F.linear(
@@ -802,10 +858,10 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
                 for data in [fail_proxy_data, const1_data, const2_data]:
                     cos_sim = data["cos_sim"]
 
-                    tp = ((cos_sim > t) & (y_masked == 0)).sum()
-                    fp = ((cos_sim > t) & (y_masked == 1)).sum()
-                    tn = ((cos_sim <= t) & (y_masked == 1)).sum()
-                    fn = ((cos_sim <= t) & (y_masked == 0)).sum()
+                    tp = ((cos_sim > t) & (y == 0)).sum()
+                    fp = ((cos_sim > t) & (y == 1)).sum()
+                    tn = ((cos_sim <= t) & (y == 1)).sum()
+                    fn = ((cos_sim <= t) & (y == 0)).sum()
 
                     data["tp_rates"].append(tp / (tp + fn) if (tp + fn) > 0 else 0)
                     data["tn_rates"].append(tn / (tn + fp) if (tn + fp) > 0 else 0)
@@ -931,11 +987,7 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
             used_labels = set()
             global_handles = []
             global_labels = []
-            label_to_str = {
-                0: "Safe",
-                1: "Fail",
-                2: "Weak Fail",
-            }
+            label_to_str = {k: f"Quad {k}" for k in range(1, 5)}
 
             for ax, (data, title) in zip(
                 axes,
@@ -994,31 +1046,30 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
 
             return cos_sim_fail
 
-        cos_sim_fail = const_conditioned_plots(
-            X, y, const1=constraint1, const2=constraint2
-        )
+        # cos_sim_fail = const_conditioned_plots(
+        #     X, y, const1=constraint1, const2=constraint2
+        # )
 
-        if nb_classes == 2:
-            y_masked = copy.deepcopy(y)
-            y_masked[y == 2] = 1
+        if config.nb_classes == 2:
             auc = roc_auc_score(
-                y_true=y_masked,
+                y_true=y,
                 y_score=-cos_sim_fail.cpu().numpy(),
             )
             wandb.log({"eval/AUC": auc, "num_updates": num_updates}, step=num_updates)
 
         else:
-            auc = roc_auc_score(
-                y_true=losses.binarize(
-                    einops.rearrange(labels_gt_masked, "B T -> (B T)"),
-                    nb_classes=nb_classes,
-                )
-                .cpu()
-                .numpy(),
-                y_score=einops.rearrange(logits, "B T L -> (B T) L").cpu().numpy(),
-                multi_class="ovr",
-                average="macro",
-            )
+            # auc = roc_auc_score(
+            #     y_true=losses.binarize(
+            #         einops.rearrange(labels_gt, "B T -> (B T)"),
+            #         nb_classes=nb_classes,
+            #     )
+            #     .cpu()
+            #     .numpy(),
+            #     y_score=einops.rearrange(logits, "B T L -> (B T) L").cpu().numpy(),
+            #     multi_class="ovr",
+            #     average="macro",
+            # )
+            auc = None
             wandb.log({"eval/AUC": auc, "num_updates": num_updates}, step=num_updates)
 
         for key, value in metrics.items():
@@ -1042,8 +1093,8 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
         reducer = umap.UMAP(n_components=2, metric="cosine")
         umap_output = reducer.fit_transform(umap_input)
 
-        X_umap = umap_output[:-nb_classes]
-        proxies_umap = umap_output[-nb_classes:]
+        X_umap = umap_output[: -config.nb_classes]
+        proxies_umap = umap_output[-config.nb_classes :]
 
         # ---- Rainbow Color Setup ----
         cmap = colormaps.get_cmap("hsv")
@@ -1094,6 +1145,7 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
         with torch.no_grad():
             model.proxies.copy_(criterion.proxies)
 
+        args.save_model = False  # Debug
         if args.save_model:
             model_name = wandb_name
 

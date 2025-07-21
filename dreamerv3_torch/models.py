@@ -33,6 +33,7 @@ class WorldModel(nn.Module):
         self._step = step
         self._use_amp = True if config.precision == 16 else False
         self._config = config
+        self.nb_classes = config.nb_classes
         shapes = {k: tuple(v.shape) for k, v in obs_space.spaces.items()}
         self.encoder = networks.MultiEncoder(shapes, **config.encoder)
         self.embed_size = self.encoder.outdim
@@ -71,6 +72,13 @@ class WorldModel(nn.Module):
             device=config.device,
             name="Margin",
         )
+        self.semantic_encoder = nn.Sequential(
+            nn.Linear(feat_size, feat_size),
+            nn.ReLU(),
+            nn.Linear(feat_size, 512),
+        )
+
+        self.proxies = nn.Parameter(torch.randn(self.nb_classes, 512).cuda())
         """self.heads["reward"] = networks.MLP(
             feat_size,
             (255,) if config.reward_head["dist"] == "symlog_disc" else (),
@@ -235,7 +243,7 @@ class WorldModel(nn.Module):
     # this function is called during both rollout and training
     def preprocess(self, obs):
         obs = {
-            k: torch.tensor(v, device=self._config.device, dtype=torch.float32)
+            k: torch.as_tensor(v, dtype=torch.float32, device=self._config.device)
             for k, v in obs.items()
         }
         obs["image"] = obs["image"] / 255.0
@@ -272,6 +280,19 @@ class WorldModel(nn.Module):
         error = (model - truth + 1.0) / 2.0
 
         return torch.cat([truth, model, error], 2)
+
+    def semantic_embed(self, data):
+        data = self.preprocess(data)
+        embed = self.encoder(data)
+
+        latent, _ = self.dynamics.observe(
+            embed.unsqueeze(1),
+            data["action"].unsqueeze(1),
+            data["is_first"].unsqueeze(1),
+        )
+        feat = self.dynamics.get_feat(latent).detach()
+        semantic_embed = self.semantic_encoder(feat)
+        return semantic_embed
 
 
 class ImagBehavior(nn.Module):

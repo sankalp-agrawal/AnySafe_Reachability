@@ -17,7 +17,7 @@ from dino_wm.dino_models import normalize_acs
 
 class Franka_DINOWM_Env(gym.Env):
     # TODO: 1. baseline over approximation; 2. our critic loss drop faster
-    def __init__(self, params, device="cuda:0"):
+    def __init__(self, params, device="cuda:0", constraint=None):
         self.device = device
         self.set_wm(*params)
 
@@ -28,6 +28,7 @@ class Franka_DINOWM_Env(gym.Env):
         self.front_hist = None
         self.wrist_hist = None
         self.state_hist = None
+        self.constraint = constraint
 
     def _reset_loader(self):
         self.data = iter(DataLoader(self.dataset, batch_size=1, shuffle=True))
@@ -122,17 +123,33 @@ class Franka_DINOWM_Env(gym.Env):
             semantic_features = self.wm.semantic_embed(
                 inp1=inp1, inp2=inp2, state=state
             )
-            proxies = self.wm.proxies.to(self.device)  # [M Z]
+            if self.constraint is None:
+                proxies = self.wm.proxies.to(self.device)  # [M Z]
 
-            queries_norm = F.normalize(
-                semantic_features.squeeze(), p=2, dim=1
-            )  # [N, Z]
-            proxies_norm = F.normalize(proxies, p=2, dim=1)  # [M, Z]
+                queries_norm = F.normalize(
+                    semantic_features.squeeze(), p=2, dim=1
+                )  # [N, Z]
+                proxies_norm = F.normalize(proxies, p=2, dim=1)  # [M, Z]
 
-            # Compute cosine similarity
-            cos_sim_matrix = queries_norm @ proxies_norm.T  # [N, M]
+                # Compute cosine similarity
+                cos_sim_matrix = queries_norm @ proxies_norm.T  # [N, M]
 
-            outputs = torch.tanh(2 * -cos_sim_matrix[-1, -1].unsqueeze(0))
+                outputs = torch.tanh(2 * -cos_sim_matrix[-1, -1].unsqueeze(0))
+            else:
+                proxies = (
+                    self.constraint["semantic_feat"].unsqueeze(0).to(self.device)
+                )  # [1, Z]
+
+                queries_norm = F.normalize(
+                    semantic_features.squeeze(), p=2, dim=1
+                )  # [N, Z]
+                proxies_norm = F.normalize(proxies, p=2, dim=1)  # [M, Z]
+
+                # Compute cosine similarity
+                cos_sim_matrix = queries_norm @ proxies_norm.T  # [N, M]
+
+                outputs = torch.tanh(2 * -cos_sim_matrix[-1, -1].unsqueeze(0))
+
             g_xList.append(outputs.detach().cpu().numpy())
 
         safety_margin = np.array(g_xList).squeeze()

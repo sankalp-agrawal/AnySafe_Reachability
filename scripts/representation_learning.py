@@ -9,7 +9,7 @@ from tqdm import tqdm
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(parent_dir)
 dreamer_dir = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "../dreamerv3-torch")
+    os.path.join(os.path.dirname(__file__), "../dreamerv3_torch")
 )
 sys.path.append(dreamer_dir)
 saferl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "/PyHJ"))
@@ -31,10 +31,9 @@ import tools
 # note: need to include the dreamerv3 repo for this
 from dreamer import make_dataset
 from PIL import Image
+from PyHJ.exploration import GaussianNoise
 from termcolor import cprint
 from transformers import AutoImageProcessor, AutoModel
-
-from PyHJ.exploration import GaussianNoise
 
 # NOTE: all the reach-avoid gym environments are in reach_rl_gym, the constraint information is output as an element of the info dictionary in gym.step() function
 """

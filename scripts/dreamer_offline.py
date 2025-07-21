@@ -11,7 +11,7 @@ import ruamel.yaml as yaml
 
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(parent_dir)
-dreamer = os.path.abspath(os.path.join(os.path.dirname(__file__), "../dreamerv3-torch"))
+dreamer = os.path.abspath(os.path.join(os.path.dirname(__file__), "../dreamerv3_torch"))
 sys.path.append(dreamer)
 sys.path.append(str(pathlib.Path(__file__).parent))
 

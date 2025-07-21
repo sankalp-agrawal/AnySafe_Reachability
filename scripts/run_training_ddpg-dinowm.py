@@ -9,8 +9,13 @@ from torch.utils.tensorboard import SummaryWriter
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(parent_dir)
 
+import os
+import sys
+
+import h5py
 import wandb
 from dino_wm.dino_models import VideoTransformer
+from dino_wm.proxy_anchor.viz_traj_cosine_sim import data_from_traj
 from dino_wm.test_loader import SplitTrajectoryDataset
 from PyHJ.data import Collector, VectorReplayBuffer
 from PyHJ.env import DummyVectorEnv
@@ -19,10 +24,11 @@ from PyHJ.trainer import offpolicy_trainer
 from PyHJ.utils import WandbLogger
 from PyHJ.utils.net.common import Net
 from PyHJ.utils.net.continuous import Actor, Critic
+from torch.utils.data import DataLoader
+from tqdm import *
 
 # from dreamer import make_dataset
 # NOTE: all the reach-avoid gym environments are in reach_rl_gym, the constraint information is output as an element of the info dictionary in gym.step() function
-from torch.utils.data import DataLoader
 
 wm = VideoTransformer(
     image_size=(224, 224),
@@ -47,6 +53,7 @@ wm.load_state_dict(
     )
 )
 hdf5_file = "/home/sunny/data/skittles/consolidated.h5"
+hdf5_file_test = "/home/sunny/data/skittles/vlog-test-labeled/consolidated.h5"
 bs = 1
 bl = 20
 device = "cuda:0"
@@ -62,16 +69,49 @@ state_shape = env.observation_space.shape or env.observation_space.n
 action_shape = env.action_space.shape or env.action_space.n
 max_action = env.action_space.high[0]
 
+database = {}
+with h5py.File(hdf5_file_test, "r") as hf:
+    trajectory_ids = list(hf.keys())
+    database = {
+        i: data_from_traj(hf[traj_id]) for i, traj_id in enumerate(trajectory_ids)
+    }
+
+constraint1 = {
+    "wrist": database[7]["robot0_eye_in_hand_image"][82],
+    "front": database[7]["agentview_image"][82],
+    "inputs2": database[7]["cam_rs_embd"][[82], :].to(device).unsqueeze(0),
+    "inputs1": database[7]["cam_zed_embd"][[82], :].to(device).unsqueeze(0),
+    "states": database[7]["state"][[82], :].to(device).unsqueeze(0),  # [1, 1, 8]
+}  # weak unsafe frame
+constraint2 = {
+    "wrist": database[1]["robot0_eye_in_hand_image"][108],
+    "front": database[1]["agentview_image"][108],
+    "inputs2": database[1]["cam_rs_embd"][[108], :].to(device).unsqueeze(0),
+    "inputs1": database[1]["cam_zed_embd"][[108], :].to(device).unsqueeze(0),
+    "states": database[1]["state"][[108], :].to(device).unsqueeze(0),  # [1, 1, 8]
+}  # unsafe frame
+
+for constraint in [constraint1, constraint2]:
+    semantic_feat = wm.semantic_embed(  # [embedding_dim]
+        inp1=constraint["inputs1"],
+        inp2=constraint["inputs2"],
+        state=constraint["states"],
+    )
+    constraint.update({"semantic_feat": semantic_feat.squeeze()})
 
 train_envs = DummyVectorEnv(
     [
-        lambda: gymnasium.make("franka_wm_DINO-v0", params=[wm, expert_data])
+        lambda: gymnasium.make(
+            "franka_wm_DINO-v0", params=[wm, expert_data], constraint=constraint1
+        )
         for _ in range(1)
     ]
 )
 test_envs = DummyVectorEnv(
     [
-        lambda: gymnasium.make("franka_wm_DINO-v0", params=[wm, expert_data])
+        lambda: gymnasium.make(
+            "franka_wm_DINO-v0", params=[wm, expert_data], constraint=constraint1
+        )
         for _ in range(1)
     ]
 )
@@ -150,7 +190,9 @@ epoch = 0
 def save_best_fn(policy, epoch=epoch):
     torch.save(
         policy.state_dict(),
-        os.path.join(log_path + "/epoch_id_{}".format(epoch), "rotvec_policy.pth"),
+        os.path.join(
+            log_path + "/epoch_id_{}".format(epoch), "rotvec_policy_const1.pth"
+        ),
     )
 
 

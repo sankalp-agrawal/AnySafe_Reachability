@@ -1,4 +1,4 @@
-# dreamerv3-torch
+# dreamerv3_torch
 Pytorch implementation of [Mastering Diverse Domains through World Models](https://arxiv.org/abs/2301.04104v1). DreamerV3 is a scalable algorithm that outperforms previous approaches across various domains with fixed hyperparameters.
 
 ## Instructions
@@ -17,7 +17,7 @@ Monitor results:
 ```
 tensorboard --logdir ./logdir
 ```
-To set up Atari or Minecraft environments, please check the scripts located in [env/setup_scripts](https://github.com/NM512/dreamerv3-torch/tree/main/envs/setup_scripts).
+To set up Atari or Minecraft environments, please check the scripts located in [env/setup_scripts](https://github.com/NM512/dreamerv3_torch/tree/main/envs/setup_scripts).
 
 ### Method 2: Docker
 
@@ -43,7 +43,7 @@ So far, the following benchmarks can be used for testing.
 ![atari100k](imgs/atari100k.png)
 
 #### Crafter
-<img src="https://github.com/NM512/dreamerv3-torch/assets/70328564/a0626038-53f6-4300-a622-7ac257f4c290" width="300" height="150" />
+<img src="https://github.com/NM512/dreamerv3_torch/assets/70328564/a0626038-53f6-4300-a622-7ac257f4c290" width="300" height="150" />
 
 ## Acknowledgments
 This code is heavily inspired by the following works:
