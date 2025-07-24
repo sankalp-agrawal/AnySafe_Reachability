@@ -17,6 +17,7 @@ sys.path.append(dreamer_dir)
 saferl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "/PyHJ"))
 sys.path.append(saferl_dir)
 print(sys.path)
+
 import collections
 import io
 import pathlib
@@ -29,7 +30,7 @@ import wandb
 
 # note: need to include the dreamerv3 repo for this
 from dreamer import make_dataset
-from generate_data_fast import init_renderer, render_frame
+from generate_data_traj_cont import get_frame
 from PIL import Image
 from PyHJ.data import Collector, VectorReplayBuffer
 from PyHJ.env import DummyVectorEnv
@@ -112,26 +113,23 @@ def get_args():
 args = get_args()
 config = args
 
-import ipdb
 
-ipdb.set_trace()
 env = gymnasium.make(args.task, params=[config])
 config.num_actions = (
     env.action_space.n if hasattr(env.action_space, "n") else env.action_space.shape[0]
 )
 wm = models.WorldModel(env.observation_space_full, env.action_space, 0, config)
-import ipdb
-
-ipdb.set_trace()
 
 config = tools.set_wm_name(config)
 
-ckpt_path = config.rssm_ckpt_path
-checkpoint = torch.load(ckpt_path)
-state_dict = {
-    k[14:]: v for k, v in checkpoint["agent_state_dict"].items() if "_wm" in k
-}
-wm.load_state_dict(state_dict)
+# ckpt_path = config.rssm_ckpt_path
+# checkpoint = torch.load(ckpt_path)
+# state_dict = {
+#     k[14:]: v for k, v in checkpoint["agent_state_dict"].items() if "_wm" in k
+# }
+# wm.load_state_dict(state_dict)
+ckpt_path = "logs/checkpoints_pa/encoder_mrg_0.1_alpha_32_num_ex_all_ul_F.pth"
+wm.load_state_dict(torch.load(ckpt_path), strict=False)
 wm.eval()
 
 offline_eps = collections.OrderedDict()
@@ -347,47 +345,31 @@ if not os.path.exists(log_path + "/epoch_id_{}".format(epoch)):
 def make_cache(config, thetas):
     nx, ny = config.nx, config.ny
     cache = {}
-
-    # Initialize renderer once
-    fig, ax, circle, agent_point, agent_quiver = init_renderer(config)
-
-    xs = np.linspace(-1.1, 1.1, nx, endpoint=True)
-    ys = np.linspace(-1.1, 1.1, ny, endpoint=True)
-
     for theta in thetas:
         v = np.zeros((nx, ny))
+        xs = np.linspace(-1.1, 1.1, nx, endpoint=True)
+        ys = np.linspace(-1.1, 1.1, ny, endpoint=True)
         key = theta
-        print("Creating cache for key", key)
-
-        idxs, imgs_prev, thetas_list, thetas_prev = [], [], [], []
-
+        print("creating cache for key", key)
+        idxs, imgs_prev, thetas, thetas_prev = [], [], [], []
         xs_prev = xs - config.dt * config.speed * np.cos(theta)
         ys_prev = ys - config.dt * config.speed * np.sin(theta)
         theta_prev = theta
-
         it = np.nditer(v, flags=["multi_index"])
         while not it.finished:
             idx = it.multi_index
             x_prev = xs_prev[idx[0]]
             y_prev = ys_prev[idx[1]]
-
-            state = torch.tensor([x_prev, y_prev, theta_prev])
-            img = render_frame(
-                state, config, fig, ax, circle, agent_point, agent_quiver
-            )
-
-            imgs_prev.append(img)
-            idxs.append(idx)
-            thetas_list.append(theta)
+            thetas.append(theta)
             thetas_prev.append(theta_prev)
-
+            imgs_prev.append(
+                get_frame(torch.tensor([x_prev, y_prev, theta_prev]), config)
+            )
+            idxs.append(idx)
             it.iternext()
-
         idxs = np.array(idxs)
         theta_prev_lin = np.array(thetas_prev)
-
-        cache[key] = [idxs, imgs_prev, theta_prev_lin]
-
+        cache[theta] = [idxs, imgs_prev, theta_prev_lin]
     return cache
 
 
@@ -428,13 +410,17 @@ for iter in range(warmup + args.total_episodes):
     epoch = epoch + args.epoch
     print("log_path: ", log_path + "/epoch_id_{}".format(epoch))
     if args.total_episodes > 1:
-        writer = SummaryWriter(log_path + "/epoch_id_{}".format(epoch))
+        writer = SummaryWriter(
+            log_path + "/epoch_id_{}".format(epoch)
+        )  # filename_suffix="_"+timestr+"_epoch_id_{}".format(epoch))
     else:
         if not os.path.exists(log_path + "/total_epochs_{}".format(epoch)):
             print("Just created the log directory!")
             print("log_path: ", log_path + "/total_epochs_{}".format(epoch))
             os.makedirs(log_path + "/total_epochs_{}".format(epoch))
-        writer = SummaryWriter(log_path + "/total_epochs_{}".format(epoch))
+        writer = SummaryWriter(
+            log_path + "/total_epochs_{}".format(epoch)
+        )  # filename_suffix="_"+timestr+"_epoch_id_{}".format(epoch))
     if logger is None:
         task_name = (
             args.task

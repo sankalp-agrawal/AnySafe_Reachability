@@ -16,7 +16,6 @@ import torch.nn.functional as F
 import umap.umap_ as umap
 import wandb
 from dino_wm.dino_models import normalize_acs
-from sklearn.model_selection import train_test_split
 
 # note: need to include the dreamerv3 repo for this
 from termcolor import cprint
@@ -269,21 +268,44 @@ def get_args():
 dummy_variable = PyHJ
 
 config = get_args()
-config.nb_classes = 4  # four quadrants in the 2D space
-
+config = tools.set_wm_name(config)
+config.grid_size = 4
+config.nb_classes = config.grid_size**2  # four quadrants in the 2D space
 env = gymnasium.make(config.task, params=[config])
 
 config.num_actions = (
     env.action_space.n if hasattr(env.action_space, "n") else env.action_space.shape[0]
 )
 model = models.WorldModel(env.observation_space_full, env.action_space, 0, config)
-ckpt_path = "/home/sunny/anysafe_project/AnySafe_Reachability/logs/dreamer_dubins/dubins_mlp_obs_state_cnn_image_lz_None_sc_F_arrow_0.15/best_rssm_ckpt_9999_0_12.pt"
+ckpt_path = config.rssm_ckpt_path
 checkpoint = torch.load(ckpt_path)
+
 state_dict = {
     k[14:]: v for k, v in checkpoint["agent_state_dict"].items() if "_wm" in k
 }
 
-model.load_state_dict(state_dict, strict=False)
+model_state_dict = model.state_dict()
+loaded_state_dict = {}
+
+for name, param in state_dict.items():
+    if name not in model_state_dict:
+        print(f"Skipping '{name}' as it is not in the model.")
+        continue
+
+    if model_state_dict[name].shape != param.shape:
+        print(
+            f"Shape mismatch for '{name}': "
+            f"model={model_state_dict[name].shape}, "
+            f"checkpoint={param.shape}. Skipping."
+        )
+        continue
+
+    loaded_state_dict[name] = param
+
+# Load only the matching parameters
+model.load_state_dict(loaded_state_dict, strict=False)
+
+# model.load_state_dict(state_dict, strict=False)
 model.to(device)
 model.eval()
 
@@ -322,32 +344,41 @@ def flatten_trajectories(trajectories):
 
     # class labels
     points = flat_data["privileged_state"][:, :2]  # [B 2]
-    x = points[:, 0]
-    y = points[:, 1]
 
-    x_mask, y_mask = (x > 0), (y > 0)
-    flat_data["label"] = torch.zeros_like(x, dtype=torch.float32).unsqueeze(-1)
-    flat_data["label"][x_mask & y_mask] = 1.0  # Quadrant 1
-    flat_data["label"][~x_mask & y_mask] = 2.0  # Quadrant 2
-    flat_data["label"][~x_mask & ~y_mask] = 3.0  # Quadrant 3
-    flat_data["label"][x_mask & ~y_mask] = 4.0  # Quadrant 4
-    flat_data["label"].unsqueeze(-1)
+    scaled = (points + 1) / 2
+
+    # Convert to grid indices
+    x_idx = (scaled[:, 0] * config.grid_size).clamp(0, max=config.grid_size - 1).long()
+    y_idx = (scaled[:, 1] * config.grid_size).clamp(0, max=config.grid_size - 1).long()
+
+    # Row-major grid index: row * num_cols + col
+    labels = y_idx * config.grid_size + x_idx
+    labels = labels.to(torch.int64)
+
+    flat_data["label"] = labels.unsqueeze(-1)
     return flat_data
 
 
 # 2. Split at Timestep Level
 def split_flat_data(flat_data, test_size=0.2, seed=42):
-    N = len(next(iter(flat_data.values())))
-    indices = np.arange(N)
+    points = flat_data["privileged_state"][:, :2]  # [B, 2]
 
-    train_idx, test_idx = train_test_split(
-        indices, test_size=test_size, random_state=seed
+    step = 2.0 / config.grid_size
+    radius = step / 2
+    coords = torch.linspace(
+        -1 + step / 2, 1 - step / 2, config.grid_size, device=points.device
     )
 
-    def extract(idx):
-        return {k: v[idx] for k, v in flat_data.items()}
+    y_coords, x_coords = torch.meshgrid(coords, coords, indexing="ij")
+    centers = torch.stack([x_coords, y_coords], dim=-1).reshape(-1, 2)
 
-    return extract(train_idx), extract(test_idx)
+    dists_squared = ((points[:, None, :] - centers[None, :, :]) ** 2).sum(dim=-1)
+    mask = (dists_squared < radius**2).any(dim=1)
+
+    def extract(mask):
+        return {k: v[mask] for k, v in flat_data.items()}
+
+    return extract(mask), extract(torch.logical_not(mask))  # train, test data
 
 
 # 3. Batch Generator
@@ -561,18 +592,18 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
             semantic_features.float(), "B T Z -> (B T) Z"
         )  # Ensure X is in the correct shape
 
-        cos_sim_fail = F.linear(losses.l2_norm(semantic_features), losses.l2_norm(P))[
-            :, -1
-        ]
+        cos_sim_logits = F.softmax(
+            F.linear(  # [(B T) N]
+                losses.l2_norm(semantic_features), losses.l2_norm(P)
+            ),
+            dim=-1,
+        )
 
-        if config.nb_classes == 2:
-            auc = roc_auc_score(
-                y_true=einops.rearrange(labels_gt, "B T -> (B T)").cpu().numpy(),
-                y_score=cos_sim_fail.detach().cpu().numpy(),
-            )
-
-        else:
-            auc = 0.0
+        auc = roc_auc_score(
+            y_true=einops.rearrange(labels_gt, "B T -> (B T)").cpu().numpy(),
+            y_score=cos_sim_logits.detach().cpu().numpy(),
+            multi_class="ovo",
+        )
 
         opt.zero_grad()
         loss.backward()
@@ -646,6 +677,7 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
 
                 # Choose the index (0 or 1) of the most similar vector
                 logits = F.softmax(cos_sim, dim=-1)  # (10, 1, 2)
+
                 pred_labels = logits.argmax(dim=-1)  # (10, 1)
 
                 X.append(semantic_features.cpu().numpy())
@@ -656,6 +688,7 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
             y = einops.rearrange(np.concatenate(y, axis=0), "B T -> (B T)")
             y_pred = einops.rearrange(np.concatenate(y_pred, axis=0), "B T -> (B T)")
             num_classes_eval = len(np.unique(y))
+            classes_eval = np.unique(y).astype(int)
 
             # Calculate metrics
             metrics["Accuracy"] = balanced_accuracy = accuracy_score(
@@ -686,18 +719,17 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
             # )
 
         cosine_sims = {
-            i: {j: [] for j in range(i, num_classes_eval)}
-            for i in range(num_classes_eval)
+            i: {j: [] for j in range(i, num_classes_eval + 1)} for i in classes_eval
         }
 
         def cosine_sim_plot_eval(X, y):
             X_class = {
                 k: X[y == k] / (np.linalg.norm(X[y == k], axis=1, keepdims=True) + 1e-8)
-                for k in np.unique(y)
+                for k in classes_eval
             }
 
             fig, ax = plt.subplots(figsize=(10, 8))
-            class_to_label = {k: f"Quad {k}" for k in range(1, 5)}
+            class_to_label = {k: f"Quad {k}" for k in range(0, config.grid_size**2)}
 
             plt.title("Cosine Similarity Distribution per Class")
             plt.xlabel("Cosine Similarity")
@@ -709,8 +741,18 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
                     if (j, i) not in class_pairs:
                         class_pairs.append((i, j))
 
-            cmap = plt.cm.rainbow
-            colors = [cmap(i / len(class_pairs)) for i in range(len(class_pairs))]
+            if len(class_pairs) > 4:
+                cmap = plt.cm.rainbow
+                colors = []
+                for index, (x, y) in enumerate(class_pairs):
+                    if x == y:
+                        colors.append("black")
+                    else:
+                        colors.append(cmap(index / len(class_pairs)))
+
+            else:
+                cmap = plt.cm.rainbow
+                colors = [cmap(i / len(class_pairs)) for i in range(len(class_pairs))]
 
             kde_dict = {}
 
@@ -1098,34 +1140,38 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
 
         # ---- Rainbow Color Setup ----
         cmap = colormaps.get_cmap("hsv")
-        class_colors = [cmap(i / num_classes_eval) for i in range(num_classes_eval)]
+        class_colors = {
+            k: cmap(i / num_classes_eval) for i, k in enumerate(classes_eval)
+        }
 
         # ---- Plot ----
         plt.figure(figsize=(8, 6))
 
         # Plot data points
-        for class_idx in range(num_classes_eval):
-            idxs = y == class_idx
+        for class_idx, class_label in enumerate(classes_eval):
+            idxs = y == class_label
             plt.scatter(
                 X_umap[idxs, 0],
                 X_umap[idxs, 1],
                 s=15,
-                color=class_colors[class_idx],
-                label=f"Class {class_idx} (data)",
+                color=class_colors[class_label],
+                label=f"Class {class_label} (data)",
                 alpha=0.7,
             )
 
-        # Plot proxies
-        for i, proxy in enumerate(proxies_umap):
+        # Plot proxies on top
+        for class_idx, class_label in enumerate(classes_eval):
+            proxy = proxies_umap[class_idx]
+
             plt.scatter(
                 proxy[0],
                 proxy[1],
-                color=class_colors[i],
+                color=class_colors[class_label],
                 marker="X",
                 s=100,
                 edgecolor="black",
                 linewidth=1.2,
-                label=f"Class {i} (proxy)",
+                label=f"Class {class_label} (proxy)",
                 alpha=1.0,
             )
 
@@ -1145,20 +1191,19 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
         with torch.no_grad():
             model.proxies.copy_(criterion.proxies)
 
-        args.save_model = False  # Debug
         if args.save_model:
             model_name = wandb_name
 
             torch.save(
                 model.state_dict(),
-                f"../checkpoints_pa/encoder_{model_name}.pth",
+                f"logs/checkpoints_pa/encoder_{model_name}.pth",
             )
-            tqdm.write(f"Model saved to /checkpoints_pa/encoder_{model_name}.pth")
+            tqdm.write(f"Model saved to /logs/checkpoints_pa/encoder_{model_name}.pth")
 
             if balanced_accuracy < best_eval:
                 best_eval = balanced_accuracy
                 print(f"New best at iter {i}, saving model.")
                 torch.save(
                     model.state_dict(),
-                    f"../checkpoints_pa/best_encoder_{model_name}.pth",
+                    f"logs/checkpoints_pa/best_encoder_{model_name}.pth",
                 )

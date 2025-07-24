@@ -14,7 +14,11 @@ def binarize(T, nb_classes):
         # Manual one-hot encoding for binary case
         T = np.eye(2)[T.astype(int)]
     else:
-        T = sklearn.preprocessing.label_binarize(T, classes=range(nb_classes))
+        class_labels = np.unique(T)
+        assert len(class_labels) == nb_classes, (
+            f"Number of unique labels {len(class_labels)} does not match nb_classes {nb_classes}."
+        )
+        T = sklearn.preprocessing.label_binarize(T, classes=class_labels)
 
     T = torch.FloatTensor(T).cuda()
     return T

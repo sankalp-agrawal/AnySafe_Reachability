@@ -42,7 +42,7 @@ class Dubins_WM_Env(gym.Env):
         self.low = np.array([-1.1, -1.1, -np.pi])
         self.device = "cuda:0"
         self.num_constraints = 1
-        self.constraints_shape = 544
+        self.constraints_shape = config.constraint_embedding_dim
         self.observation_space = spaces.Dict(
             {
                 "state": spaces.Box(
@@ -124,7 +124,7 @@ class Dubins_WM_Env(gym.Env):
         truncated = False
         self.obs = {
             "state": self.feat.flatten(),
-            "constraints": self.constraints,
+            "constraints": self.constraints_sem,  # Semantic embedding of the constraints
         }
         info = {"is_first": False, "is_terminal": terminated}
         return self.obs, rew, terminated, truncated, info
@@ -150,7 +150,7 @@ class Dubins_WM_Env(gym.Env):
         self.select_constraints()
         self.obs = {
             "state": self.feat.flatten(),
-            "constraints": self.constraints,
+            "constraints": self.constraints_sem,  # Semantic embedding of the constraints
         }
         return self.obs, {"is_first": True, "is_terminal": False}
 
@@ -169,15 +169,20 @@ class Dubins_WM_Env(gym.Env):
             safety_margin = np.array(g_xList).reshape(-1)
         elif self.safety_margin_type == "cosine_similarity":
             feat = feat.detach().cpu().numpy()
+            feat_sem = self.wm.semantic_encoder(
+                torch.tensor(feat, device=self.device, dtype=torch.float32)
+            )
             with torch.no_grad():
-                constraints = self.constraints[..., :-1]  # (N Z)
+                constraints = self.constraints_sem[..., :-1]  # (N Z)
                 constraints = einops.repeat(
-                    constraints, "N Z -> B N Z", B=feat.shape[0]
+                    constraints, "N Z -> B N Z", B=feat_sem.shape[0]
                 )
-                feat = feat.reshape(constraints.shape)  # (B N Z)
+                feat_sem = feat_sem.reshape(constraints.shape)  # (B N Z)
 
-                numerator = np.sum(feat * constraints, axis=-1)  # (B N)
-                denominator = np.linalg.norm(feat, axis=-1) * np.linalg.norm(  # (B N)
+                numerator = np.sum(feat_sem * constraints, axis=-1)  # (B N)
+                denominator = np.linalg.norm(
+                    feat_sem, axis=-1
+                ) * np.linalg.norm(  # (B N)
                     constraints, axis=-1
                 )
                 metric = -numerator / (denominator + 1e-8)  # (B N)
@@ -312,10 +317,18 @@ class Dubins_WM_Env(gym.Env):
             imgs=[img],
             compute_lz=False,
         )
-        feat_c = np.append(
-            feat_c, 1.0
-        )  # Append 1.0 to indicate that this constraint is active
-        self.constraints = np.array(feat_c).reshape(self.num_constraints, -1)
+        self.constraints_feat = np.array(np.append(feat_c, 1.0)).reshape(
+            self.num_constraints, -1
+        )
+        self.constraints_sem = np.append(  # Semantic embedding of the constraints
+            self.wm.semantic_encoder(
+                torch.tensor(np.array(feat_c), device=self.device, dtype=torch.float32)
+            )
+            .detach()
+            .cpu()
+            .numpy(),
+            1.0,
+        ).reshape(self.num_constraints, -1)
         self.gt_constraints = np.array(np.append(constraint_state, 1.0)).reshape(
             self.num_constraints, -1
         )  # Store the ground truth constraints
@@ -429,7 +442,7 @@ class Dubins_WM_Env(gym.Env):
                 obs = {
                     "state": feat,
                     "constraints": einops.repeat(
-                        self.constraints, "1 C -> N 1 C", N=feat.shape[0]
+                        self.constraints_sem, "1 C -> N 1 C", N=feat.shape[0]
                     ),
                 }
                 V = evaluate_V(obs=obs, policy=policy, critic=policy.critic)

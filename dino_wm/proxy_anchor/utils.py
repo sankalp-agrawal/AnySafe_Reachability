@@ -12,6 +12,7 @@ def load_state_dict_flexible(model, checkpoint_path):
     state_dict = checkpoint.get("state_dict", checkpoint)
 
     model_state_dict = model.state_dict()
+
     loaded_state_dict = {}
 
     for name, param in state_dict.items():

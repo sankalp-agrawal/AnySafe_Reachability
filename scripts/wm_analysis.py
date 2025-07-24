@@ -117,12 +117,12 @@ wm = models.WorldModel(env.observation_space_full, env.action_space, 0, config)
 
 config = tools.set_wm_name(config)
 
-ckpt_path = config.rssm_ckpt_path
-checkpoint = torch.load(ckpt_path, weights_only=True)
-state_dict = {
-    k[14:]: v for k, v in checkpoint["agent_state_dict"].items() if "_wm" in k
-}
-wm.load_state_dict(state_dict)
+ckpt_path = "logs/checkpoints_pa/encoder_mrg_0.1_alpha_32_num_ex_all_ul_F.pth"
+# checkpoint = torch.load(ckpt_path, weights_only=True)
+# state_dict = {
+#     k[14:]: v for k, v in checkpoint["agent_state_dict"].items() if "_wm" in k
+# }
+wm.load_state_dict(torch.load(ckpt_path), strict=False)
 wm.eval()
 
 offline_eps = collections.OrderedDict()
@@ -229,11 +229,18 @@ def get_latent(
     feat = wm.dynamics.get_feat(post).detach()
     stoch = post["stoch"]  # z_t
     deter = post["deter"]  # h_t
-    return feat.squeeze().cpu().numpy(), stoch, deter
+    semantic = wm.semantic_encoder(feat)
+    return feat.squeeze().cpu().numpy(), stoch, deter, semantic.squeeze().cpu().numpy()
 
 
 def topographic_map(
-    config, cache, thetas, constraint_state, similarity_metric, model=None
+    config,
+    cache,
+    thetas,
+    constraint_state,
+    similarity_metric,
+    model=None,
+    use_semantic=True,
 ):
     if constraint_state[-1] is None:
         constraint_states = [
@@ -251,76 +258,86 @@ def topographic_map(
         constraint_imgs.append(constraint_img)
 
     # Safety state
-    safe_states = []
-    for constraint_state in constraint_states:
-        safe_state = torch.tensor(
-            [-constraint_state[0], -constraint_state[1], constraint_state[2] + np.pi],
-        )
-        safe_states.append(safe_state)
+    # safe_states = []
+    # for constraint_state in constraint_states:
+    #     safe_state = torch.tensor(
+    #         [-constraint_state[0], -constraint_state[1], constraint_state[2] + np.pi],
+    #     )
+    #     safe_states.append(safe_state)
 
-    safe_states = torch.stack(safe_states, dim=0)
+    # safe_states = torch.stack(safe_states, dim=0)
 
-    safe_imgs = []
-    for safe_state in safe_states:
-        safe_state = torch.tensor(safe_state, dtype=torch.float32)
-        safe_img = get_frame(states=safe_state, config=config)  # (H, W, C)
-        safe_imgs.append(safe_img)
+    # safe_imgs = []
+    # for safe_state in safe_states:
+    #     safe_state = torch.tensor(safe_state, dtype=torch.float32)
+    #     safe_img = get_frame(states=safe_state, config=config)  # (H, W, C)
+    #     safe_imgs.append(safe_img)
 
     with torch.no_grad():
-        feat_c, stoch_c, deter_c = get_latent(  # [N, Z]
+        feat_c, stoch_c, deter_c, semantic_c = get_latent(  # [N, Z]
             wm, thetas=np.array(constraint_states[:, -1]), imgs=constraint_imgs
         )
         if feat_c.ndim == 1:
             feat_c = feat_c.reshape(1, -1)  # [1, Z]
+            semantic_c = semantic_c.reshape(1, -1)  # [1, Z]
 
-        feat_s, __, __ = get_latent(  # [N, Z]
-            wm, thetas=np.array(safe_states[:, -1]), imgs=safe_imgs
-        )
-        if feat_s.ndim == 1:
-            feat_s = feat_s.reshape(1, -1)
+        # feat_s, __, __, semantic_s = get_latent(  # [N, Z]
+        #     wm, thetas=np.array(safe_states[:, -1]), imgs=safe_imgs
+        # )
+        # if feat_s.ndim == 1:
+        #     feat_s = feat_s.reshape(1, -1)
+        #     semantic_s = semantic_s.reshape(1, -1)
+
+        if use_semantic:
+            feature_c = semantic_c
+            # feature_s = semantic_s
+        else:
+            feature_c = feat_c
+            # feature_s = feat_s
 
     idxs, __, __ = cache[thetas[0]]
-    feat_c = einops.repeat(feat_c, "N C -> B N C", B=idxs.shape[0])  # [B, N, Z]
-    feat_s = einops.repeat(feat_s, "N C -> B N C", B=idxs.shape[0])  # [B, N, Z]
+
+    feature_c = einops.repeat(feature_c, "N C -> B N C", B=idxs.shape[0])  # [B, N, Z]
+    # feature_s = einops.repeat(feature_s, "N C -> B N C", B=idxs.shape[0])  # [B, N, Z]
 
     fig, axes = plt.subplots(
-        1, len(thetas) + 2, figsize=(3 * len(thetas), 5), constrained_layout=True
+        1, len(thetas) + 1, figsize=(3 * len(thetas), 5), constrained_layout=True
     )
 
     for i in range(len(thetas)):
         theta = thetas[i]
-        i += 2  # offset for constraint and safe images
+        i += 1  # offset for constraint and safe images
         axes[i].set_title(f"theta = {theta:.2f}")
         idxs, imgs_prev, thetas_prev = cache[theta]
         with torch.no_grad():
-            feat, stoch, deter = get_latent(wm, thetas_prev, imgs_prev)  # [B, Z]
-            feat = einops.repeat(feat, "B C -> B N C", N=feat_c.shape[1])  # [B, N, Z]
+            feat, stoch, deter, semantic = get_latent(
+                wm, thetas_prev, imgs_prev
+            )  # [B, Z]
+            if use_semantic:
+                feature = semantic  # [B, N, Z]
+            else:
+                feature = feat
+            feature = einops.repeat(
+                feature, "B C -> B N C", N=feature_c.shape[1]
+            )  # [B, N, Z]
         if similarity_metric == "Cosine_Similarity":  # negative cosine similarity
-            numerator = np.sum(feat * feat_c, axis=-1)  # (B, N)
-            denominator = np.linalg.norm(feat, axis=-1) * np.linalg.norm(  # (B, N)
-                feat_c, axis=-1
+            numerator = np.sum(feature * feature_c, axis=-1)  # (B, N)
+            denominator = np.linalg.norm(feature, axis=-1) * np.linalg.norm(  # (B, N)
+                feature_c, axis=-1
             )
             metric_const = -numerator / (denominator + 1e-8)  # (B, N)
-            metric_const = np.min(metric_const, axis=-1)  # (B,)
-
-            numerator = np.sum(feat * feat_s, axis=-1)  # (B, N)
-            denominator = np.linalg.norm(feat, axis=-1) * np.linalg.norm(  # (B, N)
-                feat_s, axis=-1
-            )
-            metric_safe = -numerator / (denominator + 1e-8)  # (B, N)
-            metric_safe = np.min(metric_safe, axis=-1)
-            metric = metric_const - np.clip(metric_safe, a_min=-0.5, a_max=0.5)  # (B,)
+            metric = np.min(metric_const, axis=-1)  # (B,)
         elif similarity_metric == "Euclidean Distance":
-            metric = -np.linalg.norm(feat - feat_c, axis=-1)  # (B, N)
+            metric = -np.linalg.norm(feature - feature_c, axis=-1)  # (B, N)
             metric = np.min(metric, axis=-1)  # (B,)
 
         elif similarity_metric == "Learned":
             assert model is not None, (
                 "Model must be provided for learned similarity metric."
             )
-            feat = torch.tensor(feat, dtype=torch.float32)
-            feat_c = torch.tensor(feat_c, dtype=torch.float32)
-            metric = torch.tanh(model(feat, feat_c))  # (B, N)
+            feature = torch.tensor(feature, dtype=torch.float32)
+            feature_c = torch.tensor(feature_c, dtype=torch.float32)
+            metric = torch.tanh(model(feature, feature_c))  # (B, N)
             metric = metric.detach().cpu().numpy()  # (B, N)
             metric = np.min(metric, axis=-1)  # (B,)
         else:
@@ -352,12 +369,12 @@ def topographic_map(
         )
         axes[0].set_title("Constraint Image")
 
-    for safe_img in safe_imgs:
-        # Show the safe image on the topographic map
-        axes[1].imshow(
-            safe_img, extent=(config.x_min, config.x_max, config.y_min, config.y_max)
-        )
-        axes[1].set_title("Safe Image")
+    # for safe_img in safe_imgs:
+    #     # Show the safe image on the topographic map
+    #     axes[1].imshow(
+    #         safe_img, extent=(config.x_min, config.x_max, config.y_min, config.y_max)
+    #     )
+    #     axes[1].set_title("Safe Image")
 
     # set axes limits
     for ax in axes:
@@ -366,6 +383,69 @@ def topographic_map(
         ax.set_aspect("equal")
 
     fig.suptitle(f"Topographic Map using {similarity_metric}")
+    plt.tight_layout()
+    return fig
+
+
+def topographic_map_proxies(
+    config,
+    cache,
+    thetas,
+    model=None,
+):
+    idxs, __, __ = cache[thetas[0]]
+
+    fig, axes = plt.subplots(
+        len(wm.proxies),
+        len(thetas),
+        figsize=(3 * len(thetas), 5 * len(wm.proxies)),
+        constrained_layout=True,
+    )
+
+    for proxy_idx, proxy in enumerate(wm.proxies):
+        feature_c = (
+            einops.repeat(proxy, "C -> B N C", B=idxs.shape[0], N=1)
+            .detach()
+            .cpu()
+            .numpy()
+        )  # [B, N, Z]
+
+        for i in range(len(thetas)):
+            theta = thetas[i]
+            axes[proxy_idx, i].set_title(f"theta = {theta:.2f}, proxy = {proxy_idx}")
+            idxs, imgs_prev, thetas_prev = cache[theta]
+            with torch.no_grad():
+                feat, stoch, deter, semantic = get_latent(
+                    wm, thetas_prev, imgs_prev
+                )  # [B, Z]
+                feature = einops.repeat(
+                    semantic, "B C -> B N C", N=feature_c.shape[1]
+                )  # [B, N, Z]
+
+            numerator = np.sum(feature * feature_c, axis=-1)  # (B, N)
+            denominator = np.linalg.norm(feature, axis=-1) * np.linalg.norm(  # (B, N)
+                feature_c, axis=-1
+            )
+            metric_const = -numerator / (denominator + 1e-8)  # (B, N)
+            metric = np.min(metric_const, axis=-1)  # (B,)
+
+            metric = metric.reshape(config.nx, config.ny).T
+            x = np.linspace(-1.1, 1.1, metric.shape[1])
+            y = np.linspace(-1.1, 1.1, metric.shape[0])
+            X, Y = np.meshgrid(x, y)
+
+            contour = axes[proxy_idx, i].contour(
+                X, Y, metric, levels=5, colors="black", linewidths=1
+            )
+            axes[proxy_idx, i].clabel(contour, inline=True, fontsize=8, fmt="%.2f")
+
+    # set axes limits
+    for ax in axes.flat:
+        ax.set_xlim(-1.0, 1.0)
+        ax.set_ylim(-1.0, 1.0)
+        ax.set_aspect("equal")
+
+    fig.suptitle("Topographic Map using proxies")
     plt.tight_layout()
     return fig
 
@@ -408,39 +488,52 @@ if os.path.exists(model_path):
 else:
     print(f"Model file {model_path} not found. Using untrained model.")
 
-similarity_metrics = ["Cosine_Similarity", "Euclidean Distance", "Learned"]
+similarity_metrics = ["Cosine_Similarity", "Euclidean Distance"]  # , "Learned"]
 
 logger = WandbLogger(
     name=f"wm_Analysis_{config.wm_name}", config=config, project="Dubins"
 )
 
 for metric in similarity_metrics:
-    constraint_list = [
-        [0.0, 0.0, 0.0],  # 0.0],  # x, y, theta
-        [0.5, 0.5, np.pi / 2],
-        [-0.5, -0.5, -np.pi / 2],
-        [0.5, -0.5, np.pi / 2],
-        [-0.5, 0.5, -np.pi / 2],
-    ]
-    for constraint_state in constraint_list:
-        cprint(
-            f"Running topographic map for constraint state: {constraint_state}",
-            "green",
-            attrs=["bold"],
-        )
-        fig = topographic_map(
-            config=config,
-            cache=cache,
-            thetas=thetas,
-            constraint_state=constraint_state,
-            similarity_metric=metric,
-            model=safety_margin if metric == "Learned" else None,
-        )
+    for use_semantic in [True, False]:
+        constraint_list = [
+            [0.0, 0.0, 0.0],  # 0.0],  # x, y, theta
+            [0.5, 0.5, np.pi / 2],
+            [-0.5, -0.5, -np.pi / 2],
+            [0.0, 0.5, np.pi / 2],
+            [-0.5, 0.0, -np.pi / 2],
+        ]
+        for constraint_state in constraint_list:
+            cprint(
+                f"Running topographic map for constraint state: {constraint_state}",
+                "green",
+                attrs=["bold"],
+            )
+            fig = topographic_map(
+                config=config,
+                cache=cache,
+                thetas=thetas,
+                constraint_state=constraint_state,
+                similarity_metric=metric,
+                model=safety_margin if metric == "Learned" else None,
+                use_semantic=use_semantic,
+            )
 
-        wandb.log(
-            {
-                f"{metric}_constraint/{constraint_state}": wandb.Image(fig),
-            }
-        )
+            wandb.log(
+                {
+                    f"{metric}_constraint{'_semantic' if use_semantic else ''}/{constraint_state}": wandb.Image(
+                        fig
+                    ),
+                }
+            )
 
-        plt.close(fig)
+            plt.close(fig)
+
+fig = topographic_map_proxies(config=config, cache=cache, thetas=thetas)
+wandb.log(
+    {
+        "Proxy-Based": wandb.Image(fig),
+    }
+)
+
+plt.close(fig)

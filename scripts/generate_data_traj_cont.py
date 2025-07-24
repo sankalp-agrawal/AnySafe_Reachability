@@ -145,6 +145,12 @@ def generate_trajs(config):
         demo["dones"] = dones
         demos.append(demo)
         # print('demo: ', i, "timesteps: ", len(state_obs))
+        # import imageio
+
+        # if i == 0:
+        #     video_path = os.path.join("debug_rollout.mp4")
+        #     imageio.mimsave(video_path, img_obs, fps=10)
+        #     print(f"Saved video to {video_path}")
 
     with open(config.dataset_path, "wb") as f:
         pickle.dump(demos, f)

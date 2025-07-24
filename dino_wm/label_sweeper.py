@@ -4,12 +4,28 @@ import shutil
 import h5py
 import matplotlib.pyplot as plt
 import numpy as np
+import torchvision.transforms.functional as F
+from torchvision import transforms
 
 # Global variables
 current_idx = 0
 images = []
 labels = {}
 current_traj = ""
+
+def crop_top_middle(image):
+    top = 35
+    left = 40
+    height = 150
+    width = 150
+    return F.crop(image, top, left, height, width)
+
+crop_transform = transforms.Compose([
+    transforms.ToPILImage(),
+    transforms.Lambda(lambda img: crop_top_middle(img)),
+    transforms.Resize((224, 224)),
+    transforms.ToTensor(),
+])
 
 
 def on_key_press(event):
@@ -59,11 +75,12 @@ def process_trajectory(traj_file):
     images = []
     with h5py.File(traj_file, "r") as hf:
         data = hf["data"]
-        for i in range(data["camera_0"][:].shape[0]):
-            wrist = data["camera_0"][i]
+        assert "camera_1" in data, f"Expected 'camera_1' dataset in the HDF5 file {traj_file}."
+        for i in range(data["camera_1"][:].shape[0]):
             front = data["camera_1"][i]
 
-            joint = np.concatenate([wrist, front], axis=1)
+            joint = np.concatenate([front], axis=1)
+            joint = crop_transform(joint).permute(1, 2, 0)  # Convert to CxHxW format
             images.append(joint)
 
     # Initialize index
@@ -72,20 +89,20 @@ def process_trajectory(traj_file):
         current_idx += 1
 
 
-def process_trajectory_safe(traj_file):
-    """Load images from a trajectory file and set up labels."""
-    global images, labels, current_idx, current_traj
+# def process_trajectory_safe(traj_file):
+#     """Load images from a trajectory file and set up labels."""
+#     global images, labels, current_idx, current_traj
 
-    current_traj = os.path.splitext(os.path.basename(traj_file))[0]
-    print(f"Processing trajectory: {current_traj}")
-    labels = {}
+#     current_traj = os.path.splitext(os.path.basename(traj_file))[0]
+#     print(f"Processing trajectory: {current_traj}")
+#     labels = {}
 
-    # Load images
-    images = []
-    with h5py.File(traj_file, "r") as hf:
-        data = hf["data"]
-        for i in range(data["camera_0"][:].shape[0]):
-            labels[i] = 0
+#     # Load images
+#     images = []
+#     with h5py.File(traj_file, "r") as hf:
+#         data = hf['data']
+#         for i in range(data["camera_0"][:].shape[0]):
+#             labels[i] = 0
 
 
 def postprocess_trajectory(done_file, labels, traj_file):
@@ -101,7 +118,7 @@ def postprocess_trajectory(done_file, labels, traj_file):
         labels = np.array(list(labels.values()))
         print(f"Labels: {labels}")
         print(labels.shape)
-        print(data_group["camera_0"][:].shape, data_group["camera_1"].shape)
+        print(data_group["camera_1"].shape)
         if "labels" in data_group:
             del data_group["labels"]
         data_group.create_dataset("labels", data=np.array(labels))
@@ -111,21 +128,20 @@ def postprocess_trajectory(done_file, labels, traj_file):
 plt.ion()
 
 if __name__ == "__main__":
-    directory = "/home/sunny/data/skittles/vlog-test"
-    labeled_directory = "/home/sunny/data/skittles/vlog-test-labeled"
+    directory = "/home/sunny/data/sunny/sweeper/optimal"
+    labeled_directory = "/home/sunny/data/sunny/sweeper/optimal-labeled"
     # make labeled directory if it does not exist
     if not os.path.exists(labeled_directory):
         os.makedirs(labeled_directory)
 
     # Get all pickle files with "unsafe" in the filename
-    hdf5_files = [f for f in os.listdir(directory)]
-    hdf5_files = [f for f in hdf5_files if "safe" in f]
+    hdf5_files = [f for f in os.listdir(directory) if "traj" in f]
+    # hdf5_files = [f for f in hdf5_files if "safe" in f]
     print("total files:", len(hdf5_files))
-    done_files = [f for f in os.listdir(labeled_directory)]
+    done_files = [f for f in os.listdir(labeled_directory) if "traj" in f]
     print("done files:", len(done_files))
     hdf5_files = list(set(hdf5_files) - set(done_files))
     print("remaining files:", len(hdf5_files))
-
     # Get the full paths
 
     tot = len(hdf5_files)
@@ -140,17 +156,20 @@ if __name__ == "__main__":
             continue
 
         print(f"Processing {traj_file}...")
-        if "safe" in traj_file and "unsafe" not in traj_file:
-            process_trajectory_safe(traj_file)
-        else:
-            fig, ax = plt.subplots()
+        # if "safe" in traj_file and "unsafe" not in traj_file:
+        #     process_trajectory_safe(traj_file)
+        # else:
+        fig, ax = plt.subplots()
+        fig.suptitle(f"Trajectory {don + 1}/{tot}")
+        plt.subplots_adjust(bottom = 0.2)
+        fig.text(0.5, 0.05, 'Press "0" for not divided,\n"1" for divided,\n"2" for occluded\nspace to rewind', ha='center', fontsize=12)
 
-            process_trajectory(traj_file)
-            if images:
-                update_plot()
-                key_press_cid = fig.canvas.mpl_connect("key_press_event", on_key_press)
-                print(f"Press '0' as safe or '1' as unsafe to label {traj_file}.")
-                plt.show(block=True)
+        process_trajectory(traj_file)
+        if images:
+            update_plot()
+            key_press_cid = fig.canvas.mpl_connect("key_press_event", on_key_press)
+            print(f"Press '0' as not divided or '1' as divided to label {traj_file}.")
+            plt.show(block=True)
 
         postprocess_trajectory(done_file, labels, traj_file)
         don += 1
