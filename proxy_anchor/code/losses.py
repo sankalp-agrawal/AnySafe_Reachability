@@ -14,11 +14,14 @@ def binarize(T, nb_classes):
         # Manual one-hot encoding for binary case
         T = np.eye(2)[T.astype(int)]
     else:
-        class_labels = np.unique(T)
-        assert len(class_labels) == nb_classes, (
-            f"Number of unique labels {len(class_labels)} does not match nb_classes {nb_classes}."
-        )
-        T = sklearn.preprocessing.label_binarize(T, classes=class_labels)
+        class_labels_present = np.unique(T)
+        for class_label in class_labels_present:
+            if class_label not in range(nb_classes):
+                raise ValueError(
+                    f"Class label {class_label} is not in the range of expected classes {range(nb_classes)}."
+                )
+
+        T = sklearn.preprocessing.label_binarize(T, classes=range(nb_classes))
 
     T = torch.FloatTensor(T).cuda()
     return T

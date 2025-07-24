@@ -26,7 +26,6 @@ class Franka_DINOWM_Env(gym.Env):
         )
         self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(7,), dtype=np.float32)
         self.front_hist = None
-        self.wrist_hist = None
         self.state_hist = None
         self.constraint = constraint
 
@@ -49,13 +48,11 @@ class Franka_DINOWM_Env(gym.Env):
             self.front_hist, self.wrist_hist, self.state_hist, self.ac_hist
         )
 
-        inp1, inp2, state = (
+        inp1, state = (
             self.wm.front_head(latent),
-            self.wm.wrist_head(latent),
             self.wm.state_pred(latent),
         )
         self.front_hist = torch.cat([self.front_hist[:, 1:], inp1[:, [-1]]], dim=1)
-        self.wrist_hist = torch.cat([self.wrist_hist[:, 1:], inp2[:, [-1]]], dim=1)
         self.state_hist = torch.cat([self.state_hist[:, 1:], state[:, [-1]]], dim=1)
 
         rew = self.safety_margin_pa(latent)  # rew is negative if unsafe
@@ -87,13 +84,11 @@ class Franka_DINOWM_Env(gym.Env):
         states = data["state"][[0], :].to(self.device)
 
         self.latent = self.wm.forward_features(inputs1, inputs2, states, acs)[:, [0]]
-        inp1, inp2, state = (
+        inp1, state = (
             self.wm.front_head(self.latent),
-            self.wm.wrist_head(self.latent),
             self.wm.state_pred(self.latent),
         )
         self.front_hist = torch.cat([inputs1[:, 1:], inp1[:, [-1]]], dim=1)
-        self.wrist_hist = torch.cat([inputs2[:, 1:], inp2[:, [-1]]], dim=1)
         self.state_hist = torch.cat([states[:, 1:], state[:, [-1]]], dim=1)
         self.ac_hist = acs
 

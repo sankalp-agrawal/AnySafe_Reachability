@@ -345,22 +345,57 @@ def flatten_trajectories(trajectories):
     # class labels
     points = flat_data["privileged_state"][:, :2]  # [B 2]
 
+    # clamp points to [-1, 1]
+    points = torch.clamp(points, min=-1, max=1)
     scaled = (points + 1) / 2
 
     # Convert to grid indices
-    x_idx = (scaled[:, 0] * config.grid_size).clamp(0, max=config.grid_size - 1).long()
-    y_idx = (scaled[:, 1] * config.grid_size).clamp(0, max=config.grid_size - 1).long()
+    indices = (
+        (scaled * config.grid_size).clamp(max=config.grid_size - 1).long()
+    )  # [B, 2]
 
     # Row-major grid index: row * num_cols + col
-    labels = y_idx * config.grid_size + x_idx
+    labels = indices[:, 1] * config.grid_size + indices[:, 0]
     labels = labels.to(torch.int64)
 
     flat_data["label"] = labels.unsqueeze(-1)
+
+    fig, ax = plt.subplots(figsize=(8, 8))
+    ax.scatter(
+        points[:, 0].cpu().numpy(),
+        points[:, 1].cpu().numpy(),
+        c=labels.cpu().numpy(),
+        cmap=colormaps["rainbow"],
+        alpha=0.5,
+    )
+    ax.set_title("Training Data")
+    ax.set_xlabel("X Coordinate")
+    ax.set_ylabel("Y Coordinate")
+    ax.legend()
+    wandb.log(
+        {"train_data_label_distribution": wandb.Image(fig)},
+        step=0,
+    )
+
     return flat_data
 
 
 # 2. Split at Timestep Level
 def split_flat_data(flat_data, test_size=0.2, seed=42):
+    def extract(mask):
+        return {k: v[mask] for k, v in flat_data.items()}
+
+    points = flat_data["privileged_state"][:, :2]  # [B, 2]
+
+    # Filter all the points outside [-1, 1]
+    mask = (
+        (points[:, 0] >= -1)
+        & (points[:, 0] <= 1)
+        & (points[:, 1] >= -1)
+        & (points[:, 1] <= 1)
+    )
+
+    flat_data = extract(mask)
     points = flat_data["privileged_state"][:, :2]  # [B, 2]
 
     step = 2.0 / config.grid_size
@@ -375,8 +410,29 @@ def split_flat_data(flat_data, test_size=0.2, seed=42):
     dists_squared = ((points[:, None, :] - centers[None, :, :]) ** 2).sum(dim=-1)
     mask = (dists_squared < radius**2).any(dim=1)
 
-    def extract(mask):
-        return {k: v[mask] for k, v in flat_data.items()}
+    fig, ax = plt.subplots(figsize=(8, 8))
+    ax.scatter(
+        points[mask, 0].cpu().numpy(),
+        points[mask, 1].cpu().numpy(),
+        c="blue",
+        label="Train",
+        alpha=0.5,
+    )
+    ax.scatter(
+        points[~mask, 0].cpu().numpy(),
+        points[~mask, 1].cpu().numpy(),
+        c="red",
+        label="Test",
+        alpha=0.5,
+    )
+    ax.set_title("Training Data")
+    ax.set_xlabel("X Coordinate")
+    ax.set_ylabel("Y Coordinate")
+    ax.legend()
+    wandb.log(
+        {"train_data_distribution": wandb.Image(fig)},
+        step=0,
+    )
 
     return extract(mask), extract(torch.logical_not(mask))  # train, test data
 
@@ -766,7 +822,14 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
                 cos_sim = cos_sim[cos_sim != -2.0].flatten()
 
                 if len(cos_sim) > 1000:
-                    cos_sim_sampled = np.random.choice(cos_sim, 1000, replace=False)
+                    if len(cos_sim) > 1e6:
+                        cos_sim_sampled = cos_sim[
+                            np.random.randint(  # random indices
+                                0, len(cos_sim), size=(1000)
+                            )
+                        ]
+                    else:
+                        cos_sim_sampled = np.random.choice(cos_sim, 1000, replace=False)
                 else:
                     cos_sim_sampled = cos_sim
 

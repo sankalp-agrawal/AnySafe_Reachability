@@ -194,9 +194,7 @@ if __name__ == "__main__":
         optimizer.zero_grad()
 
         with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=use_amp):
-            pred1, pred2, pred_state, pred_fail, __ = transition(
-                inputs1, inputs2, states, acs
-            )
+            pred1, pred_state, pred_fail, __ = transition(inputs1, states, acs)
             failure_loss = fail_loss(pred_fail, data["failure"][:, 1:])
             loss = failure_loss
 
@@ -234,9 +232,10 @@ if __name__ == "__main__":
                     / 255.0
                 )
                 for k in range(EVAL_H - H):
-                    pred1, pred2, pred_state, pred_fail, __ = transition(
-                        inputs1, inputs2, states, acs
-                    )
+                    pred1, pred_state, pred_fail, __ = transition(inputs1, states, acs)
+                    import ipdb
+
+                    ipdb.set_trace()
                     pred_latent = torch.cat(
                         [pred1[:, [-1]], pred2[:, [-1]]], dim=0
                     )  # .squeeze()

@@ -36,21 +36,19 @@ from dino_wm.test_loader import SplitTrajectoryDataset
 
 def transition_from_data(data, transition, device, use_amp=True):
     data1 = data["cam_zed_embd"].to(device)
-    data2 = data["cam_rs_embd"].to(device)
 
     inputs1 = data1[:, :-1]
-    inputs2 = data2[:, :-1]
 
     states = data["state"].to(device)[:, :-1]
     acs = normalize_acs(data["action"].to(device)[:, :-1], device=device)
 
     with torch.autocast(device_type="cuda", dtype=torch.float32, enabled=use_amp):
         with torch.no_grad():
-            pred1, pred2, pred_state, pred_fail, semantic_feat = transition(
-                inputs1, inputs2, states, acs
+            pred1, pred_state, pred_fail, semantic_feat = transition(
+                inputs1, states, acs
             )
 
-    return pred1, pred2, pred_state, pred_fail, semantic_feat
+    return pred1, pred_state, pred_fail, semantic_feat
 
 
 # Define transforms

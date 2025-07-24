@@ -105,22 +105,24 @@ class SplitTrajectoryDataset(Dataset):
 
             segment_obs_tensor = {}
 
-            segment_obs_tensor["robot0_eye_in_hand_image"] = torch.tensor(
-                np.array(trajectory["camera_0"][start_idx:end_idx]) * 255.0,
-                dtype=torch.uint8,
-            )
-            segment_obs_tensor["agentview_image"] = torch.tensor(
-                np.array(trajectory["camera_1"][start_idx:end_idx]) * 255.0,
-                dtype=torch.uint8,
-            )
-            segment_obs_tensor["cam_rs_embd"] = torch.tensor(
-                np.array(trajectory["cam_rs_embd"][start_idx:end_idx]),
-                dtype=torch.float32,
-            )
-            segment_obs_tensor["cam_zed_embd"] = torch.tensor(
-                np.array(trajectory["cam_zed_embd"][start_idx:end_idx]),
-                dtype=torch.float32,
-            )
+            if "camera_0" in trajectory.keys():
+                segment_obs_tensor["robot0_eye_in_hand_image"] = torch.tensor(
+                    np.array(trajectory["camera_0"][start_idx:end_idx]) * 255.0,
+                    dtype=torch.uint8,
+                )
+                segment_obs_tensor["cam_rs_embd"] = torch.tensor(
+                    np.array(trajectory["cam_rs_embd"][start_idx:end_idx]),
+                    dtype=torch.float32,
+                )
+            if "camera_1" in trajectory.keys():
+                segment_obs_tensor["agentview_image"] = torch.tensor(
+                    np.array(trajectory["camera_1"][start_idx:end_idx]) * 255.0,
+                    dtype=torch.uint8,
+                )
+                segment_obs_tensor["cam_zed_embd"] = torch.tensor(
+                    np.array(trajectory["cam_zed_embd"][start_idx:end_idx]),
+                    dtype=torch.float32,
+                )
             segment_obs_tensor["state"] = torch.tensor(
                 np.array(trajectory["states"][start_idx:end_idx]), dtype=torch.float32
             )

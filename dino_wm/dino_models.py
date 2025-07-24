@@ -299,7 +299,7 @@ class VideoTransformer(nn.Module):
             nn.LayerNorm(ac_dim),
         ).to(device)
 
-        total_dim = 2 * dim + ac_dim + state_dim
+        total_dim = dim + ac_dim + state_dim
         self.pos_embedding = nn.Parameter(torch.randn(1, 256, total_dim) * 0.02)
         self.temp_embedding = nn.Parameter(torch.randn(1, num_frames, total_dim) * 0.02)
 
@@ -316,12 +316,12 @@ class VideoTransformer(nn.Module):
         )
 
         # Separate prediction heads
-        self.wrist_head = nn.Sequential(
-            LayerNorm(total_dim),
-            nn.Linear(total_dim, total_dim),
-            nn.ReLU(),
-            nn.Linear(total_dim, dim),
-        )
+        # self.wrist_head = nn.Sequential(
+        #     LayerNorm(total_dim),
+        #     nn.Linear(total_dim, total_dim),
+        #     nn.ReLU(),
+        #     nn.Linear(total_dim, dim),
+        # )
 
         self.front_head = nn.Sequential(
             LayerNorm(total_dim),
@@ -344,7 +344,7 @@ class VideoTransformer(nn.Module):
             nn.Linear(total_dim, 1),
         )
 
-        semantic_dim = 2 * dim + state_dim
+        semantic_dim = dim + state_dim
         self.semantic_encoder = nn.Sequential(
             LayerNorm(semantic_dim),
             nn.Linear(semantic_dim, semantic_dim),
@@ -357,39 +357,34 @@ class VideoTransformer(nn.Module):
     def forward(
         self,
         video1: torch.Tensor,
-        video2: torch.Tensor,
         states: torch.Tensor,
         actions: torch.Tensor,
         return_latent: bool = False,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        x = self.forward_features(video1, video2, states, actions)
+        x = self.forward_features(video1, states, actions)
 
         # Generate predictions
         pred1 = self.front_head(x)
-        pred2 = self.wrist_head(x)
+        # pred2 = self.wrist_head(x)
         state_preds = self.state_pred(x)
         failure_preds = self.failure_pred(x)
 
-        semantic_features = self.semantic_embed(
-            inp1=pred1, inp2=pred2, state=state_preds
-        )
+        semantic_features = self.semantic_embed(inp1=pred1, state=state_preds)
 
         if return_latent:
             return (
                 pred1,
-                pred2,
                 state_preds,
                 failure_preds,
                 semantic_features,
                 x,  # Return latent features
             )
         else:
-            return pred1, pred2, state_preds, failure_preds, semantic_features
+            return pred1, state_preds, failure_preds, semantic_features
 
     def forward_features(
         self,
         video1: torch.Tensor,
-        video2: torch.Tensor,
         states: torch.Tensor,
         actions: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -402,7 +397,7 @@ class VideoTransformer(nn.Module):
         # Combine features
         batch_size, num_frames, _, _ = video1.shape
 
-        x = torch.cat((video1, video2, action_embeddings, state_embeddings), dim=3)
+        x = torch.cat((video1, action_embeddings, state_embeddings), dim=3)
         # Add positional embeddings
         x = x + self.pos_embedding
         x = x + self.temp_embedding[:, :num_frames].unsqueeze(2)
@@ -424,7 +419,7 @@ class VideoTransformer(nn.Module):
         failure_preds = torch.mean(failure_preds, dim=2)  # Average over patches
         return failure_preds
 
-    def semantic_embed(self, inp1, inp2, state):
+    def semantic_embed(self, inp1, state):
         """
         Combine features from two inputs and state, then pass through semantic encoder.
         Args:
@@ -437,7 +432,6 @@ class VideoTransformer(nn.Module):
         features = torch.cat(  # [B T 384*2 + state_dim]
             (
                 torch.norm(inp1, p=2, dim=-2),
-                torch.norm(inp2, p=2, dim=-2),
                 state,
             ),
             dim=-1,

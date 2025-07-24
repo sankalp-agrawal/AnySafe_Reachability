@@ -53,8 +53,8 @@ if __name__ == "__main__":
     EVAL_H = 16
     H = 3
 
-    hdf5_file = "/home/sunny/data/skittles/consolidated.h5"
-    hdf5_file_test = "/home/sunny/data/skittles/vlog-test-labeled/consolidated.h5"
+    hdf5_file = "/home/sunny/data/sweeper/optimal-labeled/consolidated.h5"
+    hdf5_file_test = "/home/sunny/data/sweeper/optimal-labeled/consolidated.h5"
 
     expert_data = SplitTrajectoryDataset(hdf5_file, BL, split="train", num_test=0)
     expert_data_eval = SplitTrajectoryDataset(
@@ -100,10 +100,10 @@ if __name__ == "__main__":
                 "params": transition.front_head.parameters(),
                 "lr": 5e-5,
             },  # Front camera decoder
-            {
-                "params": transition.wrist_head.parameters(),
-                "lr": 5e-5,
-            },  # Wrist camera decoder
+            # {
+            #     "params": transition.wrist_head.parameters(),
+            #     "lr": 5e-5,
+            # },  # Wrist camera decoder
             {
                 "params": transition.action_encoder.parameters(),
                 "lr": 5e-4,
@@ -135,9 +135,9 @@ if __name__ == "__main__":
         inputs1 = data1[:, :-1]  # Inputs are all but last frame
         output1 = data1[:, 1:]  # Outputs are all but first frame
 
-        data2 = data["cam_rs_embd"].to(device)  # Wrist camera
-        inputs2 = data2[:, :-1]
-        output2 = data2[:, 1:]
+        # data2 = data["cam_rs_embd"].to(device)  # Wrist camera
+        # inputs2 = data2[:, :-1]
+        # output2 = data2[:, 1:]
 
         data_state = data["state"].to(device)  # Robot Joint States
         inputs_states = data_state[:, :-1]
@@ -150,38 +150,35 @@ if __name__ == "__main__":
         optimizer.zero_grad()
 
         with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=use_amp):
-            pred1, pred2, pred_state, _, __ = transition(  # Forward pass
-                inputs1, inputs2, inputs_states, acs
+            pred1, pred_state, _, __ = transition(  # Forward pass
+                inputs1, inputs_states, acs
             )
             im1_loss_tf = nn.MSELoss()(
                 pred1, output1
             )  # How different the predictions are from the actual data
-            im2_loss_tf = nn.MSELoss()(pred2, output2)
+            # im2_loss_tf = nn.MSELoss()(pred2, output2)
             state_loss_tf = nn.MSELoss()(pred_state, output_state)
-            loss_tf = im1_loss_tf + im2_loss_tf + state_loss_tf
+            loss_tf = im1_loss_tf + state_loss_tf
 
         with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=use_amp):
             # Imagine step
             detach_pred1 = pred1
-            detach_pred2 = pred2
+            # detach_pred2 = pred2
             detach_pred_state = pred_state.detach()
             inputs1_ar = torch.cat([data1[:, [0]], detach_pred1[:, [0]]], dim=1)
-            inputs2_ar = torch.cat([data2[:, [0]], detach_pred2[:, [0]]], dim=1)
+            # inputs2_ar = torch.cat([data2[:, [0]], detach_pred2[:, [0]]], dim=1)
             states_ar = torch.cat(
                 [data_state[:, [0]], detach_pred_state[:, [0]]], dim=1
             )
             acs_ar = norm_acs[:, [0, 1]]
 
-            pred1_ar, pred2_ar, pred_state_ar, _, __ = transition(
-                inputs1_ar, inputs2_ar, states_ar, acs_ar
-            )
+            pred1_ar, pred_state_ar, _, __ = transition(inputs1_ar, states_ar, acs_ar)
             output1_ar = data1[:, 2]
-            output2_ar = data2[:, 2]
             output_state_ar = data_state[:, 2]
             im1_loss_ar = nn.MSELoss()(pred1_ar[:, 1], output1_ar)
-            im2_loss_ar = nn.MSELoss()(pred2_ar[:, 1], output2_ar)
+            # im2_loss_ar = nn.MSELoss()(pred2_ar[:, 1], output2_ar)
             state_loss_ar = nn.MSELoss()(pred_state_ar[:, 1], output_state_ar)
-            loss_ar = im1_loss_ar + im2_loss_ar + state_loss_ar
+            loss_ar = im1_loss_ar + state_loss_ar
 
         loss = loss_tf + loss_ar * 0.5
         # loss = loss_tf
@@ -191,12 +188,12 @@ if __name__ == "__main__":
         scaler.update()
         train_loss = loss.item()
         print(
-            f"\rIter {i}, TF Loss: {loss_tf:.4f}, AR loss:{loss_ar} front Loss: {im1_loss_tf.item():.4f}, wrist Loss: {im2_loss_tf.item():.4f}, state Loss: {state_loss_tf.item():.4f}",
+            f"\rIter {i}, TF Loss: {loss_tf:.4f}, AR loss:{loss_ar} front Loss: {im1_loss_tf.item():.4f}, state Loss: {state_loss_tf.item():.4f}",
             end="",
             flush=True,
         )
         print(
-            f"\rIter {i}, TF Loss: {loss_tf:.4f}, front Loss: {im1_loss_tf.item():.4f}, wrist Loss: {im2_loss_tf.item():.4f}, state Loss: {state_loss_tf.item():.4f}",
+            f"\rIter {i}, TF Loss: {loss_tf:.4f}, front Loss: {im1_loss_tf.item():.4f}, state Loss: {state_loss_tf.item():.4f}",
             end="",
             flush=True,
         )
@@ -210,8 +207,8 @@ if __name__ == "__main__":
                 eval_data1 = eval_data["cam_zed_embd"].to(device)
                 inputs1 = eval_data1[[0], :H].to(device)
 
-                eval_data2 = eval_data["cam_rs_embd"].to(device)
-                inputs2 = eval_data2[[0], :H].to(device)
+                # eval_data2 = eval_data["cam_rs_embd"].to(device)
+                # inputs2 = eval_data2[[0], :H].to(device)
 
                 all_acs = eval_data["action"][[0]].to(device)
                 all_acs = normalize_acs(all_acs, device)
@@ -223,27 +220,20 @@ if __name__ == "__main__":
                 im1s = (
                     eval_data["agentview_image"][[0], :H].squeeze().to(device) / 255.0
                 )
-                im2s = (
-                    eval_data["robot0_eye_in_hand_image"][[0], :H].squeeze().to(device)
-                    / 255.0
-                )
+                # im2s = (
+                #     eval_data["robot0_eye_in_hand_image"][[0], :H].squeeze().to(device)
+                #     / 255.0
+                # )
                 for k in range(EVAL_H - H):
-                    pred1, pred2, pred_state, _, ___ = transition(
-                        inputs1, inputs2, inputs_states, acs
-                    )
+                    pred1, pred_state, _, ___ = transition(inputs1, inputs_states, acs)
 
-                    pred_latent = torch.cat(
-                        [pred1[:, [-1]], pred2[:, [-1]]], dim=0
-                    )  # .squeeze()
+                    pred_latent = pred1[:, [-1]]
                     pred_ims, _ = decoder(pred_latent)
 
                     pred_ims = rearrange(pred_ims, "(b t) c h w -> b t h w c", t=1)
-                    pred_im1, pred_im2 = torch.split(
-                        pred_ims, [inputs1.shape[0], inputs2.shape[0]], dim=0
-                    )
+                    pred_im1 = pred_ims
 
                     im1s = torch.cat([im1s, pred_im1.squeeze(0)], dim=0)
-                    im2s = torch.cat([im2s, pred_im2.squeeze(0)], dim=0)
 
                     # getting next inputs
                     acs = torch.cat(
@@ -253,23 +243,15 @@ if __name__ == "__main__":
                     inputs1 = torch.cat(
                         [inputs1[[0], 1:], pred1[:, -1].unsqueeze(1)], dim=1
                     )
-                    inputs2 = torch.cat(
-                        [inputs2[[0], 1:], pred2[:, -1].unsqueeze(1)], dim=1
-                    )
                     states = torch.cat(
                         [inputs_states[[0], 1:], pred_state[:, -1].unsqueeze(1)], dim=1
                     )
 
                 gt_im1 = eval_data["agentview_image"][[0], :EVAL_H].squeeze().to(device)
-                gt_im2 = (
-                    eval_data["robot0_eye_in_hand_image"][[0], :EVAL_H]
-                    .squeeze()
-                    .to(device)
-                )
 
-                gt_imgs = torch.cat([gt_im1, gt_im2], dim=-2) / 255.0
-                pred_imgs = torch.cat([im1s, im2s], dim=-2)
-                vid = torch.cat([gt_imgs, pred_imgs], dim=-3)
+                gt_imgs = torch.cat([gt_im1], dim=-2) / 255.0
+                pred_imgs = torch.cat([im1s], dim=-2)
+                vid = torch.cat([gt_imgs, pred_imgs], dim=-2)
                 vid = vid.detach().cpu().numpy()
                 vid = (vid * 255).clip(0, 255).astype(np.uint8)
                 vid = rearrange(vid, "t h w c -> t c h w")
@@ -279,13 +261,13 @@ if __name__ == "__main__":
 
                 eval_data = next(expert_loader_eval)
                 data1 = eval_data["cam_zed_embd"].to(device)
-                data2 = eval_data["cam_rs_embd"].to(device)
+                # data2 = eval_data["cam_rs_embd"].to(device)
 
                 inputs1 = data1[:, :-1]
                 output1 = data1[:, 1:]
 
-                inputs2 = data2[:, :-1]
-                output2 = data2[:, 1:]
+                # inputs2 = data2[:, :-1]
+                # output2 = data2[:, 1:]
 
                 data_state = eval_data["state"].to(device)
                 states = data_state[:, :-1]
@@ -294,26 +276,20 @@ if __name__ == "__main__":
                 data_acs = eval_data["action"].to(device)
                 data_acs = normalize_acs(data_acs, device)
                 acs = data_acs[:, :-1]
-                pred1, pred2, pred_state, _, __ = transition(
-                    inputs1, inputs2, states, acs
-                )
+                pred1, pred_state, _, __ = transition(inputs1, states, acs)
 
-                pred_latent = torch.cat([pred1[:, [H - 1]], pred2[:, [H - 1]]], dim=0)
+                pred_latent = torch.cat([pred1[:, [H - 1]]], dim=0)
                 pred_ims, _ = decoder(pred_latent)
-                pred_im1, pred_im2 = torch.split(
-                    pred_ims, [inputs1.shape[0], inputs2.shape[0]], dim=0
-                )
+                pred_im1 = pred_ims
                 pred_im1 = pred_im1[0].permute(1, 2, 0).detach().cpu().numpy()
-                pred_im2 = pred_im2[0].permute(1, 2, 0).detach().cpu().numpy()
                 im1 = eval_data["agentview_image"][0, H].numpy()
-                im2 = eval_data["robot0_eye_in_hand_image"][0, H].numpy()
                 im1_loss = nn.MSELoss()(pred1, output1)
-                im2_loss = nn.MSELoss()(pred2, output2)
+                # im2_loss = nn.MSELoss()(pred2, output2)
                 state_loss = nn.MSELoss()(pred_state, output_state)
-                loss = im1_loss + im2_loss + state_loss
+                loss = im1_loss + state_loss
             print()
             print(
-                f"\rIter {i}, Eval Loss: {loss.item():.4f}, front Loss: {im1_loss.item():.4f}, wrist Loss: {im2_loss.item():.4f}, state Loss: {state_loss.item():.4f}"
+                f"\rIter {i}, Eval Loss: {loss.item():.4f}, front Loss: {im1_loss.item():.4f}, state Loss: {state_loss.item():.4f}"
             )
 
             torch.save(transition.state_dict(), f"checkpoints/testing_iter{i}.pth")
@@ -327,12 +303,12 @@ if __name__ == "__main__":
                 {
                     "eval_loss": loss.item(),
                     "front_loss": im1_loss.item(),
-                    "wrist_loss": im2_loss.item(),
+                    # "wrist_loss": im2_loss.item(),
                     "state_loss": state_loss.item(),
                     "pred_front": wandb.Image(pred_im1),
-                    "pred_wrist": wandb.Image(pred_im2),
+                    # "pred_wrist": wandb.Image(pred_im2),
                     "front": wandb.Image(im1),
-                    "wrist": wandb.Image(im2),
+                    # "wrist": wandb.Image(im2),
                 }
             )
 

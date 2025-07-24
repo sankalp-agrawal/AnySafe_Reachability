@@ -52,8 +52,8 @@ wm.load_state_dict(
         "/home/sunny/anysafe_project/AnySafe_Reachability/dino_wm/checkpoints_pa/encoder_mrg_0.1_ul_False.pth"
     )
 )
-hdf5_file = "/home/sunny/data/skittles/consolidated.h5"
-hdf5_file_test = "/home/sunny/data/skittles/vlog-test-labeled/consolidated.h5"
+hdf5_file = "/home/sunny/data/sweeper/optimal-labeled/consolidated.h5"
+hdf5_file_test = "/home/sunny/data/sweeper/optimal-labeled/consolidated.h5"
 bs = 1
 bl = 20
 device = "cuda:0"
@@ -76,20 +76,20 @@ with h5py.File(hdf5_file_test, "r") as hf:
         i: data_from_traj(hf[traj_id]) for i, traj_id in enumerate(trajectory_ids)
     }
 
-constraint1 = {
-    "wrist": database[7]["robot0_eye_in_hand_image"][82],
-    "front": database[7]["agentview_image"][82],
-    "inputs2": database[7]["cam_rs_embd"][[82], :].to(device).unsqueeze(0),
-    "inputs1": database[7]["cam_zed_embd"][[82], :].to(device).unsqueeze(0),
-    "states": database[7]["state"][[82], :].to(device).unsqueeze(0),  # [1, 1, 8]
-}  # weak unsafe frame
-constraint2 = {
-    "wrist": database[1]["robot0_eye_in_hand_image"][108],
-    "front": database[1]["agentview_image"][108],
-    "inputs2": database[1]["cam_rs_embd"][[108], :].to(device).unsqueeze(0),
-    "inputs1": database[1]["cam_zed_embd"][[108], :].to(device).unsqueeze(0),
-    "states": database[1]["state"][[108], :].to(device).unsqueeze(0),  # [1, 1, 8]
-}  # unsafe frame
+# constraint1 = {
+#     "wrist": database[7]["robot0_eye_in_hand_image"][82],
+#     "front": database[7]["agentview_image"][82],
+#     "inputs2": database[7]["cam_rs_embd"][[82], :].to(device).unsqueeze(0),
+#     "inputs1": database[7]["cam_zed_embd"][[82], :].to(device).unsqueeze(0),
+#     "states": database[7]["state"][[82], :].to(device).unsqueeze(0),  # [1, 1, 8]
+# }  # weak unsafe frame
+# constraint2 = {
+#     "wrist": database[1]["robot0_eye_in_hand_image"][108],
+#     "front": database[1]["agentview_image"][108],
+#     "inputs2": database[1]["cam_rs_embd"][[108], :].to(device).unsqueeze(0),
+#     "inputs1": database[1]["cam_zed_embd"][[108], :].to(device).unsqueeze(0),
+#     "states": database[1]["state"][[108], :].to(device).unsqueeze(0),  # [1, 1, 8]
+# }  # unsafe frame
 
 for constraint in [constraint1, constraint2]:
     semantic_feat = wm.semantic_embed(  # [embedding_dim]
