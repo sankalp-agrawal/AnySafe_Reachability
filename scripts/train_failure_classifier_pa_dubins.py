@@ -16,6 +16,7 @@ import torch.nn.functional as F
 import umap.umap_ as umap
 import wandb
 from dino_wm.dino_models import normalize_acs
+from sklearn.model_selection import train_test_split
 
 # note: need to include the dreamerv3 repo for this
 from termcolor import cprint
@@ -269,7 +270,7 @@ dummy_variable = PyHJ
 
 config = get_args()
 config = tools.set_wm_name(config)
-config.grid_size = 4
+config.grid_size = 2
 config.nb_classes = config.grid_size**2  # four quadrants in the 2D space
 env = gymnasium.make(config.task, params=[config])
 
@@ -343,7 +344,7 @@ def flatten_trajectories(trajectories):
             flat_data[key] = flat_data[key].unsqueeze(-1)
 
     # class labels
-    points = flat_data["privileged_state"][:, :2]  # [B 2]
+    points = flat_data["privileged_state"][:, :2]  # [B, 2]
 
     # clamp points to [-1, 1]
     points = torch.clamp(points, min=-1, max=1)
@@ -434,7 +435,11 @@ def split_flat_data(flat_data, test_size=0.2, seed=42):
         step=0,
     )
 
-    return extract(mask), extract(torch.logical_not(mask))  # train, test data
+    # Split into train and test data
+    flat_data = extract(mask)
+    indices = np.arange(len(flat_data["discount"]))
+    train_idx, test_idx = train_test_split(indices, test_size=0.2, random_state=42)
+    return extract(train_idx), extract(test_idx)  # train, test data
 
 
 # 3. Batch Generator
