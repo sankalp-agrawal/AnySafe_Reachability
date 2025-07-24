@@ -327,10 +327,10 @@ def flatten_trajectories(trajectories):
 
     x_mask, y_mask = (x > 0), (y > 0)
     flat_data["label"] = torch.zeros_like(x, dtype=torch.float32).unsqueeze(-1)
-    flat_data["label"][x_mask & y_mask] = 1.0  # Quadrant 1
-    flat_data["label"][~x_mask & y_mask] = 2.0  # Quadrant 2
-    flat_data["label"][~x_mask & ~y_mask] = 3.0  # Quadrant 3
-    flat_data["label"][x_mask & ~y_mask] = 4.0  # Quadrant 4
+    flat_data["label"][x_mask & y_mask] = 0.0  # Quadrant 1
+    flat_data["label"][~x_mask & y_mask] = 1.0  # Quadrant 2
+    flat_data["label"][~x_mask & ~y_mask] = 2.0  # Quadrant 3
+    flat_data["label"][x_mask & ~y_mask] = 3.0  # Quadrant 4
     flat_data["label"].unsqueeze(-1)
     return flat_data
 
@@ -697,7 +697,7 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
             }
 
             fig, ax = plt.subplots(figsize=(10, 8))
-            class_to_label = {k: f"Quad {k}" for k in range(1, 5)}
+            class_to_label = {k: f"Quad {k}" for k in range(0, 4)}
 
             plt.title("Cosine Similarity Distribution per Class")
             plt.xlabel("Cosine Similarity")
