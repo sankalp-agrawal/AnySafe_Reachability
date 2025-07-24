@@ -269,44 +269,21 @@ def get_args():
 dummy_variable = PyHJ
 
 config = get_args()
-config = tools.set_wm_name(config)
-config.grid_size = 2
-config.nb_classes = config.grid_size**2  # four quadrants in the 2D space
+config.nb_classes = 4  # four quadrants in the 2D space
+
 env = gymnasium.make(config.task, params=[config])
 
 config.num_actions = (
     env.action_space.n if hasattr(env.action_space, "n") else env.action_space.shape[0]
 )
 model = models.WorldModel(env.observation_space_full, env.action_space, 0, config)
-ckpt_path = config.rssm_ckpt_path
+ckpt_path = "/home/sunny/anysafe_project/AnySafe_Reachability/logs/dreamer_dubins/dubins_mlp_obs_state_cnn_image_lz_None_sc_F_arrow_0.15/best_rssm_ckpt_9999_0_12.pt"
 checkpoint = torch.load(ckpt_path)
-
 state_dict = {
     k[14:]: v for k, v in checkpoint["agent_state_dict"].items() if "_wm" in k
 }
 
-model_state_dict = model.state_dict()
-loaded_state_dict = {}
-
-for name, param in state_dict.items():
-    if name not in model_state_dict:
-        print(f"Skipping '{name}' as it is not in the model.")
-        continue
-
-    if model_state_dict[name].shape != param.shape:
-        print(
-            f"Shape mismatch for '{name}': "
-            f"model={model_state_dict[name].shape}, "
-            f"checkpoint={param.shape}. Skipping."
-        )
-        continue
-
-    loaded_state_dict[name] = param
-
-# Load only the matching parameters
-model.load_state_dict(loaded_state_dict, strict=False)
-
-# model.load_state_dict(state_dict, strict=False)
+model.load_state_dict(state_dict, strict=False)
 model.to(device)
 model.eval()
 
@@ -344,102 +321,33 @@ def flatten_trajectories(trajectories):
             flat_data[key] = flat_data[key].unsqueeze(-1)
 
     # class labels
-    points = flat_data["privileged_state"][:, :2]  # [B, 2]
+    points = flat_data["privileged_state"][:, :2]  # [B 2]
+    x = points[:, 0]
+    y = points[:, 1]
 
-    # clamp points to [-1, 1]
-    points = torch.clamp(points, min=-1, max=1)
-    scaled = (points + 1) / 2
-
-    # Convert to grid indices
-    indices = (
-        (scaled * config.grid_size).clamp(max=config.grid_size - 1).long()
-    )  # [B, 2]
-
-    # Row-major grid index: row * num_cols + col
-    labels = indices[:, 1] * config.grid_size + indices[:, 0]
-    labels = labels.to(torch.int64)
-
-    flat_data["label"] = labels.unsqueeze(-1)
-
-    fig, ax = plt.subplots(figsize=(8, 8))
-    ax.scatter(
-        points[:, 0].cpu().numpy(),
-        points[:, 1].cpu().numpy(),
-        c=labels.cpu().numpy(),
-        cmap=colormaps["rainbow"],
-        alpha=0.5,
-    )
-    ax.set_title("Training Data")
-    ax.set_xlabel("X Coordinate")
-    ax.set_ylabel("Y Coordinate")
-    ax.legend()
-    wandb.log(
-        {"train_data_label_distribution": wandb.Image(fig)},
-        step=0,
-    )
-
+    x_mask, y_mask = (x > 0), (y > 0)
+    flat_data["label"] = torch.zeros_like(x, dtype=torch.float32).unsqueeze(-1)
+    flat_data["label"][x_mask & y_mask] = 1.0  # Quadrant 1
+    flat_data["label"][~x_mask & y_mask] = 2.0  # Quadrant 2
+    flat_data["label"][~x_mask & ~y_mask] = 3.0  # Quadrant 3
+    flat_data["label"][x_mask & ~y_mask] = 4.0  # Quadrant 4
+    flat_data["label"].unsqueeze(-1)
     return flat_data
 
 
 # 2. Split at Timestep Level
 def split_flat_data(flat_data, test_size=0.2, seed=42):
-    def extract(mask):
-        return {k: v[mask] for k, v in flat_data.items()}
+    N = len(next(iter(flat_data.values())))
+    indices = np.arange(N)
 
-    points = flat_data["privileged_state"][:, :2]  # [B, 2]
-
-    # Filter all the points outside [-1, 1]
-    mask = (
-        (points[:, 0] >= -1)
-        & (points[:, 0] <= 1)
-        & (points[:, 1] >= -1)
-        & (points[:, 1] <= 1)
+    train_idx, test_idx = train_test_split(
+        indices, test_size=test_size, random_state=seed
     )
 
-    flat_data = extract(mask)
-    points = flat_data["privileged_state"][:, :2]  # [B, 2]
+    def extract(idx):
+        return {k: v[idx] for k, v in flat_data.items()}
 
-    step = 2.0 / config.grid_size
-    radius = step / 2
-    coords = torch.linspace(
-        -1 + step / 2, 1 - step / 2, config.grid_size, device=points.device
-    )
-
-    y_coords, x_coords = torch.meshgrid(coords, coords, indexing="ij")
-    centers = torch.stack([x_coords, y_coords], dim=-1).reshape(-1, 2)
-
-    dists_squared = ((points[:, None, :] - centers[None, :, :]) ** 2).sum(dim=-1)
-    mask = (dists_squared < radius**2).any(dim=1)
-
-    fig, ax = plt.subplots(figsize=(8, 8))
-    ax.scatter(
-        points[mask, 0].cpu().numpy(),
-        points[mask, 1].cpu().numpy(),
-        c="blue",
-        label="Train",
-        alpha=0.5,
-    )
-    ax.scatter(
-        points[~mask, 0].cpu().numpy(),
-        points[~mask, 1].cpu().numpy(),
-        c="red",
-        label="Test",
-        alpha=0.5,
-    )
-    ax.set_title("Training Data")
-    ax.set_xlabel("X Coordinate")
-    ax.set_ylabel("Y Coordinate")
-    ax.legend()
-    wandb.log(
-        {"train_data_distribution": wandb.Image(fig)},
-        step=0,
-    )
-
-    # Split into train and test data
-    flat_data = extract(mask)
-    indices = np.arange(len(flat_data["discount"]))
-    train_idx, test_idx = train_test_split(indices, test_size=0.2, random_state=42)
-    return extract(train_idx), extract(test_idx)  # train, test data
+    return extract(train_idx), extract(test_idx)
 
 
 # 3. Batch Generator
@@ -653,18 +561,18 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
             semantic_features.float(), "B T Z -> (B T) Z"
         )  # Ensure X is in the correct shape
 
-        cos_sim_logits = F.softmax(
-            F.linear(  # [(B T) N]
-                losses.l2_norm(semantic_features), losses.l2_norm(P)
-            ),
-            dim=-1,
-        )
+        cos_sim_fail = F.linear(losses.l2_norm(semantic_features), losses.l2_norm(P))[
+            :, -1
+        ]
 
-        auc = roc_auc_score(
-            y_true=einops.rearrange(labels_gt, "B T -> (B T)").cpu().numpy(),
-            y_score=cos_sim_logits.detach().cpu().numpy(),
-            multi_class="ovo",
-        )
+        if config.nb_classes == 2:
+            auc = roc_auc_score(
+                y_true=einops.rearrange(labels_gt, "B T -> (B T)").cpu().numpy(),
+                y_score=cos_sim_fail.detach().cpu().numpy(),
+            )
+
+        else:
+            auc = 0.0
 
         opt.zero_grad()
         loss.backward()
@@ -738,7 +646,6 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
 
                 # Choose the index (0 or 1) of the most similar vector
                 logits = F.softmax(cos_sim, dim=-1)  # (10, 1, 2)
-
                 pred_labels = logits.argmax(dim=-1)  # (10, 1)
 
                 X.append(semantic_features.cpu().numpy())
@@ -749,7 +656,6 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
             y = einops.rearrange(np.concatenate(y, axis=0), "B T -> (B T)")
             y_pred = einops.rearrange(np.concatenate(y_pred, axis=0), "B T -> (B T)")
             num_classes_eval = len(np.unique(y))
-            classes_eval = np.unique(y).astype(int)
 
             # Calculate metrics
             metrics["Accuracy"] = balanced_accuracy = accuracy_score(
@@ -780,17 +686,18 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
             # )
 
         cosine_sims = {
-            i: {j: [] for j in range(i, num_classes_eval + 1)} for i in classes_eval
+            i: {j: [] for j in range(i, num_classes_eval)}
+            for i in range(num_classes_eval)
         }
 
         def cosine_sim_plot_eval(X, y):
             X_class = {
                 k: X[y == k] / (np.linalg.norm(X[y == k], axis=1, keepdims=True) + 1e-8)
-                for k in classes_eval
+                for k in np.unique(y)
             }
 
             fig, ax = plt.subplots(figsize=(10, 8))
-            class_to_label = {k: f"Quad {k}" for k in range(0, config.grid_size**2)}
+            class_to_label = {k: f"Quad {k}" for k in range(1, 5)}
 
             plt.title("Cosine Similarity Distribution per Class")
             plt.xlabel("Cosine Similarity")
@@ -802,18 +709,8 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
                     if (j, i) not in class_pairs:
                         class_pairs.append((i, j))
 
-            if len(class_pairs) > 4:
-                cmap = plt.cm.rainbow
-                colors = []
-                for index, (x, y) in enumerate(class_pairs):
-                    if x == y:
-                        colors.append("black")
-                    else:
-                        colors.append(cmap(index / len(class_pairs)))
-
-            else:
-                cmap = plt.cm.rainbow
-                colors = [cmap(i / len(class_pairs)) for i in range(len(class_pairs))]
+            cmap = plt.cm.rainbow
+            colors = [cmap(i / len(class_pairs)) for i in range(len(class_pairs))]
 
             kde_dict = {}
 
@@ -1208,38 +1105,34 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
 
         # ---- Rainbow Color Setup ----
         cmap = colormaps.get_cmap("hsv")
-        class_colors = {
-            k: cmap(i / num_classes_eval) for i, k in enumerate(classes_eval)
-        }
+        class_colors = [cmap(i / num_classes_eval) for i in range(num_classes_eval)]
 
         # ---- Plot ----
         plt.figure(figsize=(8, 6))
 
         # Plot data points
-        for class_idx, class_label in enumerate(classes_eval):
-            idxs = y == class_label
+        for class_idx in range(num_classes_eval):
+            idxs = y == class_idx
             plt.scatter(
                 X_umap[idxs, 0],
                 X_umap[idxs, 1],
                 s=15,
-                color=class_colors[class_label],
-                label=f"Class {class_label} (data)",
+                color=class_colors[class_idx],
+                label=f"Class {class_idx} (data)",
                 alpha=0.7,
             )
 
-        # Plot proxies on top
-        for class_idx, class_label in enumerate(classes_eval):
-            proxy = proxies_umap[class_idx]
-
+        # Plot proxies
+        for i, proxy in enumerate(proxies_umap):
             plt.scatter(
                 proxy[0],
                 proxy[1],
-                color=class_colors[class_label],
+                color=class_colors[i],
                 marker="X",
                 s=100,
                 edgecolor="black",
                 linewidth=1.2,
-                label=f"Class {class_label} (proxy)",
+                label=f"Class {i} (proxy)",
                 alpha=1.0,
             )
 
@@ -1259,19 +1152,20 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
         with torch.no_grad():
             model.proxies.copy_(criterion.proxies)
 
+        args.save_model = False  # Debug
         if args.save_model:
             model_name = wandb_name
 
             torch.save(
                 model.state_dict(),
-                f"logs/checkpoints_pa/encoder_{model_name}.pth",
+                f"../checkpoints_pa/encoder_{model_name}.pth",
             )
-            tqdm.write(f"Model saved to /logs/checkpoints_pa/encoder_{model_name}.pth")
+            tqdm.write(f"Model saved to /checkpoints_pa/encoder_{model_name}.pth")
 
             if balanced_accuracy < best_eval:
                 best_eval = balanced_accuracy
                 print(f"New best at iter {i}, saving model.")
                 torch.save(
                     model.state_dict(),
-                    f"logs/checkpoints_pa/best_encoder_{model_name}.pth",
+                    f"../checkpoints_pa/best_encoder_{model_name}.pth",
                 )
