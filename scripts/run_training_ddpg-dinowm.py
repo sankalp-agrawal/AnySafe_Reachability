@@ -49,7 +49,7 @@ wm = VideoTransformer(
 # )
 wm.load_state_dict(
     torch.load(
-        "/home/sunny/anysafe_project/AnySafe_Reachability/dino_wm/checkpoints_pa/encoder_mrg_0.1_ul_False.pth"
+        "/home/sunny/AnySafe_Reachability/dino_wm/checkpoints_pa/encoder_mrg_0.1_ul_False.pth"
     )
 )
 hdf5_file = "/home/sunny/data/skittles/consolidated.h5"

@@ -108,6 +108,8 @@ dummy_variable = PyHJ
 
 args = get_args()
 config = args
+config.grid_size = 4
+config.nb_classes = config.grid_size**2
 
 env = gymnasium.make(args.task, params=[config])
 config.num_actions = (
@@ -346,20 +348,20 @@ def topographic_map(
             )
 
         metric = metric.reshape(config.nx, config.ny).T
-        # axes[i].imshow(
-        #     metric,
-        #     extent=(-1.1, 1.1, -1.1, 1.1),
-        #     vmin=-1,
-        #     vmax=1,
-        #     origin="lower",
-        # )
+        axes[i].imshow(
+            metric,
+            extent=(-1.1, 1.1, -1.1, 1.1),
+            vmin=-1,
+            vmax=1,
+            origin="lower",
+        )
 
-        x = np.linspace(-1.1, 1.1, metric.shape[1])
-        y = np.linspace(-1.1, 1.1, metric.shape[0])
-        X, Y = np.meshgrid(x, y)
+        # x = np.linspace(-1.1, 1.1, metric.shape[1])
+        # y = np.linspace(-1.1, 1.1, metric.shape[0])
+        # X, Y = np.meshgrid(x, y)
 
-        contour = axes[i].contour(X, Y, metric, levels=5, colors="black", linewidths=1)
-        axes[i].clabel(contour, inline=True, fontsize=8, fmt="%.2f")
+        # contour = axes[i].contour(X, Y, metric, levels=5, colors="black", linewidths=1)
+        # axes[i].clabel(contour, inline=True, fontsize=8, fmt="%.2f")
 
     for constraint_img in constraint_imgs:
         # Show the constraint image on the topographic map

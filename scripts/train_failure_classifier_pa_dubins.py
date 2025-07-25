@@ -21,10 +21,10 @@ from dino_wm.dino_models import normalize_acs
 from termcolor import cprint
 
 dreamer_dir = os.path.abspath(
-    "/home/sunny/anysafe_project/AnySafe_Reachability/dreamerv3_torch"
+    "/home/sunny/AnySafe_Reachability/dreamerv3_torch"
 )
 sys.path.append(dreamer_dir)
-saferl_dir = os.path.abspath("/home/sunny/anysafe_project/AnySafe_Reachability/PyHJ")
+saferl_dir = os.path.abspath("/home/sunny/AnySafe_Reachability/PyHJ")
 sys.path.append(saferl_dir)
 print(sys.path)
 import models
@@ -239,7 +239,7 @@ def get_args():
 
     yml = yaml.YAML(typ="safe", pure=True)
     with open(
-        "/home/sunny/anysafe_project/AnySafe_Reachability/configs.yaml", "r"
+        "/home/sunny/AnySafe_Reachability/configs.yaml", "r"
     ) as f:
         configs = yml.load(f)
 
@@ -603,6 +603,7 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
             y_true=einops.rearrange(labels_gt, "B T -> (B T)").cpu().numpy(),
             y_score=cos_sim_logits.detach().cpu().numpy(),
             multi_class="ovo",
+            labels=np.arange(config.nb_classes),
         )
 
         opt.zero_grad()
@@ -646,7 +647,7 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
             )
             pbar = tqdm(
                 enumerate(test_loader),
-                total=len(test_data["discount"] // args.sz_batch),
+                total=len(test_data["discount"]) // args.sz_batch,
                 desc="Evaluation",
                 position=2,
                 leave=False,
@@ -722,7 +723,7 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
             i: {j: [] for j in range(i, num_classes_eval + 1)} for i in classes_eval
         }
 
-        def cosine_sim_plot_eval(X, y):
+        def cosine_sim_plot_eval(X, y, mode='ovo'):
             X_class = {
                 k: X[y == k] / (np.linalg.norm(X[y == k], axis=1, keepdims=True) + 1e-8)
                 for k in classes_eval
@@ -736,27 +737,35 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
             plt.ylabel("Normalized Density")
 
             class_pairs = []
-            for i in np.unique(y):
-                for j in np.unique(y):
-                    if (j, i) not in class_pairs:
-                        class_pairs.append((i, j))
+            if mode == 'ovo':
+                for i in np.unique(y):
+                    for j in np.unique(y):
+                        if (j, i) not in class_pairs:
+                            class_pairs.append((i, j))
 
-            if len(class_pairs) > 4:
+                cmap = plt.cm.rainbow
+                colors = [cmap(i / len(class_pairs)) for i in range(len(class_pairs))]
+            elif mode == 'ovr':
+                for i in np.unique(y):
+                    class_pairs.append((i, i))
+                    class_pairs.append((i, 'rest'))
+
                 cmap = plt.cm.rainbow
                 colors = []
-                for index, (x, y) in enumerate(class_pairs):
-                    if x == y:
+                for index, (i, j) in enumerate(class_pairs):
+                    if i == j:
                         colors.append("black")
                     else:
                         colors.append(cmap(index / len(class_pairs)))
 
-            else:
-                cmap = plt.cm.rainbow
-                colors = [cmap(i / len(class_pairs)) for i in range(len(class_pairs))]
-
             kde_dict = {}
 
             for idx, (i, j) in enumerate(class_pairs):
+                if mode == 'ovr':
+                    if j == 'rest':
+                        X_class[j] = np.concatenate(
+                            [X_class[k] for k in classes_eval if k != i]
+                        )
                 cos_sim = X_class[i] @ X_class[j].T
 
                 if i == j:  # Avoid self-comparison and double counting
@@ -766,7 +775,10 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
                 cos_sim = cos_sim[cos_sim != -2.0].flatten()
 
                 if len(cos_sim) > 1000:
-                    cos_sim_sampled = np.random.choice(cos_sim, 1000, replace=False)
+                    if len(cos_sim) > 1e6:
+                        cos_sim_sampled = cos_sim[np.random.choice(len(cos_sim), 1000, replace=True)]
+                    else:
+                        cos_sim_sampled = np.random.choice(cos_sim, 1000, replace=False)
                 else:
                     cos_sim_sampled = cos_sim
 
@@ -778,7 +790,10 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
                 y_pdf_normalized = y_pdf / (np.sum(y_pdf) * dx)
 
                 color = colors[idx]
-                label = f"{class_to_label[i]}-{class_to_label[j]}"
+                if j == 'rest':
+                    label = f"{class_to_label[i]}-Rest"
+                else:
+                    label = f"{class_to_label[i]}-{class_to_label[j]}"
                 ax.plot(x_cs, y_pdf_normalized, label=label, color=color)
 
                 # Statistics
@@ -790,38 +805,40 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
                 lower_y = kde_cs(lower) / (np.sum(y_pdf) * dx)
                 upper_y = kde_cs(upper) / (np.sum(y_pdf) * dx)
 
-                # Plot short vertical lines
-                ax.vlines(
-                    median_val, 0, median_y, color=color, linestyle="dashed", alpha=0.8
-                )
-                ax.vlines(lower, 0, lower_y, color=color, linestyle="dotted", alpha=0.5)
-                ax.vlines(upper, 0, upper_y, color=color, linestyle="dotted", alpha=0.5)
+                if mode == 'ovo':
+                    # Plot short vertical lines
+                    ax.vlines(
+                        median_val, 0, median_y, color=color, linestyle="dashed", alpha=0.8
+                    )
+                    ax.vlines(lower, 0, lower_y, color=color, linestyle="dotted", alpha=0.5)
+                    ax.vlines(upper, 0, upper_y, color=color, linestyle="dotted", alpha=0.5)
 
-                # Text labels with white background
-                label_kwargs = dict(
-                    ha="center",
-                    fontsize=8,
-                    bbox=dict(facecolor="white", edgecolor="none", alpha=1.0),
-                )
-                ax.text(
-                    median_val,
-                    median_y + 0.01,
-                    f"m={median_val:.2f}",
-                    color=color,
-                    **label_kwargs,
-                )
-                ax.text(
-                    lower, lower_y + 0.01, f"↓{lower:.2f}", color=color, **label_kwargs
-                )
-                ax.text(
-                    upper, upper_y + 0.01, f"↑{upper:.2f}", color=color, **label_kwargs
-                )
+                    # Text labels with white background
+                    label_kwargs = dict(
+                        ha="center",
+                        fontsize=8,
+                        bbox=dict(facecolor="white", edgecolor="none", alpha=1.0),
+                    )
+                    ax.text(
+                        median_val,
+                        median_y + 0.01,
+                        f"m={median_val:.2f}",
+                        color=color,
+                        **label_kwargs,
+                    )
+                    ax.text(
+                        lower, lower_y + 0.01, f"↓{lower:.2f}", color=color, **label_kwargs
+                    )
+                    ax.text(
+                        upper, upper_y + 0.01, f"↑{upper:.2f}", color=color, **label_kwargs
+                    )
 
-            # Add dummy lines for legend explanation
-            ax.plot([], [], linestyle="dashed", color="black", label="m = Median")
-            ax.plot(
-                [], [], linestyle="dotted", color="black", label="↓ ↑ = 95% Interval"
-            )
+            if mode == 'ovo':
+                # Add dummy lines for legend explanation
+                ax.plot([], [], linestyle="dashed", color="black", label="m = Median")
+                ax.plot(
+                    [], [], linestyle="dotted", color="black", label="↓ ↑ = 95% Interval"
+                )
 
             ax.legend()
             plt.tight_layout()
@@ -831,16 +848,25 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
             )
             js_div_list = []
             ws_dist_list = []
-            for y_query in np.unique(y):
-                class_pairs_subset = [
-                    pair
-                    for pair in class_pairs
-                    if (y_query in pair and pair != (y_query, y_query))
-                ]
-                for pair in class_pairs_subset:
+            if mode == 'ovo':
+                for y_query in np.unique(y):
+                    class_pairs_subset = [
+                        pair
+                        for pair in class_pairs
+                        if (y_query in pair and pair != (y_query, y_query))
+                    ]
+                    for pair in class_pairs_subset:
+                        js_div, ws_dist = compare_kdes(
+                            kde1=kde_dict[(y_query, y_query)],
+                            kde2=kde_dict[pair],
+                        )
+                        js_div_list.append(js_div)
+                        ws_dist_list.append(ws_dist)
+            elif mode == 'ovr':
+                for y_query in np.unique(y):
                     js_div, ws_dist = compare_kdes(
                         kde1=kde_dict[(y_query, y_query)],
-                        kde2=kde_dict[pair],
+                        kde2=kde_dict[(y_query, 'rest')],
                     )
                     js_div_list.append(js_div)
                     ws_dist_list.append(ws_dist)
@@ -854,7 +880,8 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
             )
             plt.close()
 
-        cosine_sim_plot_eval(X, y)
+        if epoch % 10 == 0:
+            cosine_sim_plot_eval(X, y, mode='ovo' if num_classes_eval <= 10 else 'ovr')
 
         def const_conditioned_plots(X, y, const1, const2):
             P = criterion.proxies.detach()  # Ensure P is in the same dtype as X
@@ -1092,6 +1119,14 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
         #     X, y, const1=constraint1, const2=constraint2
         # )
 
+        # TODO: Get cos sim relative to proxies
+        # auc = roc_auc_score(
+        #     y_true=y,
+        #     y_score=-cos_sim_fail.cpu().numpy(),
+        #     multi_class="ovo",
+        #     labels=np.arange(config.nb_classes),
+        # )
+
         if config.nb_classes == 2:
             auc = roc_auc_score(
                 y_true=y,
@@ -1127,66 +1162,75 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
 
         # print("Visualizing embeddings with UMAP...")
 
-        # ---- UMAP Setup ----
-        umap_input = np.concatenate(
-            [X, criterion.proxies.detach().cpu().numpy()], axis=0
-        )
-
-        reducer = umap.UMAP(n_components=2, metric="cosine")
-        umap_output = reducer.fit_transform(umap_input)
-
-        X_umap = umap_output[: -config.nb_classes]
-        proxies_umap = umap_output[-config.nb_classes :]
-
-        # ---- Rainbow Color Setup ----
-        cmap = colormaps.get_cmap("hsv")
-        class_colors = {
-            k: cmap(i / num_classes_eval) for i, k in enumerate(classes_eval)
-        }
-
-        # ---- Plot ----
-        plt.figure(figsize=(8, 6))
-
-        # Plot data points
-        for class_idx, class_label in enumerate(classes_eval):
-            idxs = y == class_label
-            plt.scatter(
-                X_umap[idxs, 0],
-                X_umap[idxs, 1],
-                s=15,
-                color=class_colors[class_label],
-                label=f"Class {class_label} (data)",
-                alpha=0.7,
+        def UMAP_plot(X, y, proxies, num_classes_eval, classes_eval, max_samples=10_000):
+            # ---- Optional Downsampling ----
+            if max_samples is not None and X.shape[0] > max_samples:
+                indices = np.random.choice(X.shape[0], max_samples, replace=False)
+                X = X[indices]
+                y = y[indices]
+            # ---- UMAP Setup ----
+            umap_input = np.concatenate(
+                [X, proxies.detach().cpu().numpy()], axis=0
             )
 
-        # Plot proxies on top
-        for class_idx, class_label in enumerate(classes_eval):
-            proxy = proxies_umap[class_idx]
+            reducer = umap.UMAP(n_components=2, metric="cosine")
+            umap_output = reducer.fit_transform(umap_input)
 
-            plt.scatter(
-                proxy[0],
-                proxy[1],
-                color=class_colors[class_label],
-                marker="X",
-                s=100,
-                edgecolor="black",
-                linewidth=1.2,
-                label=f"Class {class_label} (proxy)",
-                alpha=1.0,
+            X_umap = umap_output[: -config.nb_classes]
+            proxies_umap = umap_output[-config.nb_classes :]
+
+            # ---- Rainbow Color Setup ----
+            cmap = colormaps.get_cmap("hsv")
+            class_colors = {
+                k: cmap(i / num_classes_eval) for i, k in enumerate(classes_eval)
+            }
+
+            # ---- Plot ----
+            plt.figure(figsize=(8, 6))
+
+            # Plot data points
+            for class_idx, class_label in enumerate(classes_eval):
+                idxs = y == class_label
+                plt.scatter(
+                    X_umap[idxs, 0],
+                    X_umap[idxs, 1],
+                    s=15,
+                    color=class_colors[class_label],
+                    label=f"Class {class_label} (data)",
+                    alpha=0.7,
+                )
+
+            # Plot proxies on top
+            for class_idx, class_label in enumerate(classes_eval):
+                proxy = proxies_umap[class_idx]
+
+                plt.scatter(
+                    proxy[0],
+                    proxy[1],
+                    color=class_colors[class_label],
+                    marker="X",
+                    s=100,
+                    edgecolor="black",
+                    linewidth=1.2,
+                    label=f"Class {class_label} (proxy)",
+                    alpha=1.0,
+                )
+
+            # ---- Final Formatting ----
+            plt.title("UMAP visualization of embeddings (cosine distance)")
+            plt.xlabel("UMAP Dimension 1")
+            plt.ylabel("UMAP Dimension 2")
+            plt.legend(loc="best", fontsize=8, frameon=True)
+            plt.tight_layout()
+
+            wandb.log(
+                {"umap_plot": wandb.Image(plt), "num_updates": num_updates},
+                step=num_updates,
             )
+            plt.close()
 
-        # ---- Final Formatting ----
-        plt.title("UMAP visualization of embeddings (cosine distance)")
-        plt.xlabel("UMAP Dimension 1")
-        plt.ylabel("UMAP Dimension 2")
-        plt.legend(loc="best", fontsize=8, frameon=True)
-        plt.tight_layout()
-
-        wandb.log(
-            {"umap_plot": wandb.Image(plt), "num_updates": num_updates},
-            step=num_updates,
-        )
-        plt.close()
+        if epoch % 10 == 0:
+            UMAP_plot(X, y, criterion.proxies, num_classes_eval, classes_eval, max_samples=None)
 
         with torch.no_grad():
             model.proxies.copy_(criterion.proxies)
@@ -1194,11 +1238,15 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
         if args.save_model:
             model_name = wandb_name
 
+            save_path = "logs/checkpoints_pa"
+            # check if the directory exists, if not create it
+            os.makedirs(save_path, exist_ok=True)
+
             torch.save(
                 model.state_dict(),
-                f"logs/checkpoints_pa/encoder_{model_name}.pth",
+                f"{save_path}/encoder_{model_name}.pth",
             )
-            tqdm.write(f"Model saved to /logs/checkpoints_pa/encoder_{model_name}.pth")
+            tqdm.write(f"Model saved to {save_path}/encoder_{model_name}.pth")
 
             if balanced_accuracy < best_eval:
                 best_eval = balanced_accuracy
