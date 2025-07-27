@@ -27,7 +27,7 @@ def count_parameters(model):
 if __name__ == "__main__":
     wandb.init(project="dino-WM", name="Decoder")
 
-    hdf5_file = "/home/sunny/data/skittles/consolidated.h5"
+    hdf5_file = "/home/sunny/data/sweeper/train/consolidated.h5"
     H = 1
     BS = 64
     expert_data = SplitTrajectoryDataset(hdf5_file, H, split="train", num_test=100)
@@ -57,24 +57,25 @@ if __name__ == "__main__":
         data = next(expert_loader)
 
         inputs1 = data["cam_zed_embd"].to(device)  # Front camera embedding
-        inputs2 = data["cam_rs_embd"].to(device)  # Wrist camera embedding
+        # inputs2 = data["cam_rs_embd"].to(device)  # Wrist camera embedding
         output1 = (
             data["agentview_image"].squeeze().to(device) / 255.0
         )  # Front camera image
-        output2 = (
-            data["robot0_eye_in_hand_image"].squeeze().to(device) / 255.0
-        )  # Wrist camera image
+        # output2 = (
+        #     data["robot0_eye_in_hand_image"].squeeze().to(device) / 255.0
+        # )  # Wrist camera image
 
-        inputs = torch.cat([inputs1, inputs2], dim=0)  # .squeeze()
+        inputs = inputs1  # Use only front camera embedding for now
 
         pred, _ = decoder(inputs)
         pred = rearrange(pred, "(b t) c h w -> b t c h w", t=1)
 
-        pred1, pred2 = torch.split(pred, [inputs1.shape[0], inputs2.shape[0]], dim=0)
+        # pred1, pred2 = torch.split(pred, [inputs1.shape[0], inputs2.shape[0]], dim=0)
+        pred1 = pred
         pred1 = pred1.squeeze().permute(0, 2, 3, 1)
-        pred2 = pred2.squeeze().permute(0, 2, 3, 1)
+        # pred2 = pred2.squeeze().permute(0, 2, 3, 1)
         loss = nn.MSELoss()(pred1, output1.squeeze())
-        loss += nn.MSELoss()(pred2, output2.squeeze())
+        # loss += nn.MSELoss()(pred2, output2.squeeze())
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
@@ -92,23 +93,21 @@ if __name__ == "__main__":
             decoder.eval()
             with torch.no_grad():
                 inputs1 = eval_data["cam_zed_embd"].to(device)
-                inputs2 = eval_data["cam_rs_embd"].to(device)
+                # inputs2 = eval_data["cam_rs_embd"].to(device)
                 output1 = eval_data["agentview_image"].squeeze().to(device) / 255.0
-                output2 = (
-                    eval_data["robot0_eye_in_hand_image"].squeeze().to(device) / 255.0
-                )
+                # output2 = (
+                #     eval_data["robot0_eye_in_hand_image"].squeeze().to(device) / 255.0
+                # )
 
-                inputs = torch.cat([inputs1, inputs2], dim=0)
+                # inputs = torch.cat([inputs1, inputs2], dim=0)
+                inputs = inputs1
                 pred, _ = decoder(inputs)
                 pred = rearrange(pred, "(b t) c h w -> b t c h w", t=1)
-                pred1, pred2 = torch.split(
-                    pred, [inputs1.shape[0], inputs2.shape[0]], dim=0
-                )
+                pred1 = pred
                 pred1 = pred1.squeeze().permute(0, 2, 3, 1)
-                pred2 = pred2.squeeze().permute(0, 2, 3, 1)
 
                 loss = nn.MSELoss()(pred1, output1)
-                loss += nn.MSELoss()(pred2, output2)
+                # loss += nn.MSELoss()(pred2, output2)
 
             print()
             print(f"\rIter {i}, Eval Loss: {loss.item():.4f}")
@@ -119,16 +118,16 @@ if __name__ == "__main__":
 
             out_log = output1[0].detach().detach().cpu().numpy()
             pred_log = pred1[0].detach().detach().cpu().numpy()
-            out_log2 = output2[0].detach().detach().cpu().numpy()
-            pred_log2 = pred2[0].detach().detach().cpu().numpy()
+            # out_log2 = output2[0].detach().detach().cpu().numpy()
+            # pred_log2 = pred2[0].detach().detach().cpu().numpy()
 
             wandb.log(
                 {
                     "eval_loss": loss.item(),
                     "ground_truth_front": wandb.Image(out_log),
                     "pred_front": wandb.Image(pred_log),
-                    "ground_truth_wrist": wandb.Image(out_log2),
-                    "pred_wrist": wandb.Image(pred_log2),
+                    # "ground_truth_wrist": wandb.Image(out_log2),
+                    # "pred_wrist": wandb.Image(pred_log2),
                 }
             )
             eval_losses.append(loss.item())

@@ -1,18 +1,14 @@
 import os
-import h5py
-import numpy as np
-import torch
-from torchvision import transforms
 
-import os
 import h5py
-import torch
 import numpy as np
-from tqdm import tqdm
-from PIL import Image
-from torchvision import transforms
+import torch
 import torchvision.transforms.functional as F
+from PIL import Image
 from scipy.spatial.transform import Rotation as R
+from torchvision import transforms
+from tqdm import tqdm
+
 # Image transforms
 
 def crop_top_middle(image):
@@ -118,12 +114,12 @@ def preprocess(demo_path):
                 ee_state = eef_pose_to_state(ee_states[t].reshape(4, 4).T, gripper_states[t])
                 states.append(ee_state)
 
-
             # Save embeddings and crops in HDF5
             if "cam_zed_embd" not in data_group:
                 data_group.create_dataset("cam_zed_embd", data=np.stack(cam_zed_embds))
             if "states" not in data_group:
                 data_group.create_dataset("states", data=np.stack(states))
+            data_group.create_dataset("labels", data=data_group["separated_label"][...]) # This can be more complicated later
             all_acs.extend(actions)
             transitions += len(actions)
 
@@ -143,7 +139,7 @@ def convert_hdf5_to_consolidated_hdf5(hdf5_dir, output_hdf5_file):
         output_hdf5_file (str): Path to the consolidated HDF5 output file.
     """
     with h5py.File(output_hdf5_file, "w") as hf_out:
-        for i, hdf5_file in enumerate(sorted(os.listdir(hdf5_dir))):
+        for i, hdf5_file in tqdm(enumerate(sorted(os.listdir(hdf5_dir))), desc="Consolidating HDF5 files", total=len(os.listdir(hdf5_dir)), ncols=0, leave=False):
             if hdf5_file.endswith(".hdf5"):
                 file_path = os.path.join(hdf5_dir, hdf5_file)
                 with h5py.File(file_path, "r") as hf_in:
@@ -173,7 +169,7 @@ def convert_hdf5_to_consolidated_hdf5(hdf5_dir, output_hdf5_file):
                         for key in hf_in.keys():
                             hf_in.copy(hf_in[key], group)
 
-                print(f"Copied {hdf5_file} → trajectory_{i}")
+                # print(f"Copied {hdf5_file} → trajectory_{i}")
 
 if __name__ == '__main__':
     hdf5_dir = "/home/sunny/data/sweeper/train/optimal"

@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torchvision.transforms.functional as F
 from torchvision import transforms
+import matplotlib.patches as patches
 
 # Global variables
 current_idx = 0
@@ -14,10 +15,10 @@ labels = {}
 current_traj = ""
 
 def crop_top_middle(image):
-    top = 35
-    left = 40
-    height = 150
-    width = 150
+    top = 30
+    left = 28
+    height = 192
+    width = 192
     return F.crop(image, top, left, height, width)
 
 crop_transform = transforms.Compose([
@@ -32,7 +33,7 @@ def on_key_press(event):
     global current_idx
 
     # Label images with '0' or '1'
-    if event.key in {"0", "1", "2"}:
+    if event.key in {"0", "1"}:
         labels[current_idx] = int(event.key)
         print(f"Image {current_idx} labeled as {labels[current_idx]}")
 
@@ -62,6 +63,14 @@ def update_plot():
     ax.axis("off")
     fig.canvas.draw()
 
+def check_if_labeled(traj_file, label_type):
+    """Check if a trajectory file has been labeled."""
+    with h5py.File(traj_file, "r") as hf:
+        data = hf["data"]
+        if label_type in data:
+            return True
+        else:
+            return False
 
 def process_trajectory(traj_file):
     """Load images from a trajectory file and set up labels."""
@@ -105,51 +114,51 @@ def process_trajectory(traj_file):
 #             labels[i] = 0
 
 
-def postprocess_trajectory(done_file, labels, traj_file):
+def postprocess_trajectory(traj_file, labels, label_type):
     """Load images from a trajectory file and set up labels."""
 
-    shutil.copy(traj_file, done_file)
-
     # write to done_file
-    with h5py.File(done_file, "r+") as hf:
+    with h5py.File(traj_file, "r+") as hf:
         data_group = hf["data"]
 
-        print(f"Assigning labels to {done_file}.")
+        print(f"Assigning labels to {traj_file}.")
         labels = np.array(list(labels.values()))
         print(f"Labels: {labels}")
         print(labels.shape)
         print(data_group["camera_1"].shape)
-        if "labels" in data_group:
-            del data_group["labels"]
-        data_group.create_dataset("labels", data=np.array(labels))
+        if label_type in data_group:
+            del data_group[label_type]
+        data_group.create_dataset(label_type, data=np.array(labels))
 
 
 # Initialize the plot
 plt.ion()
 
 if __name__ == "__main__":
-    directory = "/home/sunny/data/sunny/sweeper/optimal"
-    labeled_directory = "/home/sunny/data/sunny/sweeper/optimal-labeled"
-    # make labeled directory if it does not exist
-    if not os.path.exists(labeled_directory):
-        os.makedirs(labeled_directory)
-
+    directory = "/home/sunny/data/sweeper/test/optimal"
+    label_type = "separated_label"
+    reset_regardless_of_label = False
+    start_idx = 0
     # Get all pickle files with "unsafe" in the filename
     hdf5_files = [f for f in os.listdir(directory) if "traj" in f]
-    # hdf5_files = [f for f in hdf5_files if "safe" in f]
+    hdf5_files = sorted(hdf5_files)
     print("total files:", len(hdf5_files))
-    done_files = [f for f in os.listdir(labeled_directory) if "traj" in f]
-    print("done files:", len(done_files))
-    hdf5_files = list(set(hdf5_files) - set(done_files))
-    print("remaining files:", len(hdf5_files))
     # Get the full paths
 
     tot = len(hdf5_files)
     don = 0
 
-    for traj_file in hdf5_files:  # in range(10):
-        done_file = os.path.join(labeled_directory, traj_file)
+    for idx, traj_file in enumerate(hdf5_files):  # in range(10):
+        # done_file = os.path.join(labeled_directory, traj_file)
         traj_file = os.path.join(directory, traj_file)
+        labeled = check_if_labeled(traj_file, label_type)
+        if idx < start_idx:
+            don += 1
+            continue
+
+        if labeled and not reset_regardless_of_label:
+            don += 1
+            continue
 
         if not os.path.exists(traj_file):
             print(f"File {traj_file} not found, skipping.")
@@ -162,7 +171,7 @@ if __name__ == "__main__":
         fig, ax = plt.subplots()
         fig.suptitle(f"Trajectory {don + 1}/{tot}")
         plt.subplots_adjust(bottom = 0.2)
-        fig.text(0.5, 0.05, 'Press "0" for not divided,\n"1" for divided,\n"2" for occluded\nspace to rewind', ha='center', fontsize=12)
+        fig.text(0.5, 0.05, 'Press "0" for not divided,\n"1" for divided,\nspace to rewind', ha='center', fontsize=12)
 
         process_trajectory(traj_file)
         if images:
@@ -171,7 +180,7 @@ if __name__ == "__main__":
             print(f"Press '0' as not divided or '1' as divided to label {traj_file}.")
             plt.show(block=True)
 
-        postprocess_trajectory(done_file, labels, traj_file)
+        postprocess_trajectory(traj_file, labels, label_type=label_type)
         don += 1
         print(f"Done {don}/{tot}")
         print(f"Finished labeling for {traj_file}.")

@@ -76,28 +76,28 @@ with h5py.File(hdf5_file_test, "r") as hf:
         i: data_from_traj(hf[traj_id]) for i, traj_id in enumerate(trajectory_ids)
     }
 
-constraint1 = {
-    "wrist": database[7]["robot0_eye_in_hand_image"][82],
-    "front": database[7]["agentview_image"][82],
-    "inputs2": database[7]["cam_rs_embd"][[82], :].to(device).unsqueeze(0),
-    "inputs1": database[7]["cam_zed_embd"][[82], :].to(device).unsqueeze(0),
-    "states": database[7]["state"][[82], :].to(device).unsqueeze(0),  # [1, 1, 8]
-}  # weak unsafe frame
-constraint2 = {
-    "wrist": database[1]["robot0_eye_in_hand_image"][108],
-    "front": database[1]["agentview_image"][108],
-    "inputs2": database[1]["cam_rs_embd"][[108], :].to(device).unsqueeze(0),
-    "inputs1": database[1]["cam_zed_embd"][[108], :].to(device).unsqueeze(0),
-    "states": database[1]["state"][[108], :].to(device).unsqueeze(0),  # [1, 1, 8]
-}  # unsafe frame
+# constraint1 = {
+#     "wrist": database[7]["robot0_eye_in_hand_image"][82],
+#     "front": database[7]["agentview_image"][82],
+#     "inputs2": database[7]["cam_rs_embd"][[82], :].to(device).unsqueeze(0),
+#     "inputs1": database[7]["cam_zed_embd"][[82], :].to(device).unsqueeze(0),
+#     "states": database[7]["state"][[82], :].to(device).unsqueeze(0),  # [1, 1, 8]
+# }  # weak unsafe frame
+# constraint2 = {
+#     "wrist": database[1]["robot0_eye_in_hand_image"][108],
+#     "front": database[1]["agentview_image"][108],
+#     "inputs2": database[1]["cam_rs_embd"][[108], :].to(device).unsqueeze(0),
+#     "inputs1": database[1]["cam_zed_embd"][[108], :].to(device).unsqueeze(0),
+#     "states": database[1]["state"][[108], :].to(device).unsqueeze(0),  # [1, 1, 8]
+# }  # unsafe frame
 
-for constraint in [constraint1, constraint2]:
-    semantic_feat = wm.semantic_embed(  # [embedding_dim]
-        inp1=constraint["inputs1"],
-        inp2=constraint["inputs2"],
-        state=constraint["states"],
-    )
-    constraint.update({"semantic_feat": semantic_feat.squeeze()})
+# for constraint in [constraint1, constraint2]:
+#     semantic_feat = wm.semantic_embed(  # [embedding_dim]
+#         inp1=constraint["inputs1"],
+#         inp2=constraint["inputs2"],
+#         state=constraint["states"],
+#     )
+#     constraint.update({"semantic_feat": semantic_feat.squeeze()})
 
 train_envs = DummyVectorEnv(
     [
