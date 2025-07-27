@@ -108,7 +108,7 @@ dummy_variable = PyHJ
 
 args = get_args()
 config = args
-config.grid_size = 4
+config.grid_size = 3
 config.nb_classes = config.grid_size**2
 
 env = gymnasium.make(args.task, params=[config])
@@ -119,7 +119,7 @@ wm = models.WorldModel(env.observation_space_full, env.action_space, 0, config)
 
 config = tools.set_wm_name(config)
 
-ckpt_path = "logs/checkpoints_pa/encoder_mrg_0.1_alpha_32_num_ex_all_ul_F.pth"
+ckpt_path = "logs/checkpoints_pa/encoder_gs_3_split_sq.pth"
 # checkpoint = torch.load(ckpt_path, weights_only=True)
 # state_dict = {
 #     k[14:]: v for k, v in checkpoint["agent_state_dict"].items() if "_wm" in k
@@ -239,41 +239,20 @@ def topographic_map(
     config,
     cache,
     thetas,
-    constraint_state,
+    constraint_states,
     similarity_metric,
     model=None,
     use_semantic=True,
 ):
-    if constraint_state[-1] is None:
-        constraint_states = [
-            np.array([constraint_state[0], constraint_state[1], t])
-            for t in np.linspace(0, 2 * np.pi, 9)
-        ]
-        constraint_states = torch.tensor(constraint_states, dtype=torch.float32)
-    else:
-        constraint_states = torch.tensor([constraint_state], dtype=torch.float32)
+
+    constraint_states = torch.tensor(constraint_states, dtype=torch.float32)
 
     constraint_imgs = []
     for constraint_state in constraint_states:
         constraint_state = torch.tensor(constraint_state, dtype=torch.float32)
         constraint_img = get_frame(states=constraint_state, config=config)  # (H, W, C)
         constraint_imgs.append(constraint_img)
-
-    # Safety state
-    # safe_states = []
-    # for constraint_state in constraint_states:
-    #     safe_state = torch.tensor(
-    #         [-constraint_state[0], -constraint_state[1], constraint_state[2] + np.pi],
-    #     )
-    #     safe_states.append(safe_state)
-
-    # safe_states = torch.stack(safe_states, dim=0)
-
-    # safe_imgs = []
-    # for safe_state in safe_states:
-    #     safe_state = torch.tensor(safe_state, dtype=torch.float32)
-    #     safe_img = get_frame(states=safe_state, config=config)  # (H, W, C)
-    #     safe_imgs.append(safe_img)
+    # constraint_imgs = torch.stack(constraint_imgs, dim=0)  # (N, H, W, C)
 
     with torch.no_grad():
         feat_c, stoch_c, deter_c, semantic_c = get_latent(  # [N, Z]
@@ -283,33 +262,24 @@ def topographic_map(
             feat_c = feat_c.reshape(1, -1)  # [1, Z]
             semantic_c = semantic_c.reshape(1, -1)  # [1, Z]
 
-        # feat_s, __, __, semantic_s = get_latent(  # [N, Z]
-        #     wm, thetas=np.array(safe_states[:, -1]), imgs=safe_imgs
-        # )
-        # if feat_s.ndim == 1:
-        #     feat_s = feat_s.reshape(1, -1)
-        #     semantic_s = semantic_s.reshape(1, -1)
-
         if use_semantic:
             feature_c = semantic_c
-            # feature_s = semantic_s
         else:
             feature_c = feat_c
-            # feature_s = feat_s
 
     idxs, __, __ = cache[thetas[0]]
 
     feature_c = einops.repeat(feature_c, "N C -> B N C", B=idxs.shape[0])  # [B, N, Z]
-    # feature_s = einops.repeat(feature_s, "N C -> B N C", B=idxs.shape[0])  # [B, N, Z]
 
     fig, axes = plt.subplots(
-        1, len(thetas) + 1, figsize=(3 * len(thetas), 5), constrained_layout=True
+        feature_c.shape[1], len(thetas) + 1, figsize=(3 * len(thetas), 3 * feature_c.shape[1]), constrained_layout=True
     )
 
     for i in range(len(thetas)):
         theta = thetas[i]
         i += 1  # offset for constraint and safe images
-        axes[i].set_title(f"theta = {theta:.2f}")
+        for ax in axes[:, i]:
+            ax.set_title(f"theta = {theta:.2f}")
         idxs, imgs_prev, thetas_prev = cache[theta]
         with torch.no_grad():
             feat, stoch, deter, semantic = get_latent(
@@ -327,12 +297,11 @@ def topographic_map(
             denominator = np.linalg.norm(feature, axis=-1) * np.linalg.norm(  # (B, N)
                 feature_c, axis=-1
             )
-            metric_const = -numerator / (denominator + 1e-8)  # (B, N)
-            metric = np.min(metric_const, axis=-1)  # (B,)
+            metric = -numerator / (denominator + 1e-8)  # (B, N)
+            if use_semantic:
+                metric += 0.5
         elif similarity_metric == "Euclidean Distance":
             metric = -np.linalg.norm(feature - feature_c, axis=-1)  # (B, N)
-            metric = np.min(metric, axis=-1)  # (B,)
-
         elif similarity_metric == "Learned":
             assert model is not None, (
                 "Model must be provided for learned similarity metric."
@@ -341,20 +310,20 @@ def topographic_map(
             feature_c = torch.tensor(feature_c, dtype=torch.float32)
             metric = torch.tanh(model(feature, feature_c))  # (B, N)
             metric = metric.detach().cpu().numpy()  # (B, N)
-            metric = np.min(metric, axis=-1)  # (B,)
         else:
             raise ValueError(
                 f"Unknown similarity metric: {similarity_metric}. Supported: ['Cosine_Similarity', 'Euclidean Distance', 'Learned']"
             )
 
-        metric = metric.reshape(config.nx, config.ny).T
-        axes[i].imshow(
-            metric,
-            extent=(-1.1, 1.1, -1.1, 1.1),
-            vmin=-1,
-            vmax=1,
-            origin="lower",
-        )
+        metrics = einops.rearrange(metric, "(W H) N -> N H W", W=config.nx, H=config.ny)
+        for j, metric in enumerate(metrics):
+            axes[j, i].imshow(
+                metric,
+                extent=(-1.1, 1.1, -1.1, 1.1),
+                vmin=-1,
+                vmax=1,
+                origin="lower",
+            )
 
         # x = np.linspace(-1.1, 1.1, metric.shape[1])
         # y = np.linspace(-1.1, 1.1, metric.shape[0])
@@ -363,29 +332,22 @@ def topographic_map(
         # contour = axes[i].contour(X, Y, metric, levels=5, colors="black", linewidths=1)
         # axes[i].clabel(contour, inline=True, fontsize=8, fmt="%.2f")
 
-    for constraint_img in constraint_imgs:
+    for j, constraint_img in enumerate(constraint_imgs):
         # Show the constraint image on the topographic map
-        axes[0].imshow(
+        axes[j, 0].imshow(
             constraint_img,
             extent=(config.x_min, config.x_max, config.y_min, config.y_max),
         )
-        axes[0].set_title("Constraint Image")
-
-    # for safe_img in safe_imgs:
-    #     # Show the safe image on the topographic map
-    #     axes[1].imshow(
-    #         safe_img, extent=(config.x_min, config.x_max, config.y_min, config.y_max)
-    #     )
-    #     axes[1].set_title("Safe Image")
+        axes[j, 0].set_title(f"Constraint Image {j}")
 
     # set axes limits
-    for ax in axes:
+    for ax in axes.flat:
         ax.set_xlim(-1.0, 1.0)
         ax.set_ylim(-1.0, 1.0)
         ax.set_aspect("equal")
 
     fig.suptitle(f"Topographic Map using {similarity_metric}")
-    plt.tight_layout()
+    plt.tight_layout(pad=1.0, h_pad=0.2)  # reduce vertical padding
     return fig
 
 
@@ -400,7 +362,7 @@ def topographic_map_proxies(
     fig, axes = plt.subplots(
         len(wm.proxies),
         len(thetas),
-        figsize=(3 * len(thetas), 5 * len(wm.proxies)),
+        figsize=(3 * len(thetas), 3 * len(wm.proxies)),
         constrained_layout=True,
     )
 
@@ -432,14 +394,21 @@ def topographic_map_proxies(
             metric = np.min(metric_const, axis=-1)  # (B,)
 
             metric = metric.reshape(config.nx, config.ny).T
-            x = np.linspace(-1.1, 1.1, metric.shape[1])
-            y = np.linspace(-1.1, 1.1, metric.shape[0])
-            X, Y = np.meshgrid(x, y)
-
-            contour = axes[proxy_idx, i].contour(
-                X, Y, metric, levels=5, colors="black", linewidths=1
+            axes[proxy_idx, i].imshow(
+                metric,
+                extent=(-1.1, 1.1, -1.1, 1.1),
+                vmin=-1,
+                vmax=1,
+                origin="lower",
             )
-            axes[proxy_idx, i].clabel(contour, inline=True, fontsize=8, fmt="%.2f")
+            # x = np.linspace(-1.1, 1.1, metric.shape[1])
+            # y = np.linspace(-1.1, 1.1, metric.shape[0])
+            # X, Y = np.meshgrid(x, y)
+
+            # contour = axes[proxy_idx, i].contour(
+            #     X, Y, metric, levels=5, colors="black", linewidths=1
+            # )
+            # axes[proxy_idx, i].clabel(contour, inline=True, fontsize=8, fmt="%.2f")
 
     # set axes limits
     for ax in axes.flat:
@@ -490,7 +459,7 @@ if os.path.exists(model_path):
 else:
     print(f"Model file {model_path} not found. Using untrained model.")
 
-similarity_metrics = ["Cosine_Similarity", "Euclidean Distance"]  # , "Learned"]
+similarity_metrics = ["Cosine_Similarity"] # , "Euclidean Distance", "Learned"]
 
 logger = WandbLogger(
     name=f"wm_Analysis_{config.wm_name}", config=config, project="Dubins"
@@ -500,36 +469,30 @@ for metric in similarity_metrics:
     for use_semantic in [True, False]:
         constraint_list = [
             [0.0, 0.0, 0.0],  # 0.0],  # x, y, theta
-            [0.5, 0.5, np.pi / 2],
-            [-0.5, -0.5, -np.pi / 2],
-            [0.0, 0.5, np.pi / 2],
-            [-0.5, 0.0, -np.pi / 2],
+            [0.25, 0.25, np.pi / 2],
+            [-0.25, -0.75, -np.pi / 2],
+            [0.0, 0.75, np.pi / 2],
+            [-0.5, 0.25, -np.pi / 2],
         ]
-        for constraint_state in constraint_list:
-            cprint(
-                f"Running topographic map for constraint state: {constraint_state}",
-                "green",
-                attrs=["bold"],
-            )
-            fig = topographic_map(
-                config=config,
-                cache=cache,
-                thetas=thetas,
-                constraint_state=constraint_state,
-                similarity_metric=metric,
-                model=safety_margin if metric == "Learned" else None,
-                use_semantic=use_semantic,
-            )
+        fig = topographic_map(
+            config=config,
+            cache=cache,
+            thetas=thetas,
+            constraint_states=constraint_list,
+            similarity_metric=metric,
+            model=safety_margin if metric == "Learned" else None,
+            use_semantic=use_semantic,
+        )
 
-            wandb.log(
-                {
-                    f"{metric}_constraint{'_semantic' if use_semantic else ''}/{constraint_state}": wandb.Image(
-                        fig
-                    ),
-                }
-            )
+        wandb.log(
+            {
+                f"{metric}_constraint{'_semantic' if use_semantic else ''}": wandb.Image(
+                    fig
+                ),
+            }
+        )
 
-            plt.close(fig)
+        plt.close(fig)
 
 fig = topographic_map_proxies(config=config, cache=cache, thetas=thetas)
 wandb.log(

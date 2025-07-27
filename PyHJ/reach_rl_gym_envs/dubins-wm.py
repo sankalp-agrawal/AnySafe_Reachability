@@ -171,7 +171,7 @@ class Dubins_WM_Env(gym.Env):
             feat = feat.detach().cpu().numpy()
             feat_sem = self.wm.semantic_encoder(
                 torch.tensor(feat, device=self.device, dtype=torch.float32)
-            )
+            ).detach().cpu().numpy()
             with torch.no_grad():
                 constraints = self.constraints_sem[..., :-1]  # (N Z)
                 constraints = einops.repeat(

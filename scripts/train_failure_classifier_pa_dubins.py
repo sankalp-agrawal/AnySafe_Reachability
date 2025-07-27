@@ -59,152 +59,6 @@ np.random.seed(seed)
 torch.manual_seed(seed)
 torch.cuda.manual_seed_all(seed)  # set random seed for all gpus
 
-
-def make_parser():
-    parser = argparse.ArgumentParser(
-        description="Official implementation of `Proxy Anchor Loss for Deep Metric Learning`"
-        + "Our code is modified from `https://github.com/dichotomies/proxy-nca`"
-    )
-    # export directory, training and val datasets, test datasets
-    parser.add_argument(
-        "--embedding-size",
-        default=512,
-        type=int,
-        dest="sz_embedding",
-        help="Size of embedding that is appended to backbone model.",
-    )
-    parser.add_argument(
-        "--batch-size",
-        default=150,
-        type=int,
-        dest="sz_batch",
-        help="Number of samples per batch.",
-    )
-    parser.add_argument(
-        "--epochs",
-        default=60,
-        type=int,
-        dest="nb_epochs",
-        help="Number of training epochs.",
-    )
-    parser.add_argument(
-        "--gpu-id", default=0, type=int, help="ID of GPU that is used for training."
-    )
-    parser.add_argument(
-        "--workers",
-        default=4,
-        type=int,
-        dest="nb_workers",
-        help="Number of workers for dataloader.",
-    )
-    parser.add_argument("--model", default="bn_inception", help="Model for training")
-    parser.add_argument("--loss", default="Proxy_Anchor", help="Criterion for training")
-    parser.add_argument("--optimizer", default="adamw", help="Optimizer setting")
-    parser.add_argument("--lr", default=1e-4, type=float, help="Learning rate setting")
-    parser.add_argument(
-        "--weight-decay", default=1e-4, type=float, help="Weight decay setting"
-    )
-    parser.add_argument(
-        "--lr-decay-step", default=10, type=int, help="Learning decay step setting"
-    )
-    parser.add_argument(
-        "--lr-decay-gamma", default=0.5, type=float, help="Learning decay gamma setting"
-    )
-    parser.add_argument(
-        "--alpha", default=32, type=float, help="Scaling Parameter setting"
-    )
-    parser.add_argument(
-        "--mrg", default=0.1, type=float, help="Margin parameter setting"
-    )
-    parser.add_argument(
-        "--temp",
-        default=0.05,
-        type=float,
-        help="Temperature for softmax in Proxy Anchor",
-    )
-    parser.add_argument(
-        "--beta",
-        default=0.1,
-        type=float,
-        help="Beta parameter for Proxy Anchor loss, controls the influence of unlabeled data",
-    )
-    parser.add_argument("--IPC", type=int, help="Balanced sampling, images per class")
-    parser.add_argument("--warm", default=1, type=int, help="Warmup training epochs")
-    parser.add_argument(
-        "--bn-freeze", default=1, type=int, help="Batch normalization parameter freeze"
-    )
-    parser.add_argument("--l2-norm", default=1, type=int, help="L2 normlization")
-    parser.add_argument("--remark", default="", help="Any remark")
-    parser.add_argument(
-        "--dont-save-model",
-        dest="save_model",
-        action="store_false",
-        help="Don't save model",
-    )
-    parser.add_argument(
-        "--num-examples-per-class",
-        type=int,
-        default=None,  # None means all examples
-        help="Number of examples per class for training",
-    )
-    parser.add_argument(
-        "--use-unlabeled-data",
-        action="store_true",
-        default=False,
-        help="Use unlabeled data for training",
-    )
-    parser.add_argument(
-        "--unlabeled-ratio",
-        type=float,
-        default=1.5,
-        help="Ratio of unlabeled data to labeled data for training",
-    )
-    parser.add_argument(
-        "--ratio-schedule",
-        type=str,
-        default="const",
-        choices=["const", "lin", "exp"],
-        help="Schedule for the ratio of unlabeled data to labeled data",
-    )
-    return parser
-
-
-parser = make_parser()
-args = parser.parse_args()
-
-if args.gpu_id != -1:
-    torch.cuda.set_device(args.gpu_id)
-
-# Wandb Initialization
-wandb_name_kwargs = {
-    "mrg": args.mrg,
-    "alpha": int(args.alpha),
-    "num_ex": (
-        args.num_examples_per_class
-        if args.num_examples_per_class is not None
-        else "all"
-    ),
-    "ul": "F",
-}
-if args.use_unlabeled_data:
-    wandb_name_kwargs["ul"] = "T"
-    wandb_name_kwargs["ul_ratio"] = (
-        args.unlabeled_ratio
-        if args.unlabeled_ratio != -1.0
-        else f"all_{args.ratio_schedule}"
-    )
-    wandb_name_kwargs["beta"] = args.beta
-    wandb_name_kwargs["temp"] = args.temp
-
-wandb_name = "".join(
-    f"{key}_{value}_" for key, value in wandb_name_kwargs.items() if value is not None
-).rstrip("_")
-wandb.init(name=wandb_name, project="ProxyAnchor")
-wandb.config.update(args)
-
-wandb.define_metric("num_updates", step_metric="num_updates")
-wandb.define_metric("*", step_metric="num_updates")
-
 device = "cuda:0"
 
 # Backbone Model
@@ -269,15 +123,56 @@ dummy_variable = PyHJ
 
 config = get_args()
 config = tools.set_wm_name(config)
-config.grid_size = 4
+
+if config.pa["gpu_id"] != -1:
+    torch.cuda.set_device(config.pa["gpu_id"])
+
 config.nb_classes = config.grid_size**2  # four quadrants in the 2D space
+
+# Setup wandb
+def wandb_setup():
+    # Wandb Initialization
+    wandb_name_kwargs = {
+        # "mrg": config.mrg,
+        # "alpha": int(config.alpha),
+        # "num_ex": (
+        #     config.num_examples_per_class
+        #     if config.num_examples_per_class is not None
+        #     else "all"
+        # ),
+        "gs": config.grid_size,
+        "split": config.train_test_split
+    }
+    if config.pa["use_unlabeled_data"]:
+        wandb_name_kwargs["ul"] = "T"
+        wandb_name_kwargs["ul_ratio"] = (
+            config.unlabeled_ratio
+            if config.unlabeled_ratio != -1.0
+            else f"all_{config.ratio_schedule}"
+        )
+        wandb_name_kwargs["beta"] = config.beta
+        wandb_name_kwargs["temp"] = config.temp
+
+    config.wandb_name = "".join(
+        f"{key}_{value}_" for key, value in wandb_name_kwargs.items() if value is not None
+    ).rstrip("_")
+    wandb.init(name=config.wandb_name, project="ProxyAnchor")
+    wandb.config.update(config)
+
+    wandb.define_metric("num_updates", step_metric="num_updates")
+    wandb.define_metric("*", step_metric="num_updates")
+
+wandb_setup()
+
+
+
 env = gymnasium.make(config.task, params=[config])
 
 config.num_actions = (
     env.action_space.n if hasattr(env.action_space, "n") else env.action_space.shape[0]
 )
 model = models.WorldModel(env.observation_space_full, env.action_space, 0, config)
-ckpt_path = config.rssm_ckpt_path
+ckpt_path = 'logs/dreamer_dubins/dubins_mlp_obs_state_cnn_image_lz_None_sc_F_arrow_0.15/best_rssm_ckpt_0_10.pt' # config.rssm_ckpt_path
 checkpoint = torch.load(ckpt_path)
 
 state_dict = {
@@ -315,8 +210,8 @@ for name, param in model.named_parameters():
     param.requires_grad = name.startswith("semantic_encoder")
 
 offline_eps = collections.OrderedDict()
-config.batch_size = 1
-config.batch_length = 2
+config.pa["batch_size"] = 1
+config.pa["batch_length"] = 2
 tools.fill_expert_dataset_dubins(config, offline_eps)
 offline_dataset = make_dataset(offline_eps, config)
 
@@ -345,6 +240,11 @@ def flatten_trajectories(trajectories):
     # class labels
     points = flat_data["privileged_state"][:, :2]  # [B 2]
 
+    # mask out points outside the square [-1, 1] x [-1, 1]
+    mask = (points[:, 0] >= -1) & (points[:, 0] <= 1) & (points[:, 1] >= -1) & (points[:, 1] <= 1)
+    flat_data = {k: v[mask] for k, v in flat_data.items()}
+    points = flat_data["privileged_state"][:, :2]  # [B, 2]
+
     scaled = (points + 1) / 2
 
     # Convert to grid indices
@@ -356,7 +256,65 @@ def flatten_trajectories(trajectories):
     labels = labels.to(torch.int64)
 
     flat_data["label"] = labels.unsqueeze(-1)
+
     return flat_data
+
+def visualize_data(flat_data, train_data, test_data):
+    points = flat_data["privileged_state"][:, :2]  # [B, 2]
+    labels = flat_data["label"].squeeze()
+    fig, ax = plt.subplots(figsize=(8, 8))
+    ax.scatter(
+        points[:, 0].cpu().numpy(),
+        points[:, 1].cpu().numpy(),
+        c=labels,
+        cmap=colormaps["rainbow"],
+    )
+    # add outline of square in the center
+    square = plt.Rectangle(
+        (-1, -1),
+        2,
+        2,
+        color="black",
+        alpha=0.5,
+        fill=False,
+        linewidth=2,
+    )
+    ax.add_patch(square)
+    ax.set_title("Class Labels")
+    ax.set_xlabel("X Coordinate")
+    ax.set_ylabel("Y Coordinate")
+    ax.legend()
+    plt.tight_layout()
+    wandb.log(
+        {"class_labels": wandb.Image(fig), "num_updates": 0},
+        step=0,
+    )
+
+    # Train/test split visualization
+    fig, ax = plt.subplots(figsize=(8, 8))
+    ax.scatter(
+        train_data["privileged_state"][:, 0].cpu().numpy(),
+        train_data["privileged_state"][:, 1].cpu().numpy(),
+        c="blue",
+        label="Train",
+        alpha=0.5,
+    )
+    ax.scatter(
+        test_data["privileged_state"][:, 0].cpu().numpy(),
+        test_data["privileged_state"][:, 1].cpu().numpy(),
+        c="red",
+        label="Test",
+        alpha=0.5,
+    )
+    ax.set_title("Train/Test Split")
+    ax.set_xlabel("X Coordinate")
+    ax.set_ylabel("Y Coordinate")
+    ax.legend()
+    plt.tight_layout()
+    wandb.log(
+        {"train_test_split": wandb.Image(fig), "num_updates": 0},
+        step=0,
+    ) 
 
 
 # 2. Split at Timestep Level
@@ -372,8 +330,17 @@ def split_flat_data(flat_data, test_size=0.2, seed=42):
     y_coords, x_coords = torch.meshgrid(coords, coords, indexing="ij")
     centers = torch.stack([x_coords, y_coords], dim=-1).reshape(-1, 2)
 
-    dists_squared = ((points[:, None, :] - centers[None, :, :]) ** 2).sum(dim=-1)
-    mask = (dists_squared < radius**2).any(dim=1)
+    if config.train_test_split == "uni":
+        mask = torch.rand(len(points)) > test_size
+    elif config.train_test_split == "circ":
+        dists_squared = ((points[:, None, :] - centers[None, :, :]) ** 2).sum(dim=-1)
+        mask = (dists_squared < radius**2).any(dim=1)
+    elif config.train_test_split == "sq":
+        mask = flat_data["label"].squeeze() != config.grid_size**2 // 2  # Random square being test
+    else:
+        raise ValueError(
+            f"Invalid train_test_split method: {config.train_test_split}"
+        )
 
     def extract(mask):
         return {k: v[mask] for k, v in flat_data.items()}
@@ -401,10 +368,11 @@ offline_eps = flatten_trajectories(offline_eps)
 
 # Split into train/test
 train_data_labeled, test_data = split_flat_data(offline_eps, test_size=0.2)
+visualize_data(offline_eps, train_data_labeled, test_data)
 
 # Create batch generator
 train_loader_labeled = timestep_batch_generator(
-    train_data_labeled, batch_size=args.sz_batch, shuffle=True
+    train_data_labeled, batch_size=config.pa["sz_batch"], shuffle=True
 )
 
 # Get a batch
@@ -416,39 +384,39 @@ for key, value in batch.items():
 # DML Losses
 criterion = losses.Proxy_Anchor(
     nb_classes=config.nb_classes,
-    sz_embed=args.sz_embedding,
-    mrg=args.mrg,
-    alpha=args.alpha,
+    sz_embed=config.pa["sz_embedding"],
+    mrg=config.pa["mrg"],
+    alpha=config.pa["alpha"],
 ).cuda()
 
 # Train Parameters
 param_groups = [
     {
         "params": model.semantic_encoder.parameters(),  # Semantic encoder parameters
-        "lr": float(args.lr) * 1,
+        "lr": float(config.pa["lr"]) * 1,
     },
-    {"params": criterion.parameters(), "lr": float(args.lr) * 100},  # Just proxies
+    {"params": criterion.parameters(), "lr": float(config.pa["lr"]) * 100},  # Just proxies
 ]
 # Optimizer Setting
-opt = torch.optim.AdamW(param_groups, lr=float(args.lr), weight_decay=args.weight_decay)
+opt = torch.optim.AdamW(param_groups, lr=float(config.pa["lr"]), weight_decay=config.pa["weight_decay"])
 
 scheduler = torch.optim.lr_scheduler.StepLR(
-    opt, step_size=args.lr_decay_step, gamma=args.lr_decay_gamma
+    opt, step_size=config.pa["lr_decay_step"], gamma=config.pa["lr_decay_gamma"]
 )
 
 # Dataset Loader and Sampler
-BS = args.sz_batch  # batch size
+BS = config.pa["sz_batch"]  # batch size
 BL = 1
 
-print("Training parameters: {}".format(vars(args)))
-print("Training for {} epochs.".format(args.nb_epochs))
+# print("Training parameters: {}".format(vars(args)))
+print("Training for {} epochs.".format(config.pa["nb_epochs"]))
 losses_list = []
 best_epoch = 0
 best_eval = -float("inf")
 
 num_updates = 0
 
-for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
+for epoch in tqdm(range(0, config.pa["nb_epochs"]), desc="Training Epochs", position=0):
     model.train()
 
     losses_per_epoch = []
@@ -487,33 +455,33 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
         total_timesteps = min_timesteps
 
     # if (  # If using full dataset
-    #     args.use_unlabeled_data and args.unlabeled_ratio == -1.0
+    #     config.use_unlabeled_data and config.unlabeled_ratio == -1.0
     # ):
-    #     if args.ratio_schedule == "const":
+    #     if config.ratio_schedule == "const":
     #         num_to_sample = max_timesteps
-    #     elif args.ratio_schedule == "lin":
-    #         num_to_sample = (max_timesteps * epoch / args.nb_epochs).astype(int)
-    #     elif args.ratio_schedule == "exp":
+    #     elif config.ratio_schedule == "lin":
+    #         num_to_sample = (max_timesteps * epoch / config.nb_epochs).astype(int)
+    #     elif config.ratio_schedule == "exp":
     #         num_to_sample = (
-    #             max_timesteps * np.exp(-5 * (1 - epoch / args.nb_epochs) ** 2)
+    #             max_timesteps * np.exp(-5 * (1 - epoch / config.nb_epochs) ** 2)
     #         ).astype(int)
     #     else:
-    #         raise ValueError("Invalid ratio schedule: {}".format(args.ratio_schedule))
+    #         raise ValueError("Invalid ratio schedule: {}".format(config.ratio_schedule))
     #     subset_indices_unlabeled = random.sample(
     #         range(len(train_data_unlabeled)),
     #         num_to_sample,
     #     )
     #     subset_unlabeled = Subset(train_data_unlabeled, subset_indices_unlabeled)
     #     train_loader_unlabeled = DataLoader(
-    #         subset_unlabeled, batch_size=BS, shuffle=True, num_workers=args.nb_workers
+    #         subset_unlabeled, batch_size=BS, shuffle=True, num_workers=config.nb_workers
     #     )
 
-    # elif args.use_unlabeled_data and args.unlabeled_ratio != -1.0:
+    # elif config.use_unlabeled_data and config.unlabeled_ratio != -1.0:
     #     train_loader_unlabeled = DataLoader(
     #         dataset=train_data_unlabeled,
     #         batch_size=BS,
     #         shuffle=True,
-    #         num_workers=args.nb_workers,
+    #         num_workers=config.nb_workers,
     #     )
 
     pbar = tqdm(
@@ -523,7 +491,7 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
         leave=False,
     )
 
-    # args.beta = np.linspace(0.2, 1.0, args.nb_epochs)[epoch]  # Linear increase of beta
+    # config.beta = np.linspace(0.2, 1.0, config.nb_epochs)[epoch]  # Linear increase of beta
 
     for batch_idx, data in pbar:
         labels_gt = data["label"][:].to(device, dtype=torch.float32)
@@ -535,7 +503,7 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
 
         with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=True):
             semantic_features = model.semantic_embed(data)
-            if args.use_unlabeled_data:  # and epoch >= 20:
+            if config.pa["use_unlabeled_data"]:  # and epoch >= 20:
                 semantic_features_unlabeled_tensor = []
                 for idx, data_unlabeled in enumerate(train_loader_unlabeled):
                     semantic_features_unlabeled = model.semantic_embed(
@@ -551,11 +519,11 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
                 )  # Concatenate all unlabeled features
 
                 # If ratio is specified, sample the correct amount of unlabeled data
-                if args.use_unlabeled_data and args.unlabeled_ratio != -1.0:
+                if config.pa["use_unlabeled_data"] and config.pa["unlabeled_ratio"] != -1.0:
                     # Ensure that correct amount of unlabeled data is given
                     all_indices = list(range(len(semantic_features_unlabeled_tensor)))
                     needed_datapoints = int(
-                        semantic_features.shape[0] * args.unlabeled_ratio
+                        semantic_features.shape[0] * config.pa["unlabeled_ratio"]
                     )
                     if needed_datapoints > len(all_indices):
                         extra_needed = needed_datapoints - len(all_indices)
@@ -573,12 +541,12 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
             X=semantic_features.float(),
             T=labels_gt.squeeze().cuda(),
             U=semantic_features_unlabeled_tensor.float()
-            if args.use_unlabeled_data  # and epoch >= 20
+            if config.pa["use_unlabeled_data"]  # and epoch >= 20
             else None,  # Warmup
-            args=args,
+            args=config.pa,
         )
 
-        if args.use_unlabeled_data:
+        if config.pa["use_unlabeled_data"]:
             wandb.log(
                 {
                     "train/data_ratio": semantic_features_unlabeled_tensor.shape[0]
@@ -643,11 +611,11 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
         y_pred = []
         with torch.no_grad():
             test_loader = timestep_batch_generator(
-                test_data, batch_size=args.sz_batch, shuffle=False
+                test_data, batch_size=config.pa["sz_batch"], shuffle=False
             )
             pbar = tqdm(
                 enumerate(test_loader),
-                total=len(test_data["discount"]) // args.sz_batch,
+                total=len(test_data["discount"]) // config.pa["sz_batch"],
                 desc="Evaluation",
                 position=2,
                 leave=False,
@@ -709,7 +677,7 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
                 criterion(
                     X=torch.tensor(X, device=device),
                     T=torch.tensor(y, device=device),
-                    args=args,
+                    args=config.pa,
                 )
                 .detach()
                 .cpu()
@@ -881,7 +849,7 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
             plt.close()
 
         if epoch % 10 == 0:
-            cosine_sim_plot_eval(X, y, mode='ovo' if num_classes_eval <= 10 else 'ovr')
+            cosine_sim_plot_eval(X, y, mode='ovo' if num_classes_eval <= 4 else 'ovr')
 
         def const_conditioned_plots(X, y, const1, const2):
             P = criterion.proxies.detach()  # Ensure P is in the same dtype as X
@@ -1235,8 +1203,8 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
         with torch.no_grad():
             model.proxies.copy_(criterion.proxies)
 
-        if args.save_model:
-            model_name = wandb_name
+        if config.pa["save_model"]:
+            model_name = config.wandb_name
 
             save_path = "logs/checkpoints_pa"
             # check if the directory exists, if not create it

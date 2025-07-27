@@ -112,6 +112,7 @@ def get_args():
 
 args = get_args()
 config = args
+config.nb_classes = 16
 
 
 env = gymnasium.make(args.task, params=[config])

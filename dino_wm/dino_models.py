@@ -281,6 +281,7 @@ class VideoTransformer(nn.Module):
         dropout: float = 0.0,
         emb_dropout: float = 0.0,
         device: str = "cuda",
+        images = ['front'],  # List of image types to process
     ):
         super().__init__()
 
@@ -288,6 +289,7 @@ class VideoTransformer(nn.Module):
         self.dino = torch.hub.load("facebookresearch/dinov2", "dinov2_vits14_reg").to(
             device
         )
+        num_images = len(images)
 
         # Improved action embedding
         self.action_encoder = nn.Sequential(
@@ -299,7 +301,7 @@ class VideoTransformer(nn.Module):
             nn.LayerNorm(ac_dim),
         ).to(device)
 
-        total_dim = 2 * dim + ac_dim + state_dim
+        total_dim = num_images * dim + ac_dim + state_dim
         self.pos_embedding = nn.Parameter(torch.randn(1, 256, total_dim) * 0.02)
         self.temp_embedding = nn.Parameter(torch.randn(1, num_frames, total_dim) * 0.02)
 
@@ -315,20 +317,22 @@ class VideoTransformer(nn.Module):
             ]
         )
 
-        # Separate prediction heads
-        self.wrist_head = nn.Sequential(
-            LayerNorm(total_dim),
-            nn.Linear(total_dim, total_dim),
-            nn.ReLU(),
-            nn.Linear(total_dim, dim),
-        )
+        if "wrist" in images:
+            # Separate prediction heads
+            self.wrist_head = nn.Sequential(
+                LayerNorm(total_dim),
+                nn.Linear(total_dim, total_dim),
+                nn.ReLU(),
+                nn.Linear(total_dim, dim),
+            )
 
-        self.front_head = nn.Sequential(
-            LayerNorm(total_dim),
-            nn.Linear(total_dim, total_dim),
-            nn.ReLU(),
-            nn.Linear(total_dim, dim),
-        )
+        if "front" in images:
+            self.front_head = nn.Sequential(
+                LayerNorm(total_dim),
+                nn.Linear(total_dim, total_dim),
+                nn.ReLU(),
+                nn.Linear(total_dim, dim),
+            )
 
         self.state_head = nn.Sequential(
             LayerNorm(total_dim),
@@ -344,7 +348,7 @@ class VideoTransformer(nn.Module):
             nn.Linear(total_dim, 1),
         )
 
-        semantic_dim = 2 * dim + state_dim
+        semantic_dim = num_images * dim + state_dim
         self.semantic_encoder = nn.Sequential(
             LayerNorm(semantic_dim),
             nn.Linear(semantic_dim, semantic_dim),
