@@ -112,7 +112,7 @@ def get_args():
 
 args = get_args()
 config = args
-config.nb_classes = 16
+config.nb_classes = 5
 
 
 env = gymnasium.make(args.task, params=[config])
@@ -129,7 +129,7 @@ config = tools.set_wm_name(config)
 #     k[14:]: v for k, v in checkpoint["agent_state_dict"].items() if "_wm" in k
 # }
 # wm.load_state_dict(state_dict)
-ckpt_path = "logs/checkpoints_pa/encoder_mrg_0.1_alpha_32_num_ex_all_ul_F.pth"
+ckpt_path = "logs/checkpoints_pa/encoder_gs_2_split_uni.pth"
 wm.load_state_dict(torch.load(ckpt_path), strict=False)
 wm.eval()
 

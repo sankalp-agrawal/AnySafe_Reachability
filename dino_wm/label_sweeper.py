@@ -1,18 +1,17 @@
 import os
-import shutil
 
 import h5py
 import matplotlib.pyplot as plt
 import numpy as np
 import torchvision.transforms.functional as F
 from torchvision import transforms
-import matplotlib.patches as patches
 
 # Global variables
 current_idx = 0
 images = []
 labels = {}
 current_traj = ""
+
 
 def crop_top_middle(image):
     top = 30
@@ -21,12 +20,15 @@ def crop_top_middle(image):
     width = 192
     return F.crop(image, top, left, height, width)
 
-crop_transform = transforms.Compose([
-    transforms.ToPILImage(),
-    transforms.Lambda(lambda img: crop_top_middle(img)),
-    transforms.Resize((224, 224)),
-    transforms.ToTensor(),
-])
+
+crop_transform = transforms.Compose(
+    [
+        transforms.ToPILImage(),
+        transforms.Lambda(lambda img: crop_top_middle(img)),
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+    ]
+)
 
 
 def on_key_press(event):
@@ -63,14 +65,19 @@ def update_plot():
     ax.axis("off")
     fig.canvas.draw()
 
+
 def check_if_labeled(traj_file, label_type):
     """Check if a trajectory file has been labeled."""
     with h5py.File(traj_file, "r") as hf:
         data = hf["data"]
         if label_type in data:
-            return True
+            if data[label_type].shape[0] > 0:
+                return True
+            else:
+                return False
         else:
             return False
+
 
 def process_trajectory(traj_file):
     """Load images from a trajectory file and set up labels."""
@@ -84,7 +91,9 @@ def process_trajectory(traj_file):
     images = []
     with h5py.File(traj_file, "r") as hf:
         data = hf["data"]
-        assert "camera_1" in data, f"Expected 'camera_1' dataset in the HDF5 file {traj_file}."
+        assert "camera_1" in data, (
+            f"Expected 'camera_1' dataset in the HDF5 file {traj_file}."
+        )
         for i in range(data["camera_1"][:].shape[0]):
             front = data["camera_1"][i]
 
@@ -170,8 +179,14 @@ if __name__ == "__main__":
         # else:
         fig, ax = plt.subplots()
         fig.suptitle(f"Trajectory {don + 1}/{tot}")
-        plt.subplots_adjust(bottom = 0.2)
-        fig.text(0.5, 0.05, 'Press "0" for not divided,\n"1" for divided,\nspace to rewind', ha='center', fontsize=12)
+        plt.subplots_adjust(bottom=0.2)
+        fig.text(
+            0.5,
+            0.05,
+            'Press "0" for not divided,\n"1" for divided,\nspace to rewind',
+            ha="center",
+            fontsize=12,
+        )
 
         process_trajectory(traj_file)
         if images:

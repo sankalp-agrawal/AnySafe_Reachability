@@ -354,15 +354,32 @@ class VideoTransformer(nn.Module):
         actions: torch.Tensor,
         return_latent: bool = False,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Forward pass through the video transformer.
+        Args:
+            video1 (torch.Tensor): Input video tensor of shape (B, T, N, P) where
+                B is batch size, T is number of frames, N is number of patches, and P is patch size.
+            states (torch.Tensor): Robot joint states of shape (B, T, S) where S is the state dimension.
+            actions (torch.Tensor): Actions of shape (B, T, A) where A is the action dimension.
+            return_latent (bool): Whether to return latent features.
+        Returns:
+            Tuple containing:
+                - pred1 (torch.Tensor): Predictions from the front head.
+                - state_preds (torch.Tensor): State predictions.
+                - failure_preds (torch.Tensor): Failure predictions.
+                - semantic_features (torch.Tensor): Encoded semantic features.
+                - x (torch.Tensor, optional): Latent features if return_latent is True.
+        """
+        # x: [B (T-1) N (P + A + S)]
         x = self.forward_features(video1, states, actions)
 
         # Generate predictions
-        pred1 = self.front_head(x)
-        state_preds = self.state_pred(x)
-        failure_preds = self.failure_pred(x)
+        pred1 = self.front_head(x)  # [B (T-1) N P]
+        state_preds = self.state_pred(x)  # [B (T-1) S]
+        failure_preds = self.failure_pred(x)  # [B (T-1) 1]
 
-        semantic_features = self.semantic_embed(
-            inp1=pred1, state=state_preds
+        semantic_features = (  # [ B (T-1) E ] E - embedding dimension
+            self.semantic_embed(inp1=pred1, state=state_preds)
         )
 
         if return_latent:
@@ -391,12 +408,14 @@ class VideoTransformer(nn.Module):
         # Combine features
         batch_size, num_frames, _, _ = video1.shape
 
+        # x [B (T-1) N (P + A + S)]
         x = torch.cat((video1, action_embeddings, state_embeddings), dim=3)
         # Add positional embeddings
         x = x + self.pos_embedding
         x = x + self.temp_embedding[:, :num_frames].unsqueeze(2)
 
         # Reshape for transformer
+        # x: [B (T-1) N (P + A + S)] -> [B (T-1 * N) (P + A + S)]
         x = rearrange(x, "b s n d -> b (s n) d")
         x = self.dropout(x)
 
@@ -405,6 +424,7 @@ class VideoTransformer(nn.Module):
             x = block(x)
 
         # Reshape back
+        # x = [B (T-1 * N) (P + A + S)] -> [B (T-1) N (P + A + S)]
         x = rearrange(x, "b (s n) d -> b s n d", s=num_frames)
         return x
 
@@ -422,14 +442,19 @@ class VideoTransformer(nn.Module):
         Returns:
             torch.Tensor: Encoded semantic features.
         """
-        features = torch.cat(  # [B T 384*2 + state_dim]
+        features = torch.cat(  # [B T N (P + S)]
             (
-                torch.norm(inp1, p=2, dim=-2),
-                state,
+                inp1,  # [B T N P]
+                einops.repeat(state, "b t s -> b t n s", n=inp1.shape[2]),  # [B T N S]
             ),
             dim=-1,
         )
-        return self.semantic_encoder(features)
+        # semantic_features: [B T N E]
+        semantic_features = self.semantic_encoder(features)
+        # Average over patches
+        # semantic_features: [B T E]
+        semantic_features = torch.mean(semantic_features, dim=2)
+        return semantic_features
 
     def state_pred(self, features):
         state_preds = self.state_head(features)

@@ -92,8 +92,8 @@ if __name__ == "__main__":
     EVAL_H = 16
     H = 3
 
-    hdf5_file = "/home/sunny/data/skittles/consolidated.h5"
-    hdf5_file_test = "/home/sunny/data/skittles/vlog-test-labeled/consolidated.h5"
+    hdf5_file = "/home/sunny/data/sweeper/train/consolidated.h5"
+    hdf5_file_test = "/home/sunny/data/sweeper/test/consolidated.h5"
 
     expert_data = SplitTrajectoryDataset(hdf5_file, BL, split="train", num_test=0)
     expert_data_eval = SplitTrajectoryDataset(
@@ -134,12 +134,12 @@ if __name__ == "__main__":
     data = next(expert_loader)
 
     data1 = data["cam_zed_embd"].to(device)
-    data2 = data["cam_rs_embd"].to(device)
+    # data2 = data["cam_rs_embd"].to(device)
     inputs1 = data1[:, :-1]
     output1 = data1[:, 1:]
 
-    inputs2 = data2[:, :-1]
-    output2 = data2[:, 1:]
+    # inputs2 = data2[:, :-1]
+    # output2 = data2[:, 1:]
 
     data_state = data["state"].to(device)
     states = data_state[:, :-1]
@@ -176,12 +176,12 @@ if __name__ == "__main__":
         data = next(expert_loader)
 
         data1 = data["cam_zed_embd"].to(device)
-        data2 = data["cam_rs_embd"].to(device)
+        # data2 = data["cam_rs_embd"].to(device)
         inputs1 = data1[:, :-1]
         output1 = data1[:, 1:]
 
-        inputs2 = data2[:, :-1]
-        output2 = data2[:, 1:]
+        # inputs2 = data2[:, :-1]
+        # output2 = data2[:, 1:]
 
         data_state = data["state"].to(device)
         states = data_state[:, :-1]
@@ -194,9 +194,7 @@ if __name__ == "__main__":
         optimizer.zero_grad()
 
         with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=use_amp):
-            pred1, pred2, pred_state, pred_fail, __ = transition(
-                inputs1, inputs2, states, acs
-            )
+            pred1, pred_state, pred_fail, __ = transition(inputs1, states, acs)
             failure_loss = fail_loss(pred_fail, data["failure"][:, 1:])
             loss = failure_loss
 
@@ -217,10 +215,10 @@ if __name__ == "__main__":
             transition.eval()
             with torch.no_grad():
                 eval_data1 = eval_data["cam_zed_embd"].to(device)
-                eval_data2 = eval_data["cam_rs_embd"].to(device)
+                # eval_data2 = eval_data["cam_rs_embd"].to(device)
 
                 inputs1 = eval_data1[[0], :H].to(device)
-                inputs2 = eval_data2[[0], :H].to(device)
+                # inputs2 = eval_data2[[0], :H].to(device)
                 all_acs = eval_data["action"][[0]].to(device)
                 all_acs = normalize_acs(all_acs, device)
                 acs = eval_data["action"][[0], :H].to(device)
@@ -229,34 +227,25 @@ if __name__ == "__main__":
                 im1s = (
                     eval_data["agentview_image"][[0], :H].squeeze().to(device) / 255.0
                 )
-                im2s = (
-                    eval_data["robot0_eye_in_hand_image"][[0], :H].squeeze().to(device)
-                    / 255.0
-                )
+                # im2s = (
+                #     eval_data["robot0_eye_in_hand_image"][[0], :H].squeeze().to(device)
+                #     / 255.0
+                # )
                 for k in range(EVAL_H - H):
-                    pred1, pred2, pred_state, pred_fail, __ = transition(
-                        inputs1, inputs2, states, acs
-                    )
-                    pred_latent = torch.cat(
-                        [pred1[:, [-1]], pred2[:, [-1]]], dim=0
-                    )  # .squeeze()
+                    pred1, pred_state, pred_fail, __ = transition(inputs1, states, acs)
+                    pred_latent = pred1[:, [-1]]  # .squeeze()
                     pred_ims, _ = decoder(pred_latent)
 
                     pred_ims = rearrange(pred_ims, "(b t) c h w -> b t c h w", t=1)
-                    pred_im1, pred_im2 = torch.split(
-                        pred_ims, [inputs1.shape[0], inputs2.shape[0]], dim=0
-                    )
+                    pred_im1 = pred_ims
 
                     pred_im1 = pred_im1[0].permute(0, 2, 3, 1).detach()
-                    pred_im2 = pred_im2[0].permute(0, 2, 3, 1).detach()
                     pred_fail = pred_fail[:, -1]
 
                     if pred_fail < 0:
                         pred_im1[:, :, :, 0] *= 2
-                        pred_im2[:, :, :, 0] *= 2
 
                     im1s = torch.cat([im1s, pred_im1], dim=0)
-                    im2s = torch.cat([im2s, pred_im2], dim=0)
 
                     # getting next inputs
                     acs = torch.cat(
@@ -266,28 +255,19 @@ if __name__ == "__main__":
                     inputs1 = torch.cat(
                         [inputs1[[0], 1:], pred1[:, -1].unsqueeze(1)], dim=1
                     )
-                    inputs2 = torch.cat(
-                        [inputs2[[0], 1:], pred2[:, -1].unsqueeze(1)], dim=1
-                    )
                     states = torch.cat(
                         [states[[0], 1:], pred_state[:, -1].unsqueeze(1)], dim=1
                     )
 
                 gt_im1 = eval_data["agentview_image"][[0], :EVAL_H].squeeze().to(device)
-                gt_im2 = (
-                    eval_data["robot0_eye_in_hand_image"][[0], :EVAL_H]
-                    .squeeze()
-                    .to(device)
-                )
                 gt_fail = eval_data["failure"][[0], :EVAL_H].squeeze().to(device)
 
                 for j in range(EVAL_H):
                     if gt_fail[j] > 0:
                         gt_im1[j, :, :, 0] *= 2
-                        gt_im2[j, :, :, 0] *= 2
 
-                gt_imgs = torch.cat([gt_im1, gt_im2], dim=-3) / 255.0
-                pred_imgs = torch.cat([im1s, im2s], dim=-3)
+                gt_imgs = torch.cat([gt_im1], dim=-3) / 255.0
+                pred_imgs = torch.cat([im1s], dim=-3)
 
                 vid = torch.cat([gt_imgs, pred_imgs], dim=-2)
                 vid = vid[H:]
@@ -303,13 +283,9 @@ if __name__ == "__main__":
                 eval_data = next(expert_loader_eval)
 
                 data1 = eval_data["cam_zed_embd"].to(device)
-                data2 = eval_data["cam_rs_embd"].to(device)
 
                 inputs1 = data1[:, :-1]
                 output1 = data1[:, 1:]
-
-                inputs2 = data2[:, :-1]
-                output2 = data2[:, 1:]
 
                 data_state = eval_data["state"].to(device)
                 states = data_state[:, :-1]
@@ -319,9 +295,7 @@ if __name__ == "__main__":
                 acs = data_acs[:, :-1]
                 acs = normalize_acs(acs, device)
 
-                pred1, pred2, pred_state, pred_fail, __ = transition(
-                    inputs1, inputs2, states, acs
-                )
+                pred1, pred_state, pred_fail, __ = transition(inputs1, states, acs)
 
                 failure_loss = fail_loss(pred_fail, eval_data["failure"][:, 1:])
                 loss = failure_loss

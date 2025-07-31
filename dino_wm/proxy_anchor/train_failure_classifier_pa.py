@@ -193,8 +193,8 @@ wandb.define_metric("*", step_metric="num_updates")
 BS = args.sz_batch  # batch size
 BL = 1
 
-hdf5_file = "/home/sunny/data/skittles/consolidated.h5"
-hdf5_file_test = "/home/sunny/data/skittles/vlog-test-labeled/consolidated.h5"
+hdf5_file = "/home/sunny/data/sweeper/train/consolidated.h5"
+hdf5_file_test = "/home/sunny/data/sweeper/test/consolidated.h5"
 
 train_data_labeled = SplitTrajectoryDataset(
     hdf5_file,
@@ -288,11 +288,11 @@ with h5py.File(hdf5_file_test, "r") as hf:
     }
 
 constraint1 = {
-    "wrist": database[7]["robot0_eye_in_hand_image"][82],
+    # "wrist": database[7]["robot0_eye_in_hand_image"][82],
     "front": database[7]["agentview_image"][82],
 }  # weak unsafe frame
 constraint2 = {
-    "wrist": database[1]["robot0_eye_in_hand_image"][108],
+    # "wrist": database[1]["robot0_eye_in_hand_image"][108],
     "front": database[1]["agentview_image"][108],
 }  # unsafe frame
 
@@ -384,9 +384,9 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
         labels_gt = data["failure"][:].to(device, dtype=torch.float32)
 
         data1 = data["cam_zed_embd"].to(device)  # [B 1, 256, 384]
-        data2 = data["cam_rs_embd"].to(device)  # [B 1, 256, 384]
+        # data2 = data["cam_rs_embd"].to(device)  # [B 1, 256, 384]
         inputs1 = data1[:, -1:]  # [B 1, 256, 384]
-        inputs2 = data2[:, -1:]  # [B 1, 256, 384]
+        # inputs2 = data2[:, -1:]  # [B 1, 256, 384]
 
         data_state = data["state"].to(device)
         states = data_state[:, -1:]  # [B 1, 8]
@@ -396,15 +396,13 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
         acs = normalize_acs(acs, device)
 
         with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=True):
-            semantic_features = model.semantic_embed(
-                inp1=inputs1, inp2=inputs2, state=states
-            )
+            semantic_features = model.semantic_embed(inp1=inputs1, state=states)
             if args.use_unlabeled_data:  # and epoch >= 20:
                 semantic_features_unlabeled_tensor = []
                 for idx, data_unlabeled in enumerate(train_loader_unlabeled):
                     semantic_features_unlabeled = model.semantic_embed(
                         inp1=data_unlabeled["cam_zed_embd"][:, -1:].to(device),
-                        inp2=data_unlabeled["cam_rs_embd"][:, -1:].to(device),
+                        # inp2=data_unlabeled["cam_rs_embd"][:, -1:].to(device),
                         state=data_unlabeled["state"][:, -1:].to(device),
                     )
                     semantic_features_unlabeled_tensor.append(
@@ -455,6 +453,7 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
             )
 
         P = criterion.proxies.detach()  # Ensure P is in the same dtype as X
+        assert criterion.proxies.requires_grad
         semantic_features = einops.rearrange(
             semantic_features.float(), "B T Z -> (B T) Z"
         )  # Ensure X is in the correct shape
@@ -467,6 +466,27 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
             auc = roc_auc_score(
                 y_true=einops.rearrange(labels_gt_masked, "B T -> (B T)").cpu().numpy(),
                 y_score=cos_sim_fail.detach().cpu().numpy(),
+            )
+            cos_sim_proxies = (
+                torch.gather(  # Cos sim for data point to corresponding proxy
+                    F.linear(losses.l2_norm(semantic_features), losses.l2_norm(P)),
+                    dim=1,
+                    index=labels_gt_masked.to(torch.int64),
+                )
+            )
+            cos_sim_proxies_incorrect = (
+                torch.gather(  # Cos sim for data point to corresponding proxy
+                    F.linear(losses.l2_norm(semantic_features), losses.l2_norm(P)),
+                    dim=1,
+                    index=1 - labels_gt_masked.to(torch.int64),
+                )
+            )
+            wandb.log(
+                {
+                    "train/cos_sim_to_correct_proxies": cos_sim_proxies.mean().item(),
+                    "train/cos_sim_to_incorrect_proxies": cos_sim_proxies_incorrect.mean().item(),
+                },
+                step=num_updates,
             )
 
         else:
@@ -521,9 +541,9 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
         for data, constraint, t in zip(
             [database[7], database[1]], [constraint1, constraint2], [82, 108]
         ):
-            inputs2 = (  # [1, 1, 256, 384]
-                data["cam_rs_embd"][[t], :].to(device).unsqueeze(0)
-            )
+            # inputs2 = (  # [1, 1, 256, 384]
+            #     data["cam_rs_embd"][[t], :].to(device).unsqueeze(0)
+            # )
             inputs1 = (  # [1, 1, 256, 384]
                 data["cam_zed_embd"][[t], :].to(device).unsqueeze(0)
             )
@@ -532,7 +552,7 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
             states = data["state"][[t], :].to(device).unsqueeze(0)  # [1, 1, 8]
 
             semantic_feat = model.semantic_embed(  # [embedding_dim]
-                inp1=inputs1, inp2=inputs2, state=states
+                inp1=inputs1, state=states
             )
             constraint.update({"semantic_feat": semantic_feat.squeeze()})
 
@@ -553,16 +573,16 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
                     device, dtype=torch.float32
                 )  # [B, 1]
 
-                inputs2 = (  # [B, 1, 256, 384]
-                    data["cam_rs_embd"][:, -1:].to(device)
-                )
+                # inputs2 = (  # [B, 1, 256, 384]
+                #     data["cam_rs_embd"][:, -1:].to(device)
+                # )
                 inputs1 = (  # [B, 1, 256, 384]
                     data["cam_zed_embd"][:, -1:].to(device)
                 )
                 states = data["state"][:, -1:].to(device)  # [B, 1, 8]
 
                 semantic_features = model.semantic_embed(  # [embedding_dim]
-                    inp1=inputs1, inp2=inputs2, state=states
+                    inp1=inputs1, state=states
                 )
 
                 unsafe_weak_mask = labels_gt == 2.0

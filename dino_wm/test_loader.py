@@ -56,7 +56,10 @@ class SplitTrajectoryDataset(Dataset):
                         self.slice_indices.append((traj_id, start_idx))
 
                     if "labels" in trajectory.keys():
-                        if 1.0 in trajectory["labels"][:] or 2.0 in trajectory["labels"][:]:
+                        if (
+                            1.0 in trajectory["labels"][:]
+                            or 2.0 in trajectory["labels"][:]
+                        ):
                             self.unsafe_count += 1
                         #     print(self.unsafe_count)
         else:

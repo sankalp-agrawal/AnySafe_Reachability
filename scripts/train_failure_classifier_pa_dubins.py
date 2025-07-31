@@ -20,9 +20,7 @@ from dino_wm.dino_models import normalize_acs
 # note: need to include the dreamerv3 repo for this
 from termcolor import cprint
 
-dreamer_dir = os.path.abspath(
-    "/home/sunny/AnySafe_Reachability/dreamerv3_torch"
-)
+dreamer_dir = os.path.abspath("/home/sunny/AnySafe_Reachability/dreamerv3_torch")
 sys.path.append(dreamer_dir)
 saferl_dir = os.path.abspath("/home/sunny/AnySafe_Reachability/PyHJ")
 sys.path.append(saferl_dir)
@@ -92,9 +90,7 @@ def get_args():
         assert config.expt_name, "Need to provide experiment name to resume run."
 
     yml = yaml.YAML(typ="safe", pure=True)
-    with open(
-        "/home/sunny/AnySafe_Reachability/configs.yaml", "r"
-    ) as f:
+    with open("/home/sunny/AnySafe_Reachability/configs.yaml", "r") as f:
         configs = yml.load(f)
 
     name_list = ["defaults", *config.configs] if config.configs else ["defaults"]
@@ -127,7 +123,8 @@ config = tools.set_wm_name(config)
 if config.pa["gpu_id"] != -1:
     torch.cuda.set_device(config.pa["gpu_id"])
 
-config.nb_classes = config.grid_size**2  # four quadrants in the 2D space
+config.nb_classes = config.grid_size**2 + 1  # four quadrants in the 2D space
+
 
 # Setup wandb
 def wandb_setup():
@@ -141,7 +138,7 @@ def wandb_setup():
         #     else "all"
         # ),
         "gs": config.grid_size,
-        "split": config.train_test_split
+        "split": config.train_test_split,
     }
     if config.pa["use_unlabeled_data"]:
         wandb_name_kwargs["ul"] = "T"
@@ -154,7 +151,9 @@ def wandb_setup():
         wandb_name_kwargs["temp"] = config.temp
 
     config.wandb_name = "".join(
-        f"{key}_{value}_" for key, value in wandb_name_kwargs.items() if value is not None
+        f"{key}_{value}_"
+        for key, value in wandb_name_kwargs.items()
+        if value is not None
     ).rstrip("_")
     wandb.init(name=config.wandb_name, project="ProxyAnchor")
     wandb.config.update(config)
@@ -162,8 +161,8 @@ def wandb_setup():
     wandb.define_metric("num_updates", step_metric="num_updates")
     wandb.define_metric("*", step_metric="num_updates")
 
-wandb_setup()
 
+wandb_setup()
 
 
 env = gymnasium.make(config.task, params=[config])
@@ -172,7 +171,7 @@ config.num_actions = (
     env.action_space.n if hasattr(env.action_space, "n") else env.action_space.shape[0]
 )
 model = models.WorldModel(env.observation_space_full, env.action_space, 0, config)
-ckpt_path = 'logs/dreamer_dubins/dubins_mlp_obs_state_cnn_image_lz_None_sc_F_arrow_0.15/best_rssm_ckpt_0_10.pt' # config.rssm_ckpt_path
+ckpt_path = "logs/dreamer_dubins/dubins_mlp_obs_state_cnn_image_lz_None_sc_F_arrow_0.15/best_rssm_ckpt_0_10.pt"  # config.rssm_ckpt_path
 checkpoint = torch.load(ckpt_path)
 
 state_dict = {
@@ -241,7 +240,12 @@ def flatten_trajectories(trajectories):
     points = flat_data["privileged_state"][:, :2]  # [B 2]
 
     # mask out points outside the square [-1, 1] x [-1, 1]
-    mask = (points[:, 0] >= -1) & (points[:, 0] <= 1) & (points[:, 1] >= -1) & (points[:, 1] <= 1)
+    mask = (
+        (points[:, 0] >= -1)
+        & (points[:, 0] <= 1)
+        & (points[:, 1] >= -1)
+        & (points[:, 1] <= 1)
+    )
     flat_data = {k: v[mask] for k, v in flat_data.items()}
     points = flat_data["privileged_state"][:, :2]  # [B, 2]
 
@@ -251,13 +255,28 @@ def flatten_trajectories(trajectories):
     x_idx = (scaled[:, 0] * config.grid_size).clamp(0, max=config.grid_size - 1).long()
     y_idx = (scaled[:, 1] * config.grid_size).clamp(0, max=config.grid_size - 1).long()
 
+    # label
+    step = 2.0 / config.grid_size
+    radius = step / 2 * 0.9
+    coords = torch.linspace(
+        -1 + step / 2, 1 - step / 2, config.grid_size, device=points.device
+    )
+    y_coords, x_coords = torch.meshgrid(coords, coords, indexing="ij")
+    centers = torch.stack([x_coords, y_coords], dim=-1).reshape(-1, 2)
+    dists_squared = ((points[:, None, :] - centers[None, :, :]) ** 2).sum(dim=-1)
+    mask = (dists_squared < radius**2).any(dim=1)
+
     # Row-major grid index: row * num_cols + col
     labels = y_idx * config.grid_size + x_idx
     labels = labels.to(torch.int64)
+    labels[~mask] = (
+        torch.max(labels) + 1
+    )  # Assign a new class for points outside the square
 
     flat_data["label"] = labels.unsqueeze(-1)
 
     return flat_data
+
 
 def visualize_data(flat_data, train_data, test_data):
     points = flat_data["privileged_state"][:, :2]  # [B, 2]
@@ -314,7 +333,7 @@ def visualize_data(flat_data, train_data, test_data):
     wandb.log(
         {"train_test_split": wandb.Image(fig), "num_updates": 0},
         step=0,
-    ) 
+    )
 
 
 # 2. Split at Timestep Level
@@ -336,11 +355,11 @@ def split_flat_data(flat_data, test_size=0.2, seed=42):
         dists_squared = ((points[:, None, :] - centers[None, :, :]) ** 2).sum(dim=-1)
         mask = (dists_squared < radius**2).any(dim=1)
     elif config.train_test_split == "sq":
-        mask = flat_data["label"].squeeze() != config.grid_size**2 // 2  # Random square being test
+        mask = (
+            flat_data["label"].squeeze() != config.grid_size**2 // 2
+        )  # Random square being test
     else:
-        raise ValueError(
-            f"Invalid train_test_split method: {config.train_test_split}"
-        )
+        raise ValueError(f"Invalid train_test_split method: {config.train_test_split}")
 
     def extract(mask):
         return {k: v[mask] for k, v in flat_data.items()}
@@ -395,10 +414,15 @@ param_groups = [
         "params": model.semantic_encoder.parameters(),  # Semantic encoder parameters
         "lr": float(config.pa["lr"]) * 1,
     },
-    {"params": criterion.parameters(), "lr": float(config.pa["lr"]) * 100},  # Just proxies
+    {
+        "params": criterion.parameters(),
+        "lr": float(config.pa["lr"]) * 100,
+    },  # Just proxies
 ]
 # Optimizer Setting
-opt = torch.optim.AdamW(param_groups, lr=float(config.pa["lr"]), weight_decay=config.pa["weight_decay"])
+opt = torch.optim.AdamW(
+    param_groups, lr=float(config.pa["lr"]), weight_decay=config.pa["weight_decay"]
+)
 
 scheduler = torch.optim.lr_scheduler.StepLR(
     opt, step_size=config.pa["lr_decay_step"], gamma=config.pa["lr_decay_gamma"]
@@ -519,7 +543,10 @@ for epoch in tqdm(range(0, config.pa["nb_epochs"]), desc="Training Epochs", posi
                 )  # Concatenate all unlabeled features
 
                 # If ratio is specified, sample the correct amount of unlabeled data
-                if config.pa["use_unlabeled_data"] and config.pa["unlabeled_ratio"] != -1.0:
+                if (
+                    config.pa["use_unlabeled_data"]
+                    and config.pa["unlabeled_ratio"] != -1.0
+                ):
                     # Ensure that correct amount of unlabeled data is given
                     all_indices = list(range(len(semantic_features_unlabeled_tensor)))
                     needed_datapoints = int(
@@ -691,21 +718,21 @@ for epoch in tqdm(range(0, config.pa["nb_epochs"]), desc="Training Epochs", posi
             i: {j: [] for j in range(i, num_classes_eval + 1)} for i in classes_eval
         }
 
-        def cosine_sim_plot_eval(X, y, mode='ovo'):
+        def cosine_sim_plot_eval(X, y, mode="ovo"):
             X_class = {
                 k: X[y == k] / (np.linalg.norm(X[y == k], axis=1, keepdims=True) + 1e-8)
                 for k in classes_eval
             }
 
             fig, ax = plt.subplots(figsize=(10, 8))
-            class_to_label = {k: f"Quad {k}" for k in range(0, config.grid_size**2)}
+            class_to_label = {k: f"Quad {k}" for k in range(0, config.nb_classes)}
 
             plt.title("Cosine Similarity Distribution per Class")
             plt.xlabel("Cosine Similarity")
             plt.ylabel("Normalized Density")
 
             class_pairs = []
-            if mode == 'ovo':
+            if mode == "ovo":
                 for i in np.unique(y):
                     for j in np.unique(y):
                         if (j, i) not in class_pairs:
@@ -713,10 +740,10 @@ for epoch in tqdm(range(0, config.pa["nb_epochs"]), desc="Training Epochs", posi
 
                 cmap = plt.cm.rainbow
                 colors = [cmap(i / len(class_pairs)) for i in range(len(class_pairs))]
-            elif mode == 'ovr':
+            elif mode == "ovr":
                 for i in np.unique(y):
                     class_pairs.append((i, i))
-                    class_pairs.append((i, 'rest'))
+                    class_pairs.append((i, "rest"))
 
                 cmap = plt.cm.rainbow
                 colors = []
@@ -729,8 +756,8 @@ for epoch in tqdm(range(0, config.pa["nb_epochs"]), desc="Training Epochs", posi
             kde_dict = {}
 
             for idx, (i, j) in enumerate(class_pairs):
-                if mode == 'ovr':
-                    if j == 'rest':
+                if mode == "ovr":
+                    if j == "rest":
                         X_class[j] = np.concatenate(
                             [X_class[k] for k in classes_eval if k != i]
                         )
@@ -744,7 +771,9 @@ for epoch in tqdm(range(0, config.pa["nb_epochs"]), desc="Training Epochs", posi
 
                 if len(cos_sim) > 1000:
                     if len(cos_sim) > 1e6:
-                        cos_sim_sampled = cos_sim[np.random.choice(len(cos_sim), 1000, replace=True)]
+                        cos_sim_sampled = cos_sim[
+                            np.random.choice(len(cos_sim), 1000, replace=True)
+                        ]
                     else:
                         cos_sim_sampled = np.random.choice(cos_sim, 1000, replace=False)
                 else:
@@ -758,7 +787,7 @@ for epoch in tqdm(range(0, config.pa["nb_epochs"]), desc="Training Epochs", posi
                 y_pdf_normalized = y_pdf / (np.sum(y_pdf) * dx)
 
                 color = colors[idx]
-                if j == 'rest':
+                if j == "rest":
                     label = f"{class_to_label[i]}-Rest"
                 else:
                     label = f"{class_to_label[i]}-{class_to_label[j]}"
@@ -773,13 +802,22 @@ for epoch in tqdm(range(0, config.pa["nb_epochs"]), desc="Training Epochs", posi
                 lower_y = kde_cs(lower) / (np.sum(y_pdf) * dx)
                 upper_y = kde_cs(upper) / (np.sum(y_pdf) * dx)
 
-                if mode == 'ovo':
+                if mode == "ovo":
                     # Plot short vertical lines
                     ax.vlines(
-                        median_val, 0, median_y, color=color, linestyle="dashed", alpha=0.8
+                        median_val,
+                        0,
+                        median_y,
+                        color=color,
+                        linestyle="dashed",
+                        alpha=0.8,
                     )
-                    ax.vlines(lower, 0, lower_y, color=color, linestyle="dotted", alpha=0.5)
-                    ax.vlines(upper, 0, upper_y, color=color, linestyle="dotted", alpha=0.5)
+                    ax.vlines(
+                        lower, 0, lower_y, color=color, linestyle="dotted", alpha=0.5
+                    )
+                    ax.vlines(
+                        upper, 0, upper_y, color=color, linestyle="dotted", alpha=0.5
+                    )
 
                     # Text labels with white background
                     label_kwargs = dict(
@@ -795,17 +833,29 @@ for epoch in tqdm(range(0, config.pa["nb_epochs"]), desc="Training Epochs", posi
                         **label_kwargs,
                     )
                     ax.text(
-                        lower, lower_y + 0.01, f"↓{lower:.2f}", color=color, **label_kwargs
+                        lower,
+                        lower_y + 0.01,
+                        f"↓{lower:.2f}",
+                        color=color,
+                        **label_kwargs,
                     )
                     ax.text(
-                        upper, upper_y + 0.01, f"↑{upper:.2f}", color=color, **label_kwargs
+                        upper,
+                        upper_y + 0.01,
+                        f"↑{upper:.2f}",
+                        color=color,
+                        **label_kwargs,
                     )
 
-            if mode == 'ovo':
+            if mode == "ovo":
                 # Add dummy lines for legend explanation
                 ax.plot([], [], linestyle="dashed", color="black", label="m = Median")
                 ax.plot(
-                    [], [], linestyle="dotted", color="black", label="↓ ↑ = 95% Interval"
+                    [],
+                    [],
+                    linestyle="dotted",
+                    color="black",
+                    label="↓ ↑ = 95% Interval",
                 )
 
             ax.legend()
@@ -816,7 +866,7 @@ for epoch in tqdm(range(0, config.pa["nb_epochs"]), desc="Training Epochs", posi
             )
             js_div_list = []
             ws_dist_list = []
-            if mode == 'ovo':
+            if mode == "ovo":
                 for y_query in np.unique(y):
                     class_pairs_subset = [
                         pair
@@ -830,11 +880,11 @@ for epoch in tqdm(range(0, config.pa["nb_epochs"]), desc="Training Epochs", posi
                         )
                         js_div_list.append(js_div)
                         ws_dist_list.append(ws_dist)
-            elif mode == 'ovr':
+            elif mode == "ovr":
                 for y_query in np.unique(y):
                     js_div, ws_dist = compare_kdes(
                         kde1=kde_dict[(y_query, y_query)],
-                        kde2=kde_dict[(y_query, 'rest')],
+                        kde2=kde_dict[(y_query, "rest")],
                     )
                     js_div_list.append(js_div)
                     ws_dist_list.append(ws_dist)
@@ -849,7 +899,7 @@ for epoch in tqdm(range(0, config.pa["nb_epochs"]), desc="Training Epochs", posi
             plt.close()
 
         if epoch % 10 == 0:
-            cosine_sim_plot_eval(X, y, mode='ovo' if num_classes_eval <= 4 else 'ovr')
+            cosine_sim_plot_eval(X, y, mode="ovo" if num_classes_eval <= 4 else "ovr")
 
         def const_conditioned_plots(X, y, const1, const2):
             P = criterion.proxies.detach()  # Ensure P is in the same dtype as X
@@ -1130,16 +1180,16 @@ for epoch in tqdm(range(0, config.pa["nb_epochs"]), desc="Training Epochs", posi
 
         # print("Visualizing embeddings with UMAP...")
 
-        def UMAP_plot(X, y, proxies, num_classes_eval, classes_eval, max_samples=10_000):
+        def UMAP_plot(
+            X, y, proxies, num_classes_eval, classes_eval, max_samples=10_000
+        ):
             # ---- Optional Downsampling ----
             if max_samples is not None and X.shape[0] > max_samples:
                 indices = np.random.choice(X.shape[0], max_samples, replace=False)
                 X = X[indices]
                 y = y[indices]
             # ---- UMAP Setup ----
-            umap_input = np.concatenate(
-                [X, proxies.detach().cpu().numpy()], axis=0
-            )
+            umap_input = np.concatenate([X, proxies.detach().cpu().numpy()], axis=0)
 
             reducer = umap.UMAP(n_components=2, metric="cosine")
             umap_output = reducer.fit_transform(umap_input)
@@ -1198,7 +1248,14 @@ for epoch in tqdm(range(0, config.pa["nb_epochs"]), desc="Training Epochs", posi
             plt.close()
 
         if epoch % 10 == 0:
-            UMAP_plot(X, y, criterion.proxies, num_classes_eval, classes_eval, max_samples=None)
+            UMAP_plot(
+                X,
+                y,
+                criterion.proxies,
+                num_classes_eval,
+                classes_eval,
+                max_samples=None,
+            )
 
         with torch.no_grad():
             model.proxies.copy_(criterion.proxies)

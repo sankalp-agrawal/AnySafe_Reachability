@@ -169,9 +169,14 @@ class Dubins_WM_Env(gym.Env):
             safety_margin = np.array(g_xList).reshape(-1)
         elif self.safety_margin_type == "cosine_similarity":
             feat = feat.detach().cpu().numpy()
-            feat_sem = self.wm.semantic_encoder(
-                torch.tensor(feat, device=self.device, dtype=torch.float32)
-            ).detach().cpu().numpy()
+            feat_sem = (
+                self.wm.semantic_encoder(
+                    torch.tensor(feat, device=self.device, dtype=torch.float32)
+                )
+                .detach()
+                .cpu()
+                .numpy()
+            )
             with torch.no_grad():
                 constraints = self.constraints_sem[..., :-1]  # (N Z)
                 constraints = einops.repeat(
@@ -210,9 +215,34 @@ class Dubins_WM_Env(gym.Env):
             ]
             if in_distribution:
                 i = np.random.randint(0, len(in_distribution_set))
-                return in_distribution_set[i]
+                gt_constraint = in_distribution_set[i]
+                constraint_state = np.array([*gt_constraint[:2], 0.0])
             else:
-                return np.array([0.0, 0.0, 0.5, 1.0])
+                constraint_state = np.array([0.0, 0.0, 0.0])
+                gt_constraint = np.array([0.0, 0.0, 0.5, 1.0])
+                return constraint_state, gt_constraint
+
+        elif dist_type == "4c":  # four circles
+            centers = [
+                np.array([-0.5, -0.5, 0.5, 1.0]),
+                np.array([0.5, -0.5, 0.5, 1.0]),
+                np.array([-0.5, 0.5, 0.5, 1.0]),
+                np.array([0.5, 0.5, 0.5, 1.0]),
+            ]
+            i = np.random.randint(0, len(centers))
+            center = centers[i][:2]
+            # constraint state is a random state in the circle
+            # gt_constraint is a circle of radius 0.45
+            radius = np.random.uniform(low=0.0, high=0.45)
+            theta = np.random.uniform(low=0.0, high=2 * np.pi)
+            constraint_state = np.array(
+                [
+                    center[0] + radius * np.cos(theta),
+                    center[1] + radius * np.sin(theta),
+                    0.0,
+                ]
+            )
+            gt_constraint = centers[i]
         elif dist_type == "fcfe":
             in_distribution_set = [
                 np.array([-0.5, -0.5, 0.5, 1.0]),
@@ -226,13 +256,16 @@ class Dubins_WM_Env(gym.Env):
             ]
             if in_distribution:
                 i = np.random.randint(0, len(in_distribution_set))
-                return in_distribution_set[i]
+                gt_constraint = in_distribution_set[i]
+                constraint_state = np.array([*gt_constraint[:2], 0.0])
             else:
-                return np.array([0.0, 0.0, 0.5, 1.0])
+                gt_constraint = np.array([0.0, 0.0, 0.5, 1.0])
+                constraint_state = np.array([0.0, 0.0, 0.0])
+                return constraint_state, gt_constraint
 
         elif dist_type == "rh":
             if in_distribution:
-                return np.array(
+                gt_constraint = np.array(
                     [
                         np.random.uniform(low=0.0, high=1.0),
                         np.random.uniform(low=-1.0, high=1.0),
@@ -240,8 +273,14 @@ class Dubins_WM_Env(gym.Env):
                         1.0,  # This is used to say that this constraint is active
                     ]
                 )
+                constraint_state = np.array(
+                    [
+                        *gt_constraint[:2],
+                        0.0,
+                    ]
+                )
             else:
-                return np.array(
+                gt_constraint = np.array(
                     [
                         np.random.uniform(low=-1.0, high=0.0),
                         np.random.uniform(low=-1.0, high=1.0),
@@ -249,10 +288,16 @@ class Dubins_WM_Env(gym.Env):
                         1.0,  # This is used to say that this constraint is active
                     ]
                 )
+                constraint_state = np.array(
+                    [
+                        *gt_constraint[:2],
+                        0.0,
+                    ]
+                )
 
         elif dist_type == "br":
             if in_distribution:
-                return np.array(
+                gt_constraint = np.array(
                     [
                         np.random.uniform(low=-1.0, high=1.0),
                         np.random.uniform(low=-1.0, high=1.0),
@@ -262,8 +307,14 @@ class Dubins_WM_Env(gym.Env):
                         1.0,  # This is used to say that this constraint is active
                     ]
                 )
+                constraint_state = np.array(
+                    [
+                        *gt_constraint[:2],
+                        0.0,  # theta
+                    ]
+                )
             else:
-                return np.array(
+                gt_constraint = np.array(
                     [
                         np.random.uniform(low=-1.0, high=1.0),
                         np.random.uniform(low=-1.0, high=1.0),
@@ -273,25 +324,30 @@ class Dubins_WM_Env(gym.Env):
                         1.0,  # This is used to say that this constraint is active
                     ]
                 )
+                constraint_state = np.array(
+                    [
+                        *gt_constraint[:2],
+                        0.0,  # theta
+                    ]
+                )
         elif dist_type == "v":
             # Eval and test set are the same here
-            return np.array(
-                [
-                    0.0,
-                    0.0,
-                    0.5,
-                    1.0,
-                ]  # This is used to say that this constraint is active
+            constraint_state = np.array([0.0, 0.0])
+            gt_constraint = np.append(
+                constraint_state,
+                np.array([0.5, 1.0]),
             )
         elif dist_type == "uni":
             # Eval and test set are the same here
-            return np.array(
+            constraint_state = np.array(
                 [
-                    np.random.uniform(low=-0.5, high=0.5),
-                    np.random.uniform(low=-0.5, high=0.5),
-                    np.random.uniform(low=0.1, high=0.5),
-                    1.0,  # This is used to say that this constraint is active
+                    np.random.uniform(low=-1.0, high=1.0),
+                    np.random.uniform(low=-1.0, high=1.0),
                 ]
+            )
+            gt_constraint = np.append(
+                constraint_state,
+                np.array([np.random.uniform(low=0.1, high=0.5), 1.0]),
             )
 
         elif dist_type == "ds":  # Distribution from dataset
@@ -299,17 +355,32 @@ class Dubins_WM_Env(gym.Env):
             init_traj = np.append(
                 init_traj, 1.0
             )  # Append 1.0 to indicate that this constraint is active
+            import ipdb
+
+            ipdb.set_trace()
         else:
             raise ValueError(
                 "Unknown distribution type: {}".format(self.distribution_type)
             )
 
+        assert len(gt_constraint) == 4, (
+            "Constraint should have 4 elements, (x, y, radius, u)"
+        )
+        assert len(constraint_state) == 3, (
+            "Constraint state should have 3 elements (x, y, theta)"
+        )
+        return constraint_state, gt_constraint
+
     def select_constraints(self, in_distribution=True):
-        # constraint = self.select_one_constraint(in_distribution=in_distribution)
-        constraint = np.append(np.array(next(self.data)["privileged_state"])[0, 0], 1.0)
-        constraint_state = torch.tensor(constraint[:3], dtype=torch.float32)
+        # constraint_state is different from constraint
+        # constraint_state is the state of the agent to produce the constraint image
+        # constraint is the grouund truth constraint as (x,y,radius,u)
+        constraint_state, gt_constraint = self.select_one_constraint(
+            in_distribution=in_distribution
+        )
+        constraint_state = torch.tensor(constraint_state, dtype=torch.float32)
         # constraint_state[..., -1] = 0  # Set theta to 0 for the constraint image
-        img = get_frame(states=constraint_state[:3], config=self.config)
+        img = get_frame(states=constraint_state, config=self.config)
         self.constraint_img = img
         feat_c = self.get_latent(
             wm=self.wm,
@@ -329,7 +400,7 @@ class Dubins_WM_Env(gym.Env):
             .numpy(),
             1.0,
         ).reshape(self.num_constraints, -1)
-        self.gt_constraints = np.array(np.append(constraint_state, 1.0)).reshape(
+        self.gt_constraints = np.array(gt_constraint).reshape(
             self.num_constraints, -1
         )  # Store the ground truth constraints
 

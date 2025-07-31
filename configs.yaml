@@ -164,7 +164,7 @@ defaults:
   alpha: 0.2 
   weight-decay-pyhj: 0.001
 
-  env-dist-type: uni # 'v' - vanilla, 'fc' - four corners, 'fcfe' - four corners four edges, 'rh' - right half, 'br' - big radii, 'uni' - uniform, 'rhfe' - right half four edges, 'rhbr' - right half big radii
+  env-dist-type: 4c # 'v' - vanilla, 'fc' - four corners, 'fcfe' - four corners four edges, 'rh' - right half, 'br' - big radii, 'uni' - uniform, 'rhfe' - right half four edges, 'rhbr' - right half big radii
   safety-margin-type: "cosine_similarity" # cosine_similarity, learned
   safety-margin-threshold: -0.0 # type=float, default=0.5)
   safety-margin-hard-threshold: False # type=bool, default=False)
@@ -207,6 +207,6 @@ defaults:
     use_unlabeled_data: False # Use unlabeled data for training
     unlabeled_ratio: 1.5 # Ratio of unlabeled data to labeled data for
     ratio_schedule: "const" # Schedule for the ratio of unlabeled data to labeled data
-  train_test_split: "circ" # "circ" for circular split, "uni" for uniform split, "sq" for random square being test
+  train_test_split: "uni" # "circ" for circular split, "uni" for uniform split, "sq" for random square being test
   grid_size: 2 # Grid size for labels
   nb_classes: 4 # All four quadrants

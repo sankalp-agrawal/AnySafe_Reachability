@@ -108,8 +108,8 @@ dummy_variable = PyHJ
 
 args = get_args()
 config = args
-config.grid_size = 3
-config.nb_classes = config.grid_size**2
+config.grid_size = 2
+config.nb_classes = config.grid_size**2 + 1
 
 env = gymnasium.make(args.task, params=[config])
 config.num_actions = (
@@ -119,7 +119,7 @@ wm = models.WorldModel(env.observation_space_full, env.action_space, 0, config)
 
 config = tools.set_wm_name(config)
 
-ckpt_path = "logs/checkpoints_pa/encoder_gs_3_split_sq.pth"
+ckpt_path = "logs/checkpoints_pa/encoder_gs_2_split_uni.pth"
 # checkpoint = torch.load(ckpt_path, weights_only=True)
 # state_dict = {
 #     k[14:]: v for k, v in checkpoint["agent_state_dict"].items() if "_wm" in k
@@ -244,7 +244,6 @@ def topographic_map(
     model=None,
     use_semantic=True,
 ):
-
     constraint_states = torch.tensor(constraint_states, dtype=torch.float32)
 
     constraint_imgs = []
@@ -272,7 +271,10 @@ def topographic_map(
     feature_c = einops.repeat(feature_c, "N C -> B N C", B=idxs.shape[0])  # [B, N, Z]
 
     fig, axes = plt.subplots(
-        feature_c.shape[1], len(thetas) + 1, figsize=(3 * len(thetas), 3 * feature_c.shape[1]), constrained_layout=True
+        feature_c.shape[1],
+        len(thetas) + 1,
+        figsize=(3 * len(thetas), 3 * feature_c.shape[1]),
+        constrained_layout=True,
     )
 
     for i in range(len(thetas)):
@@ -459,7 +461,7 @@ if os.path.exists(model_path):
 else:
     print(f"Model file {model_path} not found. Using untrained model.")
 
-similarity_metrics = ["Cosine_Similarity"] # , "Euclidean Distance", "Learned"]
+similarity_metrics = ["Cosine_Similarity"]  # , "Euclidean Distance", "Learned"]
 
 logger = WandbLogger(
     name=f"wm_Analysis_{config.wm_name}", config=config, project="Dubins"
