@@ -233,7 +233,7 @@ test_loader = DataLoader(
 
 device = "cuda:0"
 
-nb_classes = 2  # Safe and Failure
+nb_classes = 3  # three regions
 
 # Backbone Model
 LOG_DIR = "logs_pa"
@@ -431,10 +431,16 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
                         semantic_features_unlabeled_tensor[combined_indices]
                     )
 
-        unsafe_weak_mask = labels_gt == 2.0
+        # unsafe_weak_mask = labels_gt == 2.0
         labels_gt_masked = copy.deepcopy(labels_gt)
-        labels_gt_masked[unsafe_weak_mask] = 1.0  # Set
-        loss = criterion(
+        mask = (labels_gt_masked != -1.0).squeeze()
+        labels_gt_masked = (
+            labels_gt_masked[mask] - 1
+        )  # Remove -1 labels, shift range to 0-2
+        semantic_features = semantic_features[mask]  # Remove -1 labels
+        # labels_gt_masked[unsafe_weak_mask] = 1.0  # Set
+
+        loss, __, __ = criterion(
             X=semantic_features.float(),
             T=labels_gt_masked.squeeze().cuda(),
             U=semantic_features_unlabeled_tensor.float()
@@ -461,6 +467,8 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
         cos_sim_fail = F.linear(losses.l2_norm(semantic_features), losses.l2_norm(P))[
             :, -1
         ]
+        cos_sim = F.linear(losses.l2_norm(semantic_features), losses.l2_norm(P))
+        cos_sim_logits = F.softmax(cos_sim, dim=-1)  # Softmax over classes
 
         if nb_classes == 2:
             auc = roc_auc_score(
@@ -490,21 +498,11 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
             )
 
         else:
-            raise notImplementedError(
-                "AUC calculation for more than 2 classes is not implemented."
-            )
-            metrics["AUC"].append(
-                roc_auc_score(
-                    y_true=losses.binarize(
-                        einops.rearrange(labels_gt_masked, "B T -> (B T)"),
-                        nb_classes=nb_classes,
-                    )
-                    .cpu()
-                    .numpy(),
-                    y_score=einops.rearrange(logits, "B T L -> (B T) L").cpu().numpy(),
-                    multi_class="ovr",
-                    average="macro",
-                )
+            auc = roc_auc_score(
+                y_true=labels_gt_masked.cpu().numpy(),
+                y_score=cos_sim_logits.detach().cpu().numpy(),
+                multi_class="ovr",
+                average="macro",
             )
 
         opt.zero_grad()
@@ -572,22 +570,21 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
                 labels_gt = data["failure"][:, -1:].to(
                     device, dtype=torch.float32
                 )  # [B, 1]
-
+                mask = (labels_gt != -1.0).squeeze()
                 # inputs2 = (  # [B, 1, 256, 384]
                 #     data["cam_rs_embd"][:, -1:].to(device)
                 # )
                 inputs1 = (  # [B, 1, 256, 384]
-                    data["cam_zed_embd"][:, -1:].to(device)
+                    data["cam_zed_embd"][:, -1:].to(device)[mask]
                 )
-                states = data["state"][:, -1:].to(device)  # [B, 1, 8]
+                states = data["state"][:, -1:].to(device)[mask]  # [B, 1, 8]
 
                 semantic_features = model.semantic_embed(  # [embedding_dim]
                     inp1=inputs1, state=states
                 )
 
-                unsafe_weak_mask = labels_gt == 2.0
+                labels_gt = labels_gt[mask] - 1  # Remove -1 labels, shift range to 0-2
                 labels_gt_masked = copy.deepcopy(labels_gt)
-                labels_gt_masked[unsafe_weak_mask] = 1.0  # Set
 
                 # Normalize all vectors for cosine similarity
                 semantic_features_norm = F.normalize(
@@ -622,7 +619,7 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
             num_classes_eval = len(np.unique(y))
 
             y_gt_masked = copy.deepcopy(y)
-            y_gt_masked[y == 2] = 1  # Set weak unsafe to unsafe
+            # y_gt_masked[y == 2] = 1  # Set weak unsafe to unsafe
 
             # Calculate metrics
             metrics["Accuracy"] = balanced_accuracy = accuracy_score(
@@ -638,16 +635,12 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
                 y_gt_masked, y_pred, average="macro", zero_division=0
             )
             metrics["Balanced Accuracy"] = accuracy_score(y_gt_masked, y_pred)
-            metrics["Proxy Anchor Loss"] = (
-                criterion(
-                    X=torch.tensor(X, device=device),
-                    T=torch.tensor(y_gt_masked, device=device),
-                    args=args,
-                )
-                .detach()
-                .cpu()
-                .numpy()
+            loss, __, __ = criterion(
+                X=torch.tensor(X, device=device),
+                T=torch.tensor(y_gt_masked, device=device),
+                args=args,
             )
+            metrics["Proxy Anchor Loss"] = loss.detach().cpu().numpy()
             # metrics["Cross Entropy Loss"].append(
             #     F.cross_entropy(cos_sim, gt_labels, reduction="mean").item()
             # )
@@ -659,7 +652,7 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
 
         def cosine_sim_plot_eval(X, y):
             y_masked = copy.deepcopy(y)
-            y_masked[y == 2] = 1  # Set weak unsafe to unsafe
+            # y_masked[y == 2] = 1  # Set weak unsafe to unsafe
 
             X_class = {
                 k: X[y_masked == k]
@@ -668,7 +661,7 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
             }
 
             fig, ax = plt.subplots(figsize=(10, 8))
-            class_to_label = {0: "Safe", 1: "Fail", 2: "Weak Fail"}
+            class_to_label = {0: "Region 1", 1: "Region 2", 2: "Region 3"}
 
             plt.title("Cosine Similarity Distribution per Class")
             plt.xlabel("Cosine Similarity")

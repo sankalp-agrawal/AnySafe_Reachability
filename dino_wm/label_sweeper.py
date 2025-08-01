@@ -170,7 +170,7 @@ def postprocess_trajectory(traj_file, labels, label_type):
 plt.ion()
 
 if __name__ == "__main__":
-    directory = "/home/sunny/data/sweeper/train/optimal"
+    directory = "/home/sunny/data/sweeper/test/optimal"
     label_type = "region_label"
     reset_regardless_of_label = False
     start_idx = 0

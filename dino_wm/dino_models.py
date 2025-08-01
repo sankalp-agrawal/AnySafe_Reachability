@@ -345,7 +345,7 @@ class VideoTransformer(nn.Module):
             nn.Linear(semantic_dim, 512),
         )
 
-        self.proxies = nn.Parameter(torch.randn(2, 512).cuda())
+        self.proxies = nn.Parameter(torch.randn(3, 512).cuda())
 
     def forward(
         self,

@@ -142,7 +142,7 @@ def preprocess(demo_path):
                 del data_group["labels"]
 
             data_group.create_dataset(
-                "labels", data=data_group["separated_label"][...]
+                "labels", data=data_group["region_label"][...]
             )  # This can be more complicated later
 
             all_acs.extend(actions)
@@ -204,7 +204,7 @@ def convert_hdf5_to_consolidated_hdf5(hdf5_dir, output_hdf5_file):
 
 
 if __name__ == "__main__":
-    hdf5_dir = "/home/sunny/data/sweeper/train/optimal"
-    output_hdf5_file = "/home/sunny/data/sweeper/train/consolidated.h5"
+    hdf5_dir = "/home/sunny/data/sweeper/test/optimal"
+    output_hdf5_file = "/home/sunny/data/sweeper/test/consolidated.h5"
     preprocess(hdf5_dir)
     convert_hdf5_to_consolidated_hdf5(hdf5_dir, output_hdf5_file)

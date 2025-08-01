@@ -55,13 +55,6 @@ class SplitTrajectoryDataset(Dataset):
                     for start_idx in range(0, traj_len - self.segment_length + 1, 1):
                         self.slice_indices.append((traj_id, start_idx))
 
-                    if "labels" in trajectory.keys():
-                        if (
-                            1.0 in trajectory["labels"][:]
-                            or 2.0 in trajectory["labels"][:]
-                        ):
-                            self.unsafe_count += 1
-                        #     print(self.unsafe_count)
         else:
             data_base = {}
             with h5py.File(self.hdf5_file, "r") as hf:
