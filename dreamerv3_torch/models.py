@@ -299,7 +299,7 @@ class WorldModel(nn.Module):
         )
         feat = self.dynamics.get_feat(latent).detach()
         semantic_embed = self.semantic_encoder(feat)
-        return semantic_embed
+        return semantic_embed, feat
 
 
 class ImagBehavior(nn.Module):

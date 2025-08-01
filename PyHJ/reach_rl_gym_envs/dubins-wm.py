@@ -42,7 +42,13 @@ class Dubins_WM_Env(gym.Env):
         self.low = np.array([-1.1, -1.1, -np.pi])
         self.device = "cuda:0"
         self.num_constraints = 1
-        self.constraints_shape = config.constraint_embedding_dim
+        self.pass_semantic_constraint = config.pass_semantic_constraint
+
+        self.constraints_shape = (
+            config.pa["sz_embedding"]
+            if self.pass_semantic_constraint
+            else config.constraint_embedding_dim
+        )
         self.observation_space = spaces.Dict(
             {
                 "state": spaces.Box(
@@ -124,7 +130,9 @@ class Dubins_WM_Env(gym.Env):
         truncated = False
         self.obs = {
             "state": self.feat.flatten(),
-            "constraints": self.constraints_sem,  # Semantic embedding of the constraints
+            "constraints": self.constraints_sem
+            if self.pass_semantic_constraint
+            else self.constraints_feat,  # Semantic embedding of the constraints
         }
         info = {"is_first": False, "is_terminal": terminated}
         return self.obs, rew, terminated, truncated, info
@@ -150,7 +158,9 @@ class Dubins_WM_Env(gym.Env):
         self.select_constraints()
         self.obs = {
             "state": self.feat.flatten(),
-            "constraints": self.constraints_sem,  # Semantic embedding of the constraints
+            "constraints": self.constraints_sem
+            if self.pass_semantic_constraint
+            else self.constraints_feat,  # Semantic embedding of the constraints
         }
         return self.obs, {"is_first": True, "is_terminal": False}
 
@@ -192,6 +202,7 @@ class Dubins_WM_Env(gym.Env):
                 )
                 metric = -numerator / (denominator + 1e-8)  # (B N)
                 metric = metric - self.config.safety_margin_threshold
+                # metric = np.tanh(metric)
                 safety_margin = np.min(metric, axis=-1)  # (B)
                 if self.config.safety_margin_hard_threshold:
                     safety_margin[safety_margin > 0] = 1.0
@@ -204,9 +215,11 @@ class Dubins_WM_Env(gym.Env):
 
         return safety_margin, cont.mean.squeeze().detach().cpu().numpy()
 
-    def select_one_constraint(self, in_distribution=True):
-        dist_type = self.config.env_dist_type
-        if dist_type == "fc":
+    def select_one_constraint(self, in_distribution=True, env_dist_type=None):
+        env_dist_type = (
+            self.config.env_dist_type if env_dist_type is None else env_dist_type
+        )
+        if env_dist_type == "fc":
             in_distribution_set = [
                 np.array([-0.5, -0.5, 0.5, 1.0]),
                 np.array([0.5, -0.5, 0.5, 1.0]),
@@ -222,28 +235,55 @@ class Dubins_WM_Env(gym.Env):
                 gt_constraint = np.array([0.0, 0.0, 0.5, 1.0])
                 return constraint_state, gt_constraint
 
-        elif dist_type == "4c":  # four circles
+        elif env_dist_type == "4c":  # four circles
             centers = [
-                np.array([-0.5, -0.5, 0.5, 1.0]),
-                np.array([0.5, -0.5, 0.5, 1.0]),
-                np.array([-0.5, 0.5, 0.5, 1.0]),
-                np.array([0.5, 0.5, 0.5, 1.0]),
+                np.array([-0.5, -0.5, 0.40, 1.0]),
+                np.array([0.5, -0.5, 0.40, 1.0]),
+                np.array([-0.5, 0.5, 0.40, 1.0]),
+                np.array([0.5, 0.5, 0.40, 1.0]),
             ]
-            i = np.random.randint(0, len(centers))
-            center = centers[i][:2]
-            # constraint state is a random state in the circle
-            # gt_constraint is a circle of radius 0.45
-            radius = np.random.uniform(low=0.0, high=0.45)
-            theta = np.random.uniform(low=0.0, high=2 * np.pi)
-            constraint_state = np.array(
-                [
-                    center[0] + radius * np.cos(theta),
-                    center[1] + radius * np.sin(theta),
-                    0.0,
-                ]
-            )
-            gt_constraint = centers[i]
-        elif dist_type == "fcfe":
+            if in_distribution:
+                i = np.random.randint(0, len(centers))
+                center = centers[i][:2]
+                # constraint state is a random state in the circle
+                # gt_constraint is a circle of radius 0.40
+                radius = np.random.uniform(low=0.0, high=0.40)
+                theta = np.random.uniform(low=0.0, high=2 * np.pi)
+                constraint_state = np.array(
+                    [
+                        center[0] + radius * np.cos(theta),
+                        center[1] + radius * np.sin(theta),
+                        0.0,
+                    ]
+                )
+                gt_constraint = centers[i]
+            else:  # Out of distribution
+                radius = 0.40
+                centers_array = np.array(centers)
+                while True:
+                    constraint_state = np.random.uniform(-1, 1, size=2)
+                    # Compute distances to each center
+                    dists = np.linalg.norm(
+                        einops.repeat(
+                            constraint_state, "D -> B D", B=centers_array.shape[0]
+                        )
+                        - centers_array[:, :2],
+                        axis=1,
+                    )
+                    # Accept point if it's outside all four circles
+                    if np.all(dists > radius):
+                        constraint_state = np.append(constraint_state, 1.0)
+                        break
+                gt_constraint = np.array(
+                    [
+                        constraint_state[0],
+                        constraint_state[1],
+                        radius,
+                        1.0,
+                    ]
+                )
+
+        elif env_dist_type == "fcfe":
             in_distribution_set = [
                 np.array([-0.5, -0.5, 0.5, 1.0]),
                 np.array([0.5, -0.5, 0.5, 1.0]),
@@ -263,7 +303,7 @@ class Dubins_WM_Env(gym.Env):
                 constraint_state = np.array([0.0, 0.0, 0.0])
                 return constraint_state, gt_constraint
 
-        elif dist_type == "rh":
+        elif env_dist_type == "rh":
             if in_distribution:
                 gt_constraint = np.array(
                     [
@@ -295,7 +335,7 @@ class Dubins_WM_Env(gym.Env):
                     ]
                 )
 
-        elif dist_type == "br":
+        elif env_dist_type == "br":
             if in_distribution:
                 gt_constraint = np.array(
                     [
@@ -330,14 +370,14 @@ class Dubins_WM_Env(gym.Env):
                         0.0,  # theta
                     ]
                 )
-        elif dist_type == "v":
+        elif env_dist_type == "v":
             # Eval and test set are the same here
             constraint_state = np.array([0.0, 0.0])
             gt_constraint = np.append(
                 constraint_state,
                 np.array([0.5, 1.0]),
             )
-        elif dist_type == "uni":
+        elif env_dist_type == "uni":
             # Eval and test set are the same here
             constraint_state = np.array(
                 [
@@ -350,7 +390,7 @@ class Dubins_WM_Env(gym.Env):
                 np.array([np.random.uniform(low=0.1, high=0.5), 1.0]),
             )
 
-        elif dist_type == "ds":  # Distribution from dataset
+        elif env_dist_type == "ds":  # Distribution from dataset
             init_traj = np.array(next(self.data)["privileged_state"])[0, 0]
             init_traj = np.append(
                 init_traj, 1.0
@@ -375,34 +415,97 @@ class Dubins_WM_Env(gym.Env):
         # constraint_state is different from constraint
         # constraint_state is the state of the agent to produce the constraint image
         # constraint is the grouund truth constraint as (x,y,radius,u)
-        constraint_state, gt_constraint = self.select_one_constraint(
-            in_distribution=in_distribution
-        )
-        constraint_state = torch.tensor(constraint_state, dtype=torch.float32)
-        # constraint_state[..., -1] = 0  # Set theta to 0 for the constraint image
-        img = get_frame(states=constraint_state, config=self.config)
-        self.constraint_img = img
-        feat_c = self.get_latent(
-            wm=self.wm,
-            thetas=constraint_state[-1].reshape(-1),
-            imgs=[img],
-            compute_lz=False,
-        )
-        self.constraints_feat = np.array(np.append(feat_c, 1.0)).reshape(
-            self.num_constraints, -1
-        )
-        self.constraints_sem = np.append(  # Semantic embedding of the constraints
-            self.wm.semantic_encoder(
-                torch.tensor(np.array(feat_c), device=self.device, dtype=torch.float32)
+        if self.config.env_dist_type not in ["prox"]:
+            constraint_state, gt_constraint = self.select_one_constraint(
+                in_distribution=in_distribution
             )
-            .detach()
-            .cpu()
-            .numpy(),
-            1.0,
-        ).reshape(self.num_constraints, -1)
-        self.gt_constraints = np.array(gt_constraint).reshape(
-            self.num_constraints, -1
-        )  # Store the ground truth constraints
+            constraint_state = torch.tensor(constraint_state, dtype=torch.float32)
+            # constraint_state[..., -1] = 0  # Set theta to 0 for the constraint image
+            img = get_frame(states=constraint_state, config=self.config)
+            self.constraint_img = img
+            feat_c = self.get_latent(
+                wm=self.wm,
+                thetas=constraint_state[-1].reshape(-1),
+                imgs=[img],
+                compute_lz=False,
+            )
+            self.constraints_feat = np.array(np.append(feat_c, 1.0)).reshape(
+                self.num_constraints, -1
+            )
+            self.constraints_sem = np.append(  # Semantic embedding of the constraints
+                self.wm.semantic_encoder(
+                    torch.tensor(
+                        np.array(feat_c), device=self.device, dtype=torch.float32
+                    )
+                )
+                .detach()
+                .cpu()
+                .numpy(),
+                1.0,
+            ).reshape(self.num_constraints, -1)
+
+            self.gt_constraints = np.array(gt_constraint).reshape(
+                self.num_constraints, -1
+            )  # Store the ground truth constraints
+        elif self.config.env_dist_type == "prox":
+            if in_distribution:
+                i = np.random.randint(
+                    0, len(self.wm.proxies) - 1
+                )  # NOTE: last class is safe
+                self.constraints_sem = np.append(
+                    self.wm.proxies[i].detach().cpu().numpy(), 1.0
+                ).reshape(self.num_constraints, -1)
+                centers = [
+                    np.array([-0.5, -0.5, 0.4, 1.0]),
+                    np.array([0.5, -0.5, 0.4, 1.0]),
+                    np.array([-0.5, 0.5, 0.4, 1.0]),
+                    np.array([0.5, 0.5, 0.4, 1.0]),
+                ]
+                self.gt_constraints = centers[i].reshape(self.num_constraints, -1)
+                img = (
+                    get_frame(
+                        states=torch.tensor([*self.gt_constraints[0][:2], 0.0]),
+                        config=self.config,
+                    )
+                    * 0.0
+                )
+                self.constraint_img = img
+            else:
+                constraint_state, gt_constraint = self.select_one_constraint(
+                    in_distribution=in_distribution, env_dist_type="4c"
+                )
+                constraint_state = torch.tensor(constraint_state, dtype=torch.float32)
+                # constraint_state[..., -1] = 0  # Set theta to 0 for the constraint image
+                img = get_frame(states=constraint_state, config=self.config)
+                self.constraint_img = img
+                feat_c = self.get_latent(
+                    wm=self.wm,
+                    thetas=constraint_state[-1].reshape(-1),
+                    imgs=[img],
+                    compute_lz=False,
+                )
+                self.constraints_feat = np.array(np.append(feat_c, 1.0)).reshape(
+                    self.num_constraints, -1
+                )
+                self.constraints_sem = (
+                    np.append(  # Semantic embedding of the constraints
+                        self.wm.semantic_encoder(
+                            torch.tensor(
+                                np.array(feat_c),
+                                device=self.device,
+                                dtype=torch.float32,
+                            )
+                        )
+                        .detach()
+                        .cpu()
+                        .numpy(),
+                        1.0,
+                    ).reshape(self.num_constraints, -1)
+                )
+
+                self.gt_constraints = np.array(gt_constraint).reshape(
+                    self.num_constraints, -1
+                )  # Store the ground truth constraints
 
     def get_latent(self, wm, thetas, imgs, compute_lz=True):
         thetas = np.expand_dims(np.expand_dims(thetas, 1), 1)
@@ -482,7 +585,7 @@ class Dubins_WM_Env(gym.Env):
         # constraint = np.array([0.0, 0.0, 0.5, 1.0]).reshape(1, -1)
         self.select_constraints(in_distribution=in_distribution)
         constraint = self.gt_constraints
-        constraint[:, 2] = 0.5  # Force radius to 0.5
+        # constraint[:, 2] = 0.5  # Force radius to 0.5
         gt_values = self.solver.solve(
             constraints=constraint,
             constraints_shape=3,
@@ -513,7 +616,11 @@ class Dubins_WM_Env(gym.Env):
                 obs = {
                     "state": feat,
                     "constraints": einops.repeat(
-                        self.constraints_sem, "1 C -> N 1 C", N=feat.shape[0]
+                        self.constraints_sem
+                        if self.pass_semantic_constraint
+                        else self.constraints_feat,
+                        "1 C -> N 1 C",
+                        N=feat.shape[0],
                     ),
                 }
                 V = evaluate_V(obs=obs, policy=policy, critic=policy.critic)
@@ -640,8 +747,7 @@ class Dubins_WM_Env(gym.Env):
 
             # Add constraint patch
             for constraint in self.gt_constraints:
-                x_c, y_c, theta, u = constraint
-                radius = 0.5
+                x_c, y_c, radius, u = constraint
                 if u == 0.0:
                     break
                 for axes in [axes1, axes2, axes3]:

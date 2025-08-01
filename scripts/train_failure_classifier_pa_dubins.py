@@ -208,6 +208,13 @@ config = tools.set_wm_name(config)
 for name, param in model.named_parameters():
     param.requires_grad = name.startswith("semantic_encoder")
 
+# Decoder
+decoder = torch.nn.Sequential(
+    torch.nn.Linear(config.pa["sz_embedding"], 512),
+    torch.nn.ReLU(),
+    torch.nn.Linear(512, 544),
+).to(device)
+
 offline_eps = collections.OrderedDict()
 config.pa["batch_size"] = 1
 config.pa["batch_length"] = 2
@@ -257,7 +264,7 @@ def flatten_trajectories(trajectories):
 
     # label
     step = 2.0 / config.grid_size
-    radius = step / 2 * 0.9
+    radius = step / 2 * 0.8
     coords = torch.linspace(
         -1 + step / 2, 1 - step / 2, config.grid_size, device=points.device
     )
@@ -435,6 +442,8 @@ BL = 1
 # print("Training parameters: {}".format(vars(args)))
 print("Training for {} epochs.".format(config.pa["nb_epochs"]))
 losses_list = []
+pa_losses_list = []
+ae_losses_list = []
 best_epoch = 0
 best_eval = -float("inf")
 
@@ -443,7 +452,12 @@ num_updates = 0
 for epoch in tqdm(range(0, config.pa["nb_epochs"]), desc="Training Epochs", position=0):
     model.train()
 
-    losses_per_epoch = []
+    losses_per_epoch = {
+        "loss": [],
+        "pos_term": [],
+        "neg_term": [],
+        # "ae_loss": [],
+    }
     auc_per_epoch = []
 
     # Warmup: Train only new params, helps stabilize learning.
@@ -526,7 +540,8 @@ for epoch in tqdm(range(0, config.pa["nb_epochs"]), desc="Training Epochs", posi
         acs = normalize_acs(acs, device)
 
         with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=True):
-            semantic_features = model.semantic_embed(data)
+            semantic_features, feat_gt = model.semantic_embed(data)
+            feat_pred = decoder(semantic_features)
             if config.pa["use_unlabeled_data"]:  # and epoch >= 20:
                 semantic_features_unlabeled_tensor = []
                 for idx, data_unlabeled in enumerate(train_loader_unlabeled):
@@ -564,7 +579,7 @@ for epoch in tqdm(range(0, config.pa["nb_epochs"]), desc="Training Epochs", posi
                         semantic_features_unlabeled_tensor[combined_indices]
                     )
 
-        loss = criterion(
+        loss, pos_term, neg_term = criterion(
             X=semantic_features.float(),
             T=labels_gt.squeeze().cuda(),
             U=semantic_features_unlabeled_tensor.float()
@@ -572,6 +587,10 @@ for epoch in tqdm(range(0, config.pa["nb_epochs"]), desc="Training Epochs", posi
             else None,  # Warmup
             args=config.pa,
         )
+
+        # ae_loss = F.mse_loss(feat_pred.float(), feat_gt.float())
+
+        # loss += ae_loss
 
         if config.pa["use_unlabeled_data"]:
             wandb.log(
@@ -608,7 +627,10 @@ for epoch in tqdm(range(0, config.pa["nb_epochs"]), desc="Training Epochs", posi
         torch.nn.utils.clip_grad_value_(model.semantic_encoder.parameters(), 10)
         torch.nn.utils.clip_grad_value_(criterion.parameters(), 10)
 
-        losses_per_epoch.append(loss.data.cpu().numpy())
+        losses_per_epoch["loss"].append(loss.data.cpu().numpy())
+        losses_per_epoch["pos_term"].append(pos_term.data.cpu().numpy())
+        losses_per_epoch["neg_term"].append(neg_term.data.cpu().numpy())
+        # losses_per_epoch["ae_loss"].append(ae_loss.data.cpu().numpy())
         auc_per_epoch.append(auc)
         opt.step()
 
@@ -619,11 +641,19 @@ for epoch in tqdm(range(0, config.pa["nb_epochs"]), desc="Training Epochs", posi
             )
         )
 
-    losses_list.append(np.mean(losses_per_epoch))
-    wandb.log(
-        {"train/Proxy Anchor Loss": losses_list[-1], "num_updates": num_updates},
-        step=num_updates,
-    )
+    losses_list.append(np.mean(losses_per_epoch["loss"]))
+    for key in losses_per_epoch:
+        wandb.log(
+            {
+                f"train/{key}": np.mean(losses_per_epoch[key]),
+                "num_updates": num_updates,
+            },
+            step=num_updates,
+        )
+    # wandb.log(
+    #     {"train/AE Loss": np.mean(ae_losses_per_epoch), "num_updates": num_updates},
+    #     step=num_updates,
+    # )
     wandb.log(
         {"train/AUC": np.mean(auc_per_epoch), "num_updates": num_updates},
         step=num_updates,
@@ -650,7 +680,7 @@ for epoch in tqdm(range(0, config.pa["nb_epochs"]), desc="Training Epochs", posi
             for batch_idx, data in pbar:
                 labels_gt = data["label"].to(device, dtype=torch.float32)  # [B, 1]
 
-                semantic_features = model.semantic_embed(data)  # [B, 1, 512]
+                semantic_features, __ = model.semantic_embed(data)  # [B, 1, 512]
 
                 # Normalize all vectors for cosine similarity
                 semantic_features_norm = F.normalize(
@@ -700,16 +730,12 @@ for epoch in tqdm(range(0, config.pa["nb_epochs"]), desc="Training Epochs", posi
                 y_true=y, y_pred=y_pred, average="macro", zero_division=0
             )
             metrics["Balanced Accuracy"] = accuracy_score(y_true=y, y_pred=y_pred)
-            metrics["Proxy Anchor Loss"] = (
-                criterion(
-                    X=torch.tensor(X, device=device),
-                    T=torch.tensor(y, device=device),
-                    args=config.pa,
-                )
-                .detach()
-                .cpu()
-                .numpy()
+            loss, __, __ = criterion(
+                X=torch.tensor(X, device=device),
+                T=torch.tensor(y, device=device),
+                args=config.pa,
             )
+            metrics["Proxy Anchor Loss"] = loss.detach().cpu().numpy()
             # metrics["Cross Entropy Loss"].append(
             #     F.cross_entropy(cos_sim, gt_labels, reduction="mean").item()
             # )

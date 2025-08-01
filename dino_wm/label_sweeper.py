@@ -32,15 +32,22 @@ crop_transform = transforms.Compose(
 
 
 def on_key_press(event):
-    global current_idx
+    global current_idx, sep_labels
 
-    # Label images with '0' or '1'
-    if event.key in {"0", "1"}:
-        labels[current_idx] = int(event.key)
+    # Label images with '0', '1' or '2'
+    if event.key in {"0", "1", "2", '3'}:
+        if int(event.key) == 0:
+            labels[current_idx] = -1
+        else:
+            labels[current_idx] = int(event.key)
         print(f"Image {current_idx} labeled as {labels[current_idx]}")
 
         # Move to the next image
         current_idx += 1
+        while current_idx < len(images) and sep_labels[current_idx] == 1.0:
+            labels[current_idx] = -1
+            current_idx += 1
+
         if current_idx < len(images):
             update_plot()
         else:
@@ -48,6 +55,16 @@ def on_key_press(event):
             fig.canvas.mpl_disconnect(key_press_cid)
             plt.pause(0.5)
             plt.close(fig)
+
+    # elif event.key == "backspace":
+    #     labels[current_idx] = -1.0
+    #     if current_idx < len(images):
+    #         update_plot()
+    #     else:
+    #         print("All images labeled for this trajectory! Close the window to exit.")
+    #         fig.canvas.mpl_disconnect(key_press_cid)
+    #         plt.pause(0.5)
+    #         plt.close(fig)
 
     # Rewind with spacebar
     elif event.key == " ":
@@ -60,8 +77,16 @@ def on_key_press(event):
 
 
 def update_plot():
+    global current_idx, images, labels, sep_labels, fig, ax
+
     ax.clear()
     ax.imshow(images[current_idx])
+
+    width = images[current_idx].shape[1]
+    third = width // 3
+    ax.axvline(x=third, color="red", linestyle="--")
+    ax.axvline(x=2 * third, color="red", linestyle="--")
+
     ax.axis("off")
     fig.canvas.draw()
 
@@ -81,7 +106,7 @@ def check_if_labeled(traj_file, label_type):
 
 def process_trajectory(traj_file):
     """Load images from a trajectory file and set up labels."""
-    global images, labels, current_idx, current_traj
+    global images, labels, current_idx, current_traj, sep_labels
 
     current_traj = os.path.splitext(os.path.basename(traj_file))[0]
     print(f"Processing trajectory: {current_traj}")
@@ -94,6 +119,7 @@ def process_trajectory(traj_file):
         assert "camera_1" in data, (
             f"Expected 'camera_1' dataset in the HDF5 file {traj_file}."
         )
+        sep_labels = data["separated_label"][:]
         for i in range(data["camera_1"][:].shape[0]):
             front = data["camera_1"][i]
 
@@ -144,8 +170,8 @@ def postprocess_trajectory(traj_file, labels, label_type):
 plt.ion()
 
 if __name__ == "__main__":
-    directory = "/home/sunny/data/sweeper/test/optimal"
-    label_type = "separated_label"
+    directory = "/home/sunny/data/sweeper/train/optimal"
+    label_type = "region_label"
     reset_regardless_of_label = False
     start_idx = 0
     # Get all pickle files with "unsafe" in the filename

@@ -172,7 +172,7 @@ class Dubins_Env(gym.Env):
         return self.obs, {}
 
     def select_one_constraint(self, in_distribution=True):
-        if self.distribution_type == "fc" or self.distribution_type == "4c":
+        if self.distribution_type in ["fc"]:
             in_distribution_set = [
                 np.array([-0.5, -0.5, 0.5, 1.0]),
                 np.array([0.5, -0.5, 0.5, 1.0]),
@@ -184,6 +184,18 @@ class Dubins_Env(gym.Env):
                 return in_distribution_set[i]
             else:
                 return np.array([0.0, 0.0, 0.5, 1.0])
+        elif self.distribution_type in ["4c", "prox"]:
+            in_distribution_set = [
+                np.array([-0.5, -0.5, 0.4, 1.0]),
+                np.array([0.5, -0.5, 0.4, 1.0]),
+                np.array([-0.5, 0.5, 0.4, 1.0]),
+                np.array([0.5, 0.5, 0.4, 1.0]),
+            ]
+            if in_distribution:
+                i = np.random.randint(0, len(in_distribution_set))
+                return in_distribution_set[i]
+            else:
+                return np.array([0.0, 0.0, 0.4, 1.0])
         elif self.distribution_type == "fcfe":
             in_distribution_set = [
                 np.array([-0.5, -0.5, 0.5, 1.0]),

@@ -137,9 +137,14 @@ class Proxy_Anchor(torch.nn.Module):
         # )
         pos_term = torch.log(1 + P_sim_sum).sum() / self.nb_classes
         neg_term = torch.log(1 + N_sim_sum).sum() / self.nb_classes
+        neg_term *= 1.0
         loss = pos_term + neg_term
 
-        return loss
+        return (
+            loss,
+            pos_term,
+            neg_term,
+        )
 
 
 # We use PyTorch Metric Learning library for the following codes.
