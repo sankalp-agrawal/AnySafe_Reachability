@@ -190,7 +190,7 @@ if __name__ == "__main__":
     scale = 1.0
 
     for const_num, constraint in enumerate([constraint1, constraint2, constraint3]):
-        range_bins = np.linspace(-1.0, 1.0, 21)
+        range_bins = np.linspace(-1.0, 1.0, 11)
         bins_high = range_bins[1:]
         bins_low = range_bins[:-1]
         bin_widths = bins_high - bins_low
@@ -236,11 +236,35 @@ if __name__ == "__main__":
             3: "blue",
         }
         # Plot the images
-        fig, axes = plt.subplots(
-            nrows=4, ncols=20, figsize=(40, 6), constrained_layout=True
+        num_cols = np.sum(
+            [binned_values[i]["image"].size > 0 for i in range(len(bins_low))]
         )
-        for i, ax_row in enumerate(axes):
-            for j, ax in enumerate(ax_row):
+        fig, axes = plt.subplots(
+            nrows=4 + 1,
+            ncols=num_cols,
+            figsize=(1.5 * num_cols, 6),
+            constrained_layout=True,
+        )
+
+        cols = [i for i in range(len(bins_low)) if binned_values[i]["image"].size > 0]
+        middle_col = len(cols) // 2
+
+        axes[0, middle_col].imshow(constraint["front"].cpu().numpy())
+        for ax in axes[0, :]:
+            ax.axis("off")
+        rect = patches.Rectangle(
+            (0, 0),  # (x,y) bottom left corner
+            constraint["front"].cpu().numpy().shape[1],  # width
+            constraint["front"].cpu().numpy().shape[0],  # height
+            linewidth=2,  # thickness of the outline
+            edgecolor=label_to_color[const_num + 1],  # color of the outline
+            facecolor="none",  # no fill
+        )
+        axes[0, middle_col].add_patch(rect)
+        axes[0, middle_col].set_title("Constraint Frame")
+
+        for i, ax_row in enumerate(axes[1:]):
+            for j, ax in zip(cols, ax_row):
                 if binned_values[j]["image"].size > 0:
                     # select random image from the bin
                     idx = random.randint(0, len(binned_values[j]["image"]) - 1)
@@ -265,10 +289,45 @@ if __name__ == "__main__":
                 else:
                     ax.axis("off")
                 ax.axis("off")
-                ax.set_title(rf"$\epsilon$ = {bins_low[j]:.2f} - {bins_high[j]:.2f}")
+                if i == 0:
+                    ax.set_title(
+                        rf"$\epsilon$ = {bins_low[j]:.2f} - {bins_high[j]:.2f}"
+                    )
+
+        fig.text(
+            0.01,
+            0.95,
+            "Left Region = Red",
+            ha="left",
+            va="top",
+            fontsize=15,
+            color="red",
+        )
+        fig.text(
+            0.01,
+            0.91,
+            "Middle Region = Green",
+            ha="left",
+            va="top",
+            fontsize=15,
+            color="green",
+        )
+        fig.text(
+            0.01,
+            0.87,
+            "Right Region = Blue",
+            ha="left",
+            va="top",
+            fontsize=15,
+            color="blue",
+        )
+
+        plt.subplots_adjust(
+            bottom=0.2
+        )  # Increase space at the bottom (default is ~0.11)
 
         plt.suptitle(
-            f"Cosine Similarity Images for Region {const_num + 1} at Timestep",
+            f"Cosine Similarity Images for Region {const_num + 1}",
             fontsize=16,
         )
         plt.savefig(f"cosine_similarity_images_region_{const_num + 1}.png")
