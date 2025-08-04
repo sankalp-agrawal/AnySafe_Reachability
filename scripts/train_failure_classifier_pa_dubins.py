@@ -15,7 +15,7 @@ import torch
 import torch.nn.functional as F
 import umap.umap_ as umap
 import wandb
-from dino_wm.dino_models import normalize_acs
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 # note: need to include the dreamerv3 repo for this
 from termcolor import cprint
@@ -27,21 +27,10 @@ sys.path.append(saferl_dir)
 print(sys.path)
 import models
 import tools
-from dino_wm.proxy_anchor.utils import compare_kdes
 from dreamer import make_dataset
 from matplotlib import colormaps
-from matplotlib.cm import rainbow
-from proxy_anchor.code import losses
 
 # note: need to include the dreamerv3 repo for this
-from scipy.stats import gaussian_kde
-from sklearn.metrics import (
-    accuracy_score,
-    f1_score,
-    precision_score,
-    recall_score,
-    roc_auc_score,
-)
 from tqdm import *
 
 base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -225,6 +214,9 @@ offline_dataset = make_dataset(offline_eps, config)
 # 1. Flatten Trajectories to Timesteps
 def flatten_trajectories(trajectories):
     flat_data = {}
+    import ipdb
+
+    ipdb.set_trace()
     keys = next(iter(trajectories.values())).keys()
 
     for key in keys:
@@ -408,12 +400,12 @@ for key, value in batch.items():
     print(f"{key}: {value.shape}")
 
 # DML Losses
-criterion = losses.Proxy_Anchor(
-    nb_classes=config.nb_classes,
-    sz_embed=config.pa["sz_embedding"],
-    mrg=config.pa["mrg"],
-    alpha=config.pa["alpha"],
-).cuda()
+# criterion = losses.Proxy_Anchor(
+#     nb_classes=config.nb_classes,
+#     sz_embed=config.pa["sz_embedding"],
+#     mrg=config.pa["mrg"],
+#     alpha=config.pa["alpha"],
+# ).cuda()
 
 # Train Parameters
 param_groups = [
@@ -421,10 +413,10 @@ param_groups = [
         "params": model.semantic_encoder.parameters(),  # Semantic encoder parameters
         "lr": float(config.pa["lr"]) * 1,
     },
-    {
-        "params": criterion.parameters(),
-        "lr": float(config.pa["lr"]) * 100,
-    },  # Just proxies
+    # {
+    #     "params": criterion.parameters(),
+    #     "lr": float(config.pa["lr"]) * 100,
+    # },  # Just proxies
 ]
 # Optimizer Setting
 opt = torch.optim.AdamW(
@@ -492,36 +484,6 @@ for epoch in tqdm(range(0, config.pa["nb_epochs"]), desc="Training Epochs", posi
         )
         total_timesteps = min_timesteps
 
-    # if (  # If using full dataset
-    #     config.use_unlabeled_data and config.unlabeled_ratio == -1.0
-    # ):
-    #     if config.ratio_schedule == "const":
-    #         num_to_sample = max_timesteps
-    #     elif config.ratio_schedule == "lin":
-    #         num_to_sample = (max_timesteps * epoch / config.nb_epochs).astype(int)
-    #     elif config.ratio_schedule == "exp":
-    #         num_to_sample = (
-    #             max_timesteps * np.exp(-5 * (1 - epoch / config.nb_epochs) ** 2)
-    #         ).astype(int)
-    #     else:
-    #         raise ValueError("Invalid ratio schedule: {}".format(config.ratio_schedule))
-    #     subset_indices_unlabeled = random.sample(
-    #         range(len(train_data_unlabeled)),
-    #         num_to_sample,
-    #     )
-    #     subset_unlabeled = Subset(train_data_unlabeled, subset_indices_unlabeled)
-    #     train_loader_unlabeled = DataLoader(
-    #         subset_unlabeled, batch_size=BS, shuffle=True, num_workers=config.nb_workers
-    #     )
-
-    # elif config.use_unlabeled_data and config.unlabeled_ratio != -1.0:
-    #     train_loader_unlabeled = DataLoader(
-    #         dataset=train_data_unlabeled,
-    #         batch_size=BS,
-    #         shuffle=True,
-    #         num_workers=config.nb_workers,
-    #     )
-
     pbar = tqdm(
         enumerate(train_loader_labeled),
         total=total_timesteps // BS,
@@ -532,106 +494,80 @@ for epoch in tqdm(range(0, config.pa["nb_epochs"]), desc="Training Epochs", posi
     # config.beta = np.linspace(0.2, 1.0, config.nb_epochs)[epoch]  # Linear increase of beta
 
     for batch_idx, data in pbar:
-        labels_gt = data["label"][:].to(device, dtype=torch.float32)
+        # labels_gt = data["label"][:].to(device, dtype=torch.float32)
 
         image = data["image"].to(device)  # [B H W 3]
-        state = data["obs_state"].to(device)  # [B, S]
-        acs = data["action"].to(device)  # [B, 1]
-        acs = normalize_acs(acs, device)
+        state = data["privileged_state"][:, :2].to(device)  # [B, 2]
+        diff = state.unsqueeze(0) - state.unsqueeze(1)  # [B, B, 2]
+        dists = torch.norm(diff, dim=2)
+        labels_gt = torch.clip(1 - 1 / (np.sqrt(2)) * dists, -1, 1)
+        # labels_gt = torch.clip(1 - dists, -1, 1)
 
         with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=True):
             semantic_features, feat_gt = model.semantic_embed(data)
             feat_pred = decoder(semantic_features)
-            if config.pa["use_unlabeled_data"]:  # and epoch >= 20:
-                semantic_features_unlabeled_tensor = []
-                for idx, data_unlabeled in enumerate(train_loader_unlabeled):
-                    semantic_features_unlabeled = model.semantic_embed(
-                        inp1=data_unlabeled["cam_zed_embd"][:, -1:].to(device),
-                        inp2=data_unlabeled["cam_rs_embd"][:, -1:].to(device),
-                        state=data_unlabeled["state"][:, -1:].to(device),
-                    )
-                    semantic_features_unlabeled_tensor.append(
-                        semantic_features_unlabeled
-                    )
-                semantic_features_unlabeled_tensor = torch.cat(
-                    semantic_features_unlabeled_tensor, dim=0
-                )  # Concatenate all unlabeled features
 
-                # If ratio is specified, sample the correct amount of unlabeled data
-                if (
-                    config.pa["use_unlabeled_data"]
-                    and config.pa["unlabeled_ratio"] != -1.0
-                ):
-                    # Ensure that correct amount of unlabeled data is given
-                    all_indices = list(range(len(semantic_features_unlabeled_tensor)))
-                    needed_datapoints = int(
-                        semantic_features.shape[0] * config.pa["unlabeled_ratio"]
-                    )
-                    if needed_datapoints > len(all_indices):
-                        extra_needed = needed_datapoints - len(all_indices)
-                        extra_indices = random.choices(all_indices, k=extra_needed)
-                        combined_indices = all_indices + extra_indices
-                    else:
-                        combined_indices = all_indices[
-                            random.sample(range(len(all_indices)), k=needed_datapoints)
-                        ]
-                    semantic_features_unlabeled_tensor = (
-                        semantic_features_unlabeled_tensor[combined_indices]
-                    )
+            # Normalize along the embedding dimension
+            sem_norm = F.normalize(
+                semantic_features.squeeze(1), p=2, dim=1
+            )  # Each row becomes unit norm
 
-        loss, pos_term, neg_term = criterion(
-            X=semantic_features.float(),
-            T=labels_gt.squeeze().cuda(),
-            U=semantic_features_unlabeled_tensor.float()
-            if config.pa["use_unlabeled_data"]  # and epoch >= 20
-            else None,  # Warmup
-            args=config.pa,
-        )
+            # Compute cosine similarity via dot product → shape [B, B]
+            cos_sim = sem_norm @ sem_norm.T
 
+            # loss is MSE between labels gt and cosine similarity
+            loss = F.mse_loss(cos_sim, labels_gt).to(torch.float16)
+        # loss, pos_term, neg_term = criterion(
+        #     X=semantic_features.float(),
+        #     T=labels_gt.squeeze().cuda(),
+        #     U=semantic_features_unlabeled_tensor.float()
+        #     if config.pa["use_unlabeled_data"]  # and epoch >= 20
+        #     else None,  # Warmup
+        #     args=config.pa,
+        # )
         # ae_loss = F.mse_loss(feat_pred.float(), feat_gt.float())
-
         # loss += ae_loss
 
-        if config.pa["use_unlabeled_data"]:
-            wandb.log(
-                {
-                    "train/data_ratio": semantic_features_unlabeled_tensor.shape[0]
-                    / semantic_features.shape[0]
-                },
-                step=num_updates,
-            )
+        # if config.pa["use_unlabeled_data"]:
+        #     wandb.log(
+        #         {
+        #             "train/data_ratio": semantic_features_unlabeled_tensor.shape[0]
+        #             / semantic_features.shape[0]
+        #         },
+        #         step=num_updates,
+        #     )
 
-        P = criterion.proxies.detach()  # Ensure P is in the same dtype as X
+        # P = criterion.proxies.detach()  # Ensure P is in the same dtype as X
         semantic_features = einops.rearrange(
             semantic_features.float(), "B T Z -> (B T) Z"
         )  # Ensure X is in the correct shape
 
-        cos_sim_logits = F.softmax(
-            F.linear(  # [(B T) N]
-                losses.l2_norm(semantic_features), losses.l2_norm(P)
-            ),
-            dim=-1,
-        )
+        # cos_sim_logits = F.softmax(
+        #     F.linear(  # [(B T) N]
+        #         losses.l2_norm(semantic_features), losses.l2_norm(P)
+        #     ),
+        #     dim=-1,
+        # )
 
-        auc = roc_auc_score(
-            y_true=einops.rearrange(labels_gt, "B T -> (B T)").cpu().numpy(),
-            y_score=cos_sim_logits.detach().cpu().numpy(),
-            multi_class="ovo",
-            labels=np.arange(config.nb_classes),
-        )
+        # auc = roc_auc_score(
+        #     y_true=einops.rearrange(labels_gt, "B T -> (B T)").cpu().numpy(),
+        #     y_score=cos_sim_logits.detach().cpu().numpy(),
+        #     multi_class="ovo",
+        #     labels=np.arange(config.nb_classes),
+        # )
 
         opt.zero_grad()
         loss.backward()
         num_updates += 1
 
         torch.nn.utils.clip_grad_value_(model.semantic_encoder.parameters(), 10)
-        torch.nn.utils.clip_grad_value_(criterion.parameters(), 10)
+        # torch.nn.utils.clip_grad_value_(criterion.parameters(), 10)
 
         losses_per_epoch["loss"].append(loss.data.cpu().numpy())
-        losses_per_epoch["pos_term"].append(pos_term.data.cpu().numpy())
-        losses_per_epoch["neg_term"].append(neg_term.data.cpu().numpy())
+        # losses_per_epoch["pos_term"].append(pos_term.data.cpu().numpy())
+        # losses_per_epoch["neg_term"].append(neg_term.data.cpu().numpy())
         # losses_per_epoch["ae_loss"].append(ae_loss.data.cpu().numpy())
-        auc_per_epoch.append(auc)
+        # auc_per_epoch.append(auc)
         opt.step()
 
         pbar.set_description(
@@ -663,7 +599,7 @@ for epoch in tqdm(range(0, config.pa["nb_epochs"]), desc="Training Epochs", posi
 
     if epoch >= 0:
         metrics = {}
-        X = []
+        # X = []
         y = []
         y_pred = []
         with torch.no_grad():
@@ -678,7 +614,12 @@ for epoch in tqdm(range(0, config.pa["nb_epochs"]), desc="Training Epochs", posi
                 leave=False,
             )
             for batch_idx, data in pbar:
-                labels_gt = data["label"].to(device, dtype=torch.float32)  # [B, 1]
+                # labels_gt = data["label"].to(device, dtype=torch.float32)  # [B, 1]
+                state = data["privileged_state"][:, :2].to(device)  # [B, 2]
+                diff = state.unsqueeze(0) - state.unsqueeze(1)  # [B, B, 2]
+                dists = torch.norm(diff, dim=2)
+                labels_gt = torch.clip(1 - 1 / (np.sqrt(2)) * dists, -1, 1)
+                # labels_gt = torch.clip(1 - dists, -1, 1)
 
                 semantic_features, __ = model.semantic_embed(data)  # [B, 1, 512]
 
@@ -686,512 +627,36 @@ for epoch in tqdm(range(0, config.pa["nb_epochs"]), desc="Training Epochs", posi
                 semantic_features_norm = F.normalize(
                     semantic_features, dim=-1
                 )  # (10, 1, 512)
-                proxies_norm = F.normalize(criterion.proxies, dim=-1)  # (2, 512)
-
-                # Broadcastable shapes: (10, 1, 1, 512) and (1, 1, 2, 512)
-                semantic_features_exp = einops.rearrange(
-                    semantic_features_norm, "B T Z -> B T 1 Z"
-                )  # (BS, T, 1, 512)
-                proxies_exp = einops.rearrange(
-                    proxies_norm, "L Z -> 1 1 L Z"
-                )  # (1, 1, 2, 512)
 
                 # Compute cosine similarity
-                cos_sim = (semantic_features_exp * proxies_exp).sum(
-                    dim=-1
-                )  # (10, 1, 2)
+                sem_norm = F.normalize(
+                    semantic_features.squeeze(1), p=2, dim=1
+                )  # Each row becomes unit norm
 
-                # Choose the index (0 or 1) of the most similar vector
-                logits = F.softmax(cos_sim, dim=-1)  # (10, 1, 2)
+                # Compute cosine similarity via dot product → shape [B, B]
+                cos_sim = sem_norm @ sem_norm.T
 
-                pred_labels = logits.argmax(dim=-1)  # (10, 1)
+                # loss is MSE between labels gt and cosine similarity
+                loss = F.mse_loss(cos_sim, labels_gt).to(torch.float16)
 
-                X.append(semantic_features.cpu().numpy())
-                y.append(labels_gt.cpu().numpy())
-                y_pred.append(pred_labels.cpu().numpy())
+                # X.append(cos_sim.flatten().cpu().numpy())
+                y.append(labels_gt.flatten().cpu().numpy())
+                y_pred.append(cos_sim.flatten().cpu().numpy())
 
-            X = einops.rearrange(np.concatenate(X, axis=0), "B T Z -> (B T) Z")
-            y = einops.rearrange(np.concatenate(y, axis=0), "B T -> (B T)")
-            y_pred = einops.rearrange(np.concatenate(y_pred, axis=0), "B T -> (B T)")
-            num_classes_eval = len(np.unique(y))
-            classes_eval = np.unique(y).astype(int)
+            # X = einops.rearrange(np.concatenate(X, axis=0), "B T Z -> (B T) Z")
+            y = np.concatenate(y, axis=0)
+            y_pred = np.concatenate(y_pred, axis=0)
 
             # Calculate metrics
-            metrics["Accuracy"] = balanced_accuracy = accuracy_score(
-                y_true=y, y_pred=y_pred
-            )
-            metrics["Precision"] = precision_score(
-                y_true=y, y_pred=y_pred, average="macro", zero_division=0
-            )
-            metrics["Recall"] = recall_score(
-                y_true=y, y_pred=y_pred, average="macro", zero_division=0
-            )
-            metrics["F1-score"] = f1_score(
-                y_true=y, y_pred=y_pred, average="macro", zero_division=0
-            )
-            metrics["Balanced Accuracy"] = accuracy_score(y_true=y, y_pred=y_pred)
-            loss, __, __ = criterion(
-                X=torch.tensor(X, device=device),
-                T=torch.tensor(y, device=device),
-                args=config.pa,
-            )
-            metrics["Proxy Anchor Loss"] = loss.detach().cpu().numpy()
+            metrics["MSE"] = mean_squared_error(y, y_pred)
+            # MAE
+            metrics["MAE"] = mean_absolute_error(y, y_pred)
+            # R^2 Score
+            metrics["R^2"] = r2_score(y, y_pred)
+            metrics["MSE Loss"] = loss.detach().cpu().numpy()
             # metrics["Cross Entropy Loss"].append(
             #     F.cross_entropy(cos_sim, gt_labels, reduction="mean").item()
             # )
-
-        cosine_sims = {
-            i: {j: [] for j in range(i, num_classes_eval + 1)} for i in classes_eval
-        }
-
-        def cosine_sim_plot_eval(X, y, mode="ovo"):
-            X_class = {
-                k: X[y == k] / (np.linalg.norm(X[y == k], axis=1, keepdims=True) + 1e-8)
-                for k in classes_eval
-            }
-
-            fig, ax = plt.subplots(figsize=(10, 8))
-            class_to_label = {k: f"Quad {k}" for k in range(0, config.nb_classes)}
-
-            plt.title("Cosine Similarity Distribution per Class")
-            plt.xlabel("Cosine Similarity")
-            plt.ylabel("Normalized Density")
-
-            class_pairs = []
-            if mode == "ovo":
-                for i in np.unique(y):
-                    for j in np.unique(y):
-                        if (j, i) not in class_pairs:
-                            class_pairs.append((i, j))
-
-                cmap = plt.cm.rainbow
-                colors = [cmap(i / len(class_pairs)) for i in range(len(class_pairs))]
-            elif mode == "ovr":
-                for i in np.unique(y):
-                    class_pairs.append((i, i))
-                    class_pairs.append((i, "rest"))
-
-                cmap = plt.cm.rainbow
-                colors = []
-                for index, (i, j) in enumerate(class_pairs):
-                    if i == j:
-                        colors.append("black")
-                    else:
-                        colors.append(cmap(index / len(class_pairs)))
-
-            kde_dict = {}
-
-            for idx, (i, j) in enumerate(class_pairs):
-                if mode == "ovr":
-                    if j == "rest":
-                        X_class[j] = np.concatenate(
-                            [X_class[k] for k in classes_eval if k != i]
-                        )
-                cos_sim = X_class[i] @ X_class[j].T
-
-                if i == j:  # Avoid self-comparison and double counting
-                    mask = np.triu(np.ones_like(cos_sim, dtype=bool), k=1)
-                    cos_sim = np.where(mask, cos_sim, -2.0)
-
-                cos_sim = cos_sim[cos_sim != -2.0].flatten()
-
-                if len(cos_sim) > 1000:
-                    if len(cos_sim) > 1e6:
-                        cos_sim_sampled = cos_sim[
-                            np.random.choice(len(cos_sim), 1000, replace=True)
-                        ]
-                    else:
-                        cos_sim_sampled = np.random.choice(cos_sim, 1000, replace=False)
-                else:
-                    cos_sim_sampled = cos_sim
-
-                kde_cs = gaussian_kde(cos_sim_sampled)
-                kde_dict[(i, j)] = kde_cs
-                x_cs = np.linspace(-1 - 1e-3, 1 + 1e-3, 1000)
-                y_pdf = kde_cs(x_cs)
-                dx = x_cs[1] - x_cs[0]
-                y_pdf_normalized = y_pdf / (np.sum(y_pdf) * dx)
-
-                color = colors[idx]
-                if j == "rest":
-                    label = f"{class_to_label[i]}-Rest"
-                else:
-                    label = f"{class_to_label[i]}-{class_to_label[j]}"
-                ax.plot(x_cs, y_pdf_normalized, label=label, color=color)
-
-                # Statistics
-                median_val = np.median(cos_sim_sampled)
-                lower, upper = np.percentile(cos_sim_sampled, [2.5, 97.5])
-
-                # Get KDE values at stat locations
-                median_y = kde_cs(median_val) / (np.sum(y_pdf) * dx)
-                lower_y = kde_cs(lower) / (np.sum(y_pdf) * dx)
-                upper_y = kde_cs(upper) / (np.sum(y_pdf) * dx)
-
-                if mode == "ovo":
-                    # Plot short vertical lines
-                    ax.vlines(
-                        median_val,
-                        0,
-                        median_y,
-                        color=color,
-                        linestyle="dashed",
-                        alpha=0.8,
-                    )
-                    ax.vlines(
-                        lower, 0, lower_y, color=color, linestyle="dotted", alpha=0.5
-                    )
-                    ax.vlines(
-                        upper, 0, upper_y, color=color, linestyle="dotted", alpha=0.5
-                    )
-
-                    # Text labels with white background
-                    label_kwargs = dict(
-                        ha="center",
-                        fontsize=8,
-                        bbox=dict(facecolor="white", edgecolor="none", alpha=1.0),
-                    )
-                    ax.text(
-                        median_val,
-                        median_y + 0.01,
-                        f"m={median_val:.2f}",
-                        color=color,
-                        **label_kwargs,
-                    )
-                    ax.text(
-                        lower,
-                        lower_y + 0.01,
-                        f"↓{lower:.2f}",
-                        color=color,
-                        **label_kwargs,
-                    )
-                    ax.text(
-                        upper,
-                        upper_y + 0.01,
-                        f"↑{upper:.2f}",
-                        color=color,
-                        **label_kwargs,
-                    )
-
-            if mode == "ovo":
-                # Add dummy lines for legend explanation
-                ax.plot([], [], linestyle="dashed", color="black", label="m = Median")
-                ax.plot(
-                    [],
-                    [],
-                    linestyle="dotted",
-                    color="black",
-                    label="↓ ↑ = 95% Interval",
-                )
-
-            ax.legend()
-            plt.tight_layout()
-            wandb.log(
-                {"eval/cosine_sim_plot": wandb.Image(fig), "num_updates": num_updates},
-                step=num_updates,
-            )
-            js_div_list = []
-            ws_dist_list = []
-            if mode == "ovo":
-                for y_query in np.unique(y):
-                    class_pairs_subset = [
-                        pair
-                        for pair in class_pairs
-                        if (y_query in pair and pair != (y_query, y_query))
-                    ]
-                    for pair in class_pairs_subset:
-                        js_div, ws_dist = compare_kdes(
-                            kde1=kde_dict[(y_query, y_query)],
-                            kde2=kde_dict[pair],
-                        )
-                        js_div_list.append(js_div)
-                        ws_dist_list.append(ws_dist)
-            elif mode == "ovr":
-                for y_query in np.unique(y):
-                    js_div, ws_dist = compare_kdes(
-                        kde1=kde_dict[(y_query, y_query)],
-                        kde2=kde_dict[(y_query, "rest")],
-                    )
-                    js_div_list.append(js_div)
-                    ws_dist_list.append(ws_dist)
-            wandb.log(
-                {
-                    "eval/avg_JS": np.mean(js_div_list),
-                    "eval/avg_wass_dist": np.mean(ws_dist_list),
-                    "num_updates": num_updates,
-                },
-                step=num_updates,
-            )
-            plt.close()
-
-        if epoch % 10 == 0:
-            cosine_sim_plot_eval(X, y, mode="ovo" if num_classes_eval <= 4 else "ovr")
-
-        def const_conditioned_plots(X, y, const1, const2):
-            P = criterion.proxies.detach()  # Ensure P is in the same dtype as X
-
-            cos_sim_fail = -F.linear(
-                losses.l2_norm(torch.tensor(X, device=P.device).float()),
-                losses.l2_norm(P),
-            )[:, -1]
-
-            cos_sim_const1 = -F.linear(
-                losses.l2_norm(torch.tensor(X, device=P.device).float()),
-                losses.l2_norm(const1["semantic_feat"].unsqueeze(0).float()),
-            )[:, -1].detach()
-
-            cos_sim_const2 = -F.linear(
-                losses.l2_norm(torch.tensor(X, device=P.device).float()),
-                losses.l2_norm(const2["semantic_feat"].unsqueeze(0).float()),
-            )[:, -1].detach()
-
-            thresholds = np.linspace(-1, 1, 100)
-            fail_proxy_data = {
-                "cos_sim": cos_sim_fail.cpu().numpy(),
-                "tp_rates": [],
-                "tn_rates": [],
-                "fp_rates": [],
-                "fn_rates": [],
-            }
-            const1_data = {
-                "cos_sim": cos_sim_const1.cpu().numpy(),
-                "tp_rates": [],
-                "tn_rates": [],
-                "fp_rates": [],
-                "fn_rates": [],
-            }
-            const2_data = {
-                "cos_sim": cos_sim_const2.cpu().numpy(),
-                "tp_rates": [],
-                "tn_rates": [],
-                "fp_rates": [],
-                "fn_rates": [],
-            }
-            for t in thresholds:
-                for data in [fail_proxy_data, const1_data, const2_data]:
-                    cos_sim = data["cos_sim"]
-
-                    tp = ((cos_sim > t) & (y == 0)).sum()
-                    fp = ((cos_sim > t) & (y == 1)).sum()
-                    tn = ((cos_sim <= t) & (y == 1)).sum()
-                    fn = ((cos_sim <= t) & (y == 0)).sum()
-
-                    data["tp_rates"].append(tp / (tp + fn) if (tp + fn) > 0 else 0)
-                    data["tn_rates"].append(tn / (tn + fp) if (tn + fp) > 0 else 0)
-                    data["fp_rates"].append(fp / (fp + tn) if (fp + tn) > 0 else 0)
-                    data["fn_rates"].append(fn / (fn + tp) if (fn + tp) > 0 else 0)
-
-            intersect_thresholds = []
-            for data in [fail_proxy_data, const1_data, const2_data]:
-                data["tp_rates"] = np.array(data["tp_rates"])
-                data["tn_rates"] = np.array(data["tn_rates"])
-                thresholds = np.array(thresholds)
-                diff = np.abs(data["tp_rates"] - data["tn_rates"])
-                intersect_idx = np.argmin(diff)
-                intersect_threshold = thresholds[intersect_idx]
-                intersect_value = data["tp_rates"][
-                    intersect_idx
-                ]  # or tn_rates[intersect_idx]
-                data["intersect_threshold"] = intersect_threshold
-                intersect_thresholds.append(intersect_threshold)
-                data["intersect_value"] = intersect_value
-
-            # Plot all the metrics
-            fig, axes = plt.subplots(1, 3, figsize=(30, 8))
-            for ax, (data, title) in zip(
-                axes,
-                [
-                    (fail_proxy_data, "Fail Proxy"),
-                    (const1_data, "Constraint 1 Conditioned"),
-                    (const2_data, "Constraint 2 Conditioned"),
-                ],
-            ):
-                ax.set_aspect("equal")
-                thresholds = np.array(thresholds)
-
-                ax.set_title(title)
-
-                ax.plot(
-                    thresholds,
-                    data["tp_rates"],
-                    label="True Positive Rate",
-                    color="blue",
-                )
-                ax.plot(
-                    thresholds,
-                    data["tn_rates"],
-                    label="True Negative Rate",
-                    color="orange",
-                )
-                # ax.plot(thresholds, fp_rates, label="False Positive Rate", color="red")
-                # ax.plot(thresholds, fn_rates, label="False Negative Rate", color="green")
-
-                # Add vertical line and label at intersection
-                ax.axvline(
-                    data["intersect_threshold"],
-                    color="black",
-                    linestyle="--",
-                    linewidth=1,
-                )
-                ax.text(
-                    data["intersect_threshold"],
-                    0.05,  # slightly above bottom
-                    f"Threshold = {data['intersect_threshold']:.2f}, TPR = {data['intersect_value']:.2f}",
-                    rotation=90,
-                    verticalalignment="bottom",
-                    horizontalalignment="right",
-                    backgroundcolor="white",
-                    fontsize=9,
-                )
-
-                ax.set_xlabel("Cosine Similarity Threshold")
-                ax.set_ylabel("Rate")
-                ax.legend()
-            plt.tight_layout()
-
-            wandb.log(
-                {"eval/metric_plot": wandb.Image(fig), "num_updates": num_updates},
-                step=num_updates,
-            )
-            wandb.log(
-                {
-                    "eval/intersect_threshold_variance": np.var(intersect_thresholds),
-                    "num_updates": num_updates,
-                },
-                step=num_updates,
-            )
-            plt.close()
-
-            # Plot AUC curve
-            fig, axes = plt.subplots(1, 3, figsize=(30, 8))
-            for ax, (data, title) in zip(
-                axes,
-                [
-                    (fail_proxy_data, "Fail Proxy"),
-                    (const1_data, "Constraint 1 Conditioned"),
-                    (const2_data, "Constraint 2 Conditioned"),
-                ],
-            ):
-                ax.set_aspect("equal")
-                fp_rates = np.array(data["fp_rates"])
-                tp_rates = np.array(data["tp_rates"])
-                ax.plot(fp_rates, tp_rates, label="ROC Curve", color="blue")
-                ax.set_xlabel("False Positive Rate")
-                ax.set_ylabel("True Positive Rate")
-                ax.set_title(title)
-                ax.legend()
-            plt.tight_layout()
-            wandb.log(
-                {"eval/roc_curve": wandb.Image(fig), "num_updates": num_updates},
-                step=num_updates,
-            )
-            plt.close()
-
-            # Plot cosine similarity distribution
-            fig, axes = plt.subplots(1, 3, figsize=(30, 8))
-
-            # Unique class labels
-            class_labels = np.unique(y)
-            n_classes = len(class_labels)
-
-            # Generate distinct rainbow colors
-            colors = [rainbow(i / n_classes) for i in range(n_classes)]
-
-            used_labels = set()
-            global_handles = []
-            global_labels = []
-            label_to_str = {k: f"Quad {k}" for k in range(1, 5)}
-
-            for ax, (data, title) in zip(
-                axes,
-                [
-                    (fail_proxy_data, "Fail Proxy"),
-                    (const1_data, "Const 1 (Weak Unsafe) Conditioned"),
-                    (const2_data, "Const2 (Unsafe) Conditioned"),
-                ],
-            ):
-                ax.set_aspect("auto")
-                cos_sim = -data[
-                    "cos_sim"
-                ]  # It's already negative cosine similarity, so we make it positive for plotting
-
-                for idx, label in enumerate(class_labels):
-                    class_data = cos_sim[y == label]
-                    if len(class_data) < 2:
-                        continue
-                    kde = gaussian_kde(class_data)
-                    x_vals = np.linspace(-1, 1, 200)
-                    y_vals = kde(x_vals)
-                    color = colors[idx]
-
-                    plot_label = f"{label_to_str[label]}"
-                    (line,) = ax.plot(
-                        x_vals, y_vals, label=plot_label, color=color, alpha=0.7
-                    )
-
-                    if plot_label not in used_labels:
-                        used_labels.add(plot_label)
-                        global_handles.append(line)
-                        global_labels.append(plot_label)
-
-                ax.set_title(title)
-                ax.set_xlabel("Cosine Similarity")
-                ax.set_ylabel("Density")
-
-            # Global legend above all subplots
-            fig.legend(
-                global_handles,
-                global_labels,
-                loc="upper center",
-                ncol=len(global_labels),
-                fontsize="x-large",
-            )
-            plt.tight_layout(rect=[0, 0, 1, 0.95])
-
-            wandb.log(
-                {
-                    "eval/const_conditioned_cosine_sim": wandb.Image(fig),
-                    "num_updates": num_updates,
-                },
-                step=num_updates,
-            )
-            plt.close()
-
-            return cos_sim_fail
-
-        # cos_sim_fail = const_conditioned_plots(
-        #     X, y, const1=constraint1, const2=constraint2
-        # )
-
-        # TODO: Get cos sim relative to proxies
-        # auc = roc_auc_score(
-        #     y_true=y,
-        #     y_score=-cos_sim_fail.cpu().numpy(),
-        #     multi_class="ovo",
-        #     labels=np.arange(config.nb_classes),
-        # )
-
-        if config.nb_classes == 2:
-            auc = roc_auc_score(
-                y_true=y,
-                y_score=-cos_sim_fail.cpu().numpy(),
-            )
-            wandb.log({"eval/AUC": auc, "num_updates": num_updates}, step=num_updates)
-
-        else:
-            # auc = roc_auc_score(
-            #     y_true=losses.binarize(
-            #         einops.rearrange(labels_gt, "B T -> (B T)"),
-            #         nb_classes=nb_classes,
-            #     )
-            #     .cpu()
-            #     .numpy(),
-            #     y_score=einops.rearrange(logits, "B T L -> (B T) L").cpu().numpy(),
-            #     multi_class="ovr",
-            #     average="macro",
-            # )
-            auc = None
-            wandb.log({"eval/AUC": auc, "num_updates": num_updates}, step=num_updates)
 
         for key, value in metrics.items():
             metrics[key] = np.mean(value)
@@ -1199,16 +664,7 @@ for epoch in tqdm(range(0, config.pa["nb_epochs"]), desc="Training Epochs", posi
         wandb_log["num_updates"] = num_updates
         wandb.log(wandb_log, step=num_updates)
 
-        # ---- Flatten and Prepare Data ----
-        if len(X) == 0 or len(y) == 0:
-            print("No data to visualize.")
-            continue
-
-        # print("Visualizing embeddings with UMAP...")
-
-        def UMAP_plot(
-            X, y, proxies, num_classes_eval, classes_eval, max_samples=10_000
-        ):
+        def UMAP_plot(X, max_samples=10_000):
             # ---- Optional Downsampling ----
             if max_samples is not None and X.shape[0] > max_samples:
                 indices = np.random.choice(X.shape[0], max_samples, replace=False)
@@ -1273,18 +729,18 @@ for epoch in tqdm(range(0, config.pa["nb_epochs"]), desc="Training Epochs", posi
             )
             plt.close()
 
-        if epoch % 10 == 0:
-            UMAP_plot(
-                X,
-                y,
-                criterion.proxies,
-                num_classes_eval,
-                classes_eval,
-                max_samples=None,
-            )
+        # if epoch % 10 == 0:
+        #     UMAP_plot(
+        #         X,
+        #         y,
+        #         criterion.proxies,
+        #         num_classes_eval,
+        #         classes_eval,
+        #         max_samples=None,
+        #     )
 
-        with torch.no_grad():
-            model.proxies.copy_(criterion.proxies)
+        # with torch.no_grad():
+        #     model.proxies.copy_(criterion.proxies)
 
         if config.pa["save_model"]:
             model_name = config.wandb_name
@@ -1299,9 +755,9 @@ for epoch in tqdm(range(0, config.pa["nb_epochs"]), desc="Training Epochs", posi
             )
             tqdm.write(f"Model saved to {save_path}/encoder_{model_name}.pth")
 
-            if balanced_accuracy < best_eval:
-                best_eval = balanced_accuracy
-                print(f"New best at iter {i}, saving model.")
+            if True:  # balanced_accuracy < best_eval:
+                # best_eval = balanced_accuracy
+                # print(f"New best at iter {i}, saving model.")
                 torch.save(
                     model.state_dict(),
                     f"logs/checkpoints_pa/best_encoder_{model_name}.pth",

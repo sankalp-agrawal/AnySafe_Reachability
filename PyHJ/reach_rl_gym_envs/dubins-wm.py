@@ -202,7 +202,8 @@ class Dubins_WM_Env(gym.Env):
                 )
                 metric = -numerator / (denominator + 1e-8)  # (B N)
                 metric = metric - self.config.safety_margin_threshold
-                # metric = np.tanh(metric)
+                metric = np.tanh(3 * metric)
+                assert metric.ndim == 2, f"Expected dimension 2, got {metric.shape}"
                 safety_margin = np.min(metric, axis=-1)  # (B)
                 if self.config.safety_margin_hard_threshold:
                     safety_margin[safety_margin > 0] = 1.0
@@ -237,17 +238,17 @@ class Dubins_WM_Env(gym.Env):
 
         elif env_dist_type == "4c":  # four circles
             centers = [
-                np.array([-0.5, -0.5, 0.40, 1.0]),
-                np.array([0.5, -0.5, 0.40, 1.0]),
-                np.array([-0.5, 0.5, 0.40, 1.0]),
-                np.array([0.5, 0.5, 0.40, 1.0]),
+                np.array([-0.5, -0.5, 0.50, 1.0]),
+                np.array([0.5, -0.5, 0.50, 1.0]),
+                np.array([-0.5, 0.5, 0.50, 1.0]),
+                np.array([0.5, 0.5, 0.50, 1.0]),
             ]
             if in_distribution:
                 i = np.random.randint(0, len(centers))
                 center = centers[i][:2]
                 # constraint state is a random state in the circle
-                # gt_constraint is a circle of radius 0.40
-                radius = np.random.uniform(low=0.0, high=0.40)
+                # gt_constraint is a circle of radius 0.50
+                radius = np.random.uniform(low=0.0, high=0.50)
                 theta = np.random.uniform(low=0.0, high=2 * np.pi)
                 constraint_state = np.array(
                     [
@@ -256,9 +257,13 @@ class Dubins_WM_Env(gym.Env):
                         0.0,
                     ]
                 )
-                gt_constraint = centers[i]
+                # gt_constraint = centers[i]
+                gt_constraint = np.array(
+                    [constraint_state[0], constraint_state[1], 0.5, 1.0]
+                )
+
             else:  # Out of distribution
-                radius = 0.40
+                radius = 0.5
                 centers_array = np.array(centers)
                 while True:
                     constraint_state = np.random.uniform(-1, 1, size=2)
@@ -372,9 +377,9 @@ class Dubins_WM_Env(gym.Env):
                 )
         elif env_dist_type == "v":
             # Eval and test set are the same here
-            constraint_state = np.array([0.0, 0.0])
+            constraint_state = np.array([0.0, 0.0, 0.0])
             gt_constraint = np.append(
-                constraint_state,
+                constraint_state[:2],
                 np.array([0.5, 1.0]),
             )
         elif env_dist_type == "uni":
@@ -383,11 +388,16 @@ class Dubins_WM_Env(gym.Env):
                 [
                     np.random.uniform(low=-1.0, high=1.0),
                     np.random.uniform(low=-1.0, high=1.0),
+                    np.random.uniform(low=0.0, high=2 * np.pi),  # theta
                 ]
             )
+            # gt_constraint = np.append(
+            #     constraint_state,
+            #     np.array([np.random.uniform(low=0.1, high=0.5), 1.0]),
+            # )
             gt_constraint = np.append(
-                constraint_state,
-                np.array([np.random.uniform(low=0.1, high=0.5), 1.0]),
+                constraint_state[:2],
+                np.array([0.5, 1.0]),  # Default radius and active status,
             )
 
         elif env_dist_type == "ds":  # Distribution from dataset
@@ -456,10 +466,10 @@ class Dubins_WM_Env(gym.Env):
                     self.wm.proxies[i].detach().cpu().numpy(), 1.0
                 ).reshape(self.num_constraints, -1)
                 centers = [
-                    np.array([-0.5, -0.5, 0.4, 1.0]),
-                    np.array([0.5, -0.5, 0.4, 1.0]),
-                    np.array([-0.5, 0.5, 0.4, 1.0]),
-                    np.array([0.5, 0.5, 0.4, 1.0]),
+                    np.array([-0.5, -0.5, 0.5, 1.0]),
+                    np.array([0.5, -0.5, 0.5, 1.0]),
+                    np.array([-0.5, 0.5, 0.5, 1.0]),
+                    np.array([0.5, 0.5, 0.5, 1.0]),
                 ]
                 self.gt_constraints = centers[i].reshape(self.num_constraints, -1)
                 img = (
@@ -635,9 +645,9 @@ class Dubins_WM_Env(gym.Env):
             all_metrics.append(metrics)
 
             # Find contours for gt and rl Value functions
-            # contours_rl = measure.find_contours(
-            #     np.array(V > self.config.safety_filter_eps).astype(float), level=0.5
-            # )
+            contours_rl = measure.find_contours(
+                np.array(V > self.config.safety_filter_eps).astype(float), level=0.5
+            )
             contours_gt = measure.find_contours(
                 np.array(gt_values[:, :, nt_index].T > 0).astype(float), level=0.5
             )
@@ -659,7 +669,11 @@ class Dubins_WM_Env(gym.Env):
             )
             # Show value functions
             axes2[0, graph_index].imshow(
-                V, extent=(-1.0, 1.0, -1.0, 1.0), vmin=-1.0, vmax=1.0, origin="lower"
+                V,
+                extent=(-1.0, 1.0, -1.0, 1.0),
+                vmin=-1.0,
+                vmax=1.0,
+                origin="lower",
             )
             axes2[2, graph_index].imshow(
                 gt_values[:, :, nt_index].T,
@@ -687,18 +701,21 @@ class Dubins_WM_Env(gym.Env):
             )
 
             # Plot contours for RL Value function
-            # for contour in contours_rl:
-            #     for axes in [axes1, axes2, axes3]:
-            #         [
-            #             ax.plot(
-            #                 contour[:, 1] * (2.0 / (nx - 1)) - 1.0,
-            #                 contour[:, 0] * (2.0 / (ny - 1)) - 1.0,
-            #                 color="blue",
-            #                 linewidth=2,
-            #                 label=f"RL Value Contour (eps={self.config.safety_margin_threshold:.2f})",
-            #             )
-            #             for ax in axes[:, graph_index]
-            #         ]
+            for contour in contours_rl:
+                for axes in [
+                    axes1,
+                    axes2,
+                ]:  # Plot in Continuous plot and binary avoid plot
+                    [
+                        ax.plot(
+                            contour[:, 1] * (2.0 / (nx - 1)) - 1.0,
+                            contour[:, 0] * (2.0 / (ny - 1)) - 1.0,
+                            color="blue",
+                            linewidth=2,
+                            label=f"RL Value Contour (eps={self.config.safety_filter_eps:.2f})",
+                        )
+                        for ax in axes[:, graph_index]
+                    ]
 
             metric = np.array(lz.reshape((nx, ny)).T)
             x = np.linspace(-1.0, 1.0, metric.shape[1])
