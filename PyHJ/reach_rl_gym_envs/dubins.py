@@ -163,6 +163,11 @@ class Dubins_Env(gym.Env):
             self.state[2] = np.sin(theta)
             self.state[3] = np.cos(theta)
         else:
+            assert len(initial_state) == 4, (
+                "Initial state should be of length 4, but got {}".format(
+                    len(initial_state)
+                )
+            )
             self.state = initial_state
         self.state = self.state.astype(np.float32)
         self.obs = {

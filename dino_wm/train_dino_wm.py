@@ -3,6 +3,7 @@ import random
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+import wandb
 from dino_decoder import VQVAE
 from dino_models import VideoTransformer, normalize_acs
 from einops import rearrange
@@ -37,7 +38,7 @@ norm_transform = transforms.Normalize(
 )
 
 if __name__ == "__main__":
-    # wandb.init(project="dino-WM", name="WM")
+    wandb.init(project="dino-WM", name="WM")
 
     use_amp = True
     scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
@@ -203,7 +204,7 @@ if __name__ == "__main__":
             end="",
             flush=True,
         )
-        # wandb.log({"train_loss": loss_tf, "train_loss_ar": loss_ar})
+        wandb.log({"train_loss": loss_tf, "train_loss_ar": loss_ar})
         # eval
         if (i) % 1000 == 0:
             iters.append(i)
@@ -261,7 +262,7 @@ if __name__ == "__main__":
                 vid = vid.detach().cpu().numpy()
                 vid = (vid * 255).clip(0, 255).astype(np.uint8)
                 vid = rearrange(vid, "t h w c -> t c h w")
-                # wandb.log({"video": wandb.Video(vid, fps=20, format="mp4")})
+                wandb.log({"video": wandb.Video(vid, fps=20, format="mp4")})
 
                 # done logging video
 
@@ -293,22 +294,22 @@ if __name__ == "__main__":
                 f"\rIter {i}, Eval Loss: {loss.item():.4f}, front Loss: {im1_loss.item():.4f}, state Loss: {state_loss.item():.4f}"
             )
 
-            # torch.save(transition.state_dict(), f"checkpoints/testing_iter{i}.pth")
+            torch.save(transition.state_dict(), f"checkpoints/testing_iter{i}.pth")
 
             if loss < best_eval:
                 best_eval = loss
-                # torch.save(transition.state_dict(), "checkpoints/best_testing.pth")
+                torch.save(transition.state_dict(), "checkpoints/best_testing.pth")
 
             transition.train()
-            # wandb.log(
-            #     {
-            #         "eval_loss": loss.item(),
-            #         "front_loss": im1_loss.item(),
-            #         "state_loss": state_loss.item(),
-            #         "pred_front": wandb.Image(pred_im1),
-            #         "front": wandb.Image(im1),
-            #     }
-            # )
+            wandb.log(
+                {
+                    "eval_loss": loss.item(),
+                    "front_loss": im1_loss.item(),
+                    "state_loss": state_loss.item(),
+                    "pred_front": wandb.Image(pred_im1),
+                    "front": wandb.Image(im1),
+                }
+            )
 
     plt.legend()
     plt.savefig("training curve.png")

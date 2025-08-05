@@ -290,14 +290,17 @@ class WorldModel(nn.Module):
 
     def semantic_embed(self, data):
         data = self.preprocess(data)
-        embed = self.encoder(data)
+        embed = self.encoder(data)  # (B T E)
 
+        assert embed.ndim == 3, f"Expected dimension 3, got {embed.shape}"
         latent, _ = self.dynamics.observe(
-            embed.unsqueeze(1),
-            data["action"].unsqueeze(1),
-            data["is_first"].unsqueeze(1),
+            embed,
+            data["action"],  # (B, T, A)
+            data["is_first"],  # (B, T)
         )
+        # feat: [B T F], F = 544
         feat = self.dynamics.get_feat(latent).detach()
+        # feat: [B T S], S = 512
         semantic_embed = self.semantic_encoder(feat)
         return semantic_embed, feat
 

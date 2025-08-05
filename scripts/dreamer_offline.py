@@ -264,6 +264,31 @@ class Dreamer(nn.Module):
                     pos = wm.heads["margin"](safe_dataset)
                     neg = wm.heads["margin"](unsafe_dataset)
 
+                    # semantic alignment
+                    # # feat: [B T F]
+                    # state = data["privileged_state"][:, :, :2]
+                    # state = einops.rearrange(state, "B T Z -> (B T) Z")  # [B*T, 2]
+                    # # semantic_feat: [B T E]
+                    # semantic_feat = self._wm.semantic_encoder(feat)
+                    # semantic_feat = einops.rearrange(
+                    #     semantic_feat, "B T Z -> (B T) Z"
+                    # )  # [B*T, E]
+
+                    # diff = state.unsqueeze(0) - state.unsqueeze(1)  # [B*T, B*T, 2]
+                    # dists = torch.norm(diff, dim=2)
+                    # labels_gt = torch.clip(1 - 1 / (np.sqrt(2)) * dists, -1, 1)
+
+                    # # Normalize all vectors for cosine similarity
+                    # semantic_features_norm = F.normalize(
+                    #     semantic_feat, dim=-1
+                    # )  # ((B*T), 512)
+
+                    # # Compute cosine similarity via dot product → shape [B*T, B*T]
+                    # cos_sim = semantic_features_norm @ semantic_features_norm.T
+
+                    # # loss is MSE between labels gt and cosine similarity
+                    # semantic_loss = F.mse_loss(cos_sim, labels_gt).to(torch.float16)
+
                     gamma = self._config.gamma_lx
                     if pos.numel() > 0:
                         lx_loss += torch.relu(gamma - pos).mean()
@@ -275,7 +300,9 @@ class Dreamer(nn.Module):
                         cont_loss *= 0
                 if "margin" not in wm.heads.keys():
                     lx_loss = 0.0
-                model_loss = kl_loss + recon_loss + lx_loss + cont_loss
+                model_loss = (
+                    kl_loss + recon_loss + lx_loss + cont_loss
+                )  # + semantic_loss
                 metrics = self.pretrain_opt(
                     torch.mean(model_loss), self.pretrain_params
                 )
@@ -284,8 +311,9 @@ class Dreamer(nn.Module):
         metrics["dyn_loss"] = to_np(dyn_loss)
         metrics["rep_loss"] = to_np(rep_loss)
         metrics["kl_value"] = to_np(torch.mean(kl_value))
-        # metrics["lx_loss"] = to_np(lx_loss)
+        metrics["lx_loss"] = to_np(lx_loss)
         metrics["cont_loss"] = to_np(cont_loss)
+        # metrics["semantic_loss"] = to_np(semantic_loss)
 
         with torch.amp.autocast("cuda", enabled=wm._use_amp):
             metrics["prior_ent"] = to_np(

@@ -160,7 +160,7 @@ config.num_actions = (
     env.action_space.n if hasattr(env.action_space, "n") else env.action_space.shape[0]
 )
 model = models.WorldModel(env.observation_space_full, env.action_space, 0, config)
-ckpt_path = "logs/dreamer_dubins/dubins_mlp_obs_state_cnn_image_lz_None_sc_F_arrow_0.15/best_rssm_ckpt_0_10.pt"  # config.rssm_ckpt_path
+ckpt_path = config.rssm_ckpt_path
 checkpoint = torch.load(ckpt_path)
 
 state_dict = {
@@ -194,6 +194,11 @@ model.eval()
 
 config = tools.set_wm_name(config)
 
+for name, module in model.named_modules():
+    if "semantic_encoder" in name:
+        if hasattr(module, "reset_parameters"):
+            module.reset_parameters()
+
 for name, param in model.named_parameters():
     param.requires_grad = name.startswith("semantic_encoder")
 
@@ -207,194 +212,18 @@ decoder = torch.nn.Sequential(
 offline_eps = collections.OrderedDict()
 config.pa["batch_size"] = 1
 config.pa["batch_length"] = 2
-tools.fill_expert_dataset_dubins(config, offline_eps)
+tools.fill_expert_dataset_dubins(config, offline_eps, is_val_set=False)
 offline_dataset = make_dataset(offline_eps, config)
+train_len = len(offline_eps) // config.batch_length
 
+expert_val_eps = collections.OrderedDict()
+tools.fill_expert_dataset_dubins(config, expert_val_eps, is_val_set=True)
+eval_dataset = make_dataset(offline_eps, config)
+eval_len = len(expert_val_eps) // config.batch_length
 
-# 1. Flatten Trajectories to Timesteps
-def flatten_trajectories(trajectories):
-    flat_data = {}
-    import ipdb
-
-    ipdb.set_trace()
-    keys = next(iter(trajectories.values())).keys()
-
-    for key in keys:
-        flat_data[key] = []
-
-    for traj in trajectories.values():
-        for key in keys:
-            # Assume traj[key] is tensor or array with shape (T, ...)
-            # We want to concatenate timesteps (dim=0) across trajectories
-            # So just append the whole array, not flatten inside dimensions
-            flat_data[key].append(torch.tensor(np.array(traj[key])))
-
-    # Concatenate along time dimension (dim=0)
-    for key in keys:
-        flat_data[key] = torch.cat(flat_data[key], dim=0)
-        if flat_data[key].ndim == 1:
-            flat_data[key] = flat_data[key].unsqueeze(-1)
-
-    # class labels
-    points = flat_data["privileged_state"][:, :2]  # [B 2]
-
-    # mask out points outside the square [-1, 1] x [-1, 1]
-    mask = (
-        (points[:, 0] >= -1)
-        & (points[:, 0] <= 1)
-        & (points[:, 1] >= -1)
-        & (points[:, 1] <= 1)
-    )
-    flat_data = {k: v[mask] for k, v in flat_data.items()}
-    points = flat_data["privileged_state"][:, :2]  # [B, 2]
-
-    scaled = (points + 1) / 2
-
-    # Convert to grid indices
-    x_idx = (scaled[:, 0] * config.grid_size).clamp(0, max=config.grid_size - 1).long()
-    y_idx = (scaled[:, 1] * config.grid_size).clamp(0, max=config.grid_size - 1).long()
-
-    # label
-    step = 2.0 / config.grid_size
-    radius = step / 2 * 0.8
-    coords = torch.linspace(
-        -1 + step / 2, 1 - step / 2, config.grid_size, device=points.device
-    )
-    y_coords, x_coords = torch.meshgrid(coords, coords, indexing="ij")
-    centers = torch.stack([x_coords, y_coords], dim=-1).reshape(-1, 2)
-    dists_squared = ((points[:, None, :] - centers[None, :, :]) ** 2).sum(dim=-1)
-    mask = (dists_squared < radius**2).any(dim=1)
-
-    # Row-major grid index: row * num_cols + col
-    labels = y_idx * config.grid_size + x_idx
-    labels = labels.to(torch.int64)
-    labels[~mask] = (
-        torch.max(labels) + 1
-    )  # Assign a new class for points outside the square
-
-    flat_data["label"] = labels.unsqueeze(-1)
-
-    return flat_data
-
-
-def visualize_data(flat_data, train_data, test_data):
-    points = flat_data["privileged_state"][:, :2]  # [B, 2]
-    labels = flat_data["label"].squeeze()
-    fig, ax = plt.subplots(figsize=(8, 8))
-    ax.scatter(
-        points[:, 0].cpu().numpy(),
-        points[:, 1].cpu().numpy(),
-        c=labels,
-        cmap=colormaps["rainbow"],
-    )
-    # add outline of square in the center
-    square = plt.Rectangle(
-        (-1, -1),
-        2,
-        2,
-        color="black",
-        alpha=0.5,
-        fill=False,
-        linewidth=2,
-    )
-    ax.add_patch(square)
-    ax.set_title("Class Labels")
-    ax.set_xlabel("X Coordinate")
-    ax.set_ylabel("Y Coordinate")
-    ax.legend()
-    plt.tight_layout()
-    wandb.log(
-        {"class_labels": wandb.Image(fig), "num_updates": 0},
-        step=0,
-    )
-
-    # Train/test split visualization
-    fig, ax = plt.subplots(figsize=(8, 8))
-    ax.scatter(
-        train_data["privileged_state"][:, 0].cpu().numpy(),
-        train_data["privileged_state"][:, 1].cpu().numpy(),
-        c="blue",
-        label="Train",
-        alpha=0.5,
-    )
-    ax.scatter(
-        test_data["privileged_state"][:, 0].cpu().numpy(),
-        test_data["privileged_state"][:, 1].cpu().numpy(),
-        c="red",
-        label="Test",
-        alpha=0.5,
-    )
-    ax.set_title("Train/Test Split")
-    ax.set_xlabel("X Coordinate")
-    ax.set_ylabel("Y Coordinate")
-    ax.legend()
-    plt.tight_layout()
-    wandb.log(
-        {"train_test_split": wandb.Image(fig), "num_updates": 0},
-        step=0,
-    )
-
-
-# 2. Split at Timestep Level
-def split_flat_data(flat_data, test_size=0.2, seed=42):
-    points = flat_data["privileged_state"][:, :2]  # [B, 2]
-
-    step = 2.0 / config.grid_size
-    radius = step / 2
-    coords = torch.linspace(
-        -1 + step / 2, 1 - step / 2, config.grid_size, device=points.device
-    )
-
-    y_coords, x_coords = torch.meshgrid(coords, coords, indexing="ij")
-    centers = torch.stack([x_coords, y_coords], dim=-1).reshape(-1, 2)
-
-    if config.train_test_split == "uni":
-        mask = torch.rand(len(points)) > test_size
-    elif config.train_test_split == "circ":
-        dists_squared = ((points[:, None, :] - centers[None, :, :]) ** 2).sum(dim=-1)
-        mask = (dists_squared < radius**2).any(dim=1)
-    elif config.train_test_split == "sq":
-        mask = (
-            flat_data["label"].squeeze() != config.grid_size**2 // 2
-        )  # Random square being test
-    else:
-        raise ValueError(f"Invalid train_test_split method: {config.train_test_split}")
-
-    def extract(mask):
-        return {k: v[mask] for k, v in flat_data.items()}
-
-    return extract(mask), extract(torch.logical_not(mask))  # train, test data
-
-
-# 3. Batch Generator
-def timestep_batch_generator(data_dict, batch_size, shuffle=True):
-    N = len(next(iter(data_dict.values())))
-    indices = np.arange(N)
-
-    if shuffle:
-        np.random.shuffle(indices)
-
-    for start in range(0, N, batch_size):
-        end = start + batch_size
-        batch_idx = indices[start:end]
-
-        yield {k: v[batch_idx] for k, v in data_dict.items()}
-
-
-# Flatten trajectories to timestep-level data
-offline_eps = flatten_trajectories(offline_eps)
-
-# Split into train/test
-train_data_labeled, test_data = split_flat_data(offline_eps, test_size=0.2)
-visualize_data(offline_eps, train_data_labeled, test_data)
-
-# Create batch generator
-train_loader_labeled = timestep_batch_generator(
-    train_data_labeled, batch_size=config.pa["sz_batch"], shuffle=True
-)
 
 # Get a batch
-batch = next(train_loader_labeled)
+batch = next(offline_dataset)
 
 for key, value in batch.items():
     print(f"{key}: {value.shape}")
@@ -429,7 +258,7 @@ scheduler = torch.optim.lr_scheduler.StepLR(
 
 # Dataset Loader and Sampler
 BS = config.pa["sz_batch"]  # batch size
-BL = 1
+BL = config.batch_length  # batch length
 
 # print("Training parameters: {}".format(vars(args)))
 print("Training for {} epochs.".format(config.pa["nb_epochs"]))
@@ -455,38 +284,9 @@ for epoch in tqdm(range(0, config.pa["nb_epochs"]), desc="Training Epochs", posi
     # Warmup: Train only new params, helps stabilize learning.
     # TODO: implement warmup training if needed
 
-    # # pbar = tqdm(enumerate(expert_loader))
-    max_timesteps = 10_000  # Maximum number of timesteps to sample
-    min_timesteps = 1_000  # Minimum number of timesteps to sample
-    total_timesteps = len(train_data_labeled["discount"])
-
-    if total_timesteps > max_timesteps:
-        subset_indices = random.sample(range(total_timesteps), max_timesteps)
-        subset = {k: v[subset_indices] for k, v in train_data_labeled.items()}
-        train_loader_labeled = timestep_batch_generator(
-            subset, batch_size=BS, shuffle=True
-        )
-        total_timesteps = max_timesteps
-    elif (  # If small dataset and using unlabeled data
-        total_timesteps < min_timesteps
-    ):
-        # Step 1: Include all original samples once
-        all_indices = list(range(total_timesteps))
-        extra_needed = min_timesteps - total_timesteps
-        extra_indices = random.choices(all_indices, k=extra_needed)
-        combined_indices = all_indices + extra_indices
-        bootstrapped_subset = {
-            k: v[combined_indices] for k, v in train_data_labeled.items()
-        }
-
-        train_loader_labeled = timestep_batch_generator(
-            bootstrapped_subset, batch_size=BS, shuffle=True
-        )
-        total_timesteps = min_timesteps
-
     pbar = tqdm(
-        enumerate(train_loader_labeled),
-        total=total_timesteps // BS,
+        enumerate(offline_dataset),
+        total=train_len,
         position=1,
         leave=False,
     )
@@ -494,67 +294,42 @@ for epoch in tqdm(range(0, config.pa["nb_epochs"]), desc="Training Epochs", posi
     # config.beta = np.linspace(0.2, 1.0, config.nb_epochs)[epoch]  # Linear increase of beta
 
     for batch_idx, data in pbar:
+        if batch_idx >= train_len:
+            break
         # labels_gt = data["label"][:].to(device, dtype=torch.float32)
 
-        image = data["image"].to(device)  # [B H W 3]
-        state = data["privileged_state"][:, :2].to(device)  # [B, 2]
+        # Take only the last timestep
+        # image = torch.tensor(data["image"][:, -1]).to(device)  # [B H W 3]
+        state = torch.tensor(data["privileged_state"][:, :, :2]).to(device)  # [B T 2]
+        state = einops.rearrange(state, "B T Z -> (B T) Z")  # [B*T, 2]
+
         diff = state.unsqueeze(0) - state.unsqueeze(1)  # [B, B, 2]
         dists = torch.norm(diff, dim=2)
         labels_gt = torch.clip(1 - 1 / (np.sqrt(2)) * dists, -1, 1)
         # labels_gt = torch.clip(1 - dists, -1, 1)
 
         with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=True):
+            # semantic_features: [B T 512]
+            # feat_gt: [B T 544]
             semantic_features, feat_gt = model.semantic_embed(data)
             feat_pred = decoder(semantic_features)
 
             # Normalize along the embedding dimension
+            # (B T 512)
             sem_norm = F.normalize(
-                semantic_features.squeeze(1), p=2, dim=1
+                semantic_features[:].squeeze(1), p=2, dim=-1
             )  # Each row becomes unit norm
 
+            sem_norm = einops.rearrange(sem_norm, "B T Z -> (B T) Z")
             # Compute cosine similarity via dot product → shape [B, B]
             cos_sim = sem_norm @ sem_norm.T
 
             # loss is MSE between labels gt and cosine similarity
             loss = F.mse_loss(cos_sim, labels_gt).to(torch.float16)
-        # loss, pos_term, neg_term = criterion(
-        #     X=semantic_features.float(),
-        #     T=labels_gt.squeeze().cuda(),
-        #     U=semantic_features_unlabeled_tensor.float()
-        #     if config.pa["use_unlabeled_data"]  # and epoch >= 20
-        #     else None,  # Warmup
-        #     args=config.pa,
-        # )
-        # ae_loss = F.mse_loss(feat_pred.float(), feat_gt.float())
-        # loss += ae_loss
 
-        # if config.pa["use_unlabeled_data"]:
-        #     wandb.log(
-        #         {
-        #             "train/data_ratio": semantic_features_unlabeled_tensor.shape[0]
-        #             / semantic_features.shape[0]
-        #         },
-        #         step=num_updates,
-        #     )
-
-        # P = criterion.proxies.detach()  # Ensure P is in the same dtype as X
-        semantic_features = einops.rearrange(
-            semantic_features.float(), "B T Z -> (B T) Z"
-        )  # Ensure X is in the correct shape
-
-        # cos_sim_logits = F.softmax(
-        #     F.linear(  # [(B T) N]
-        #         losses.l2_norm(semantic_features), losses.l2_norm(P)
-        #     ),
-        #     dim=-1,
-        # )
-
-        # auc = roc_auc_score(
-        #     y_true=einops.rearrange(labels_gt, "B T -> (B T)").cpu().numpy(),
-        #     y_score=cos_sim_logits.detach().cpu().numpy(),
-        #     multi_class="ovo",
-        #     labels=np.arange(config.nb_classes),
-        # )
+        # semantic_features = einops.rearrange(
+        #     semantic_features.float(), "B T Z -> (B T) Z"
+        # )  # Ensure X is in the correct shape
 
         opt.zero_grad()
         loss.backward()
@@ -603,25 +378,30 @@ for epoch in tqdm(range(0, config.pa["nb_epochs"]), desc="Training Epochs", posi
         y = []
         y_pred = []
         with torch.no_grad():
-            test_loader = timestep_batch_generator(
-                test_data, batch_size=config.pa["sz_batch"], shuffle=False
-            )
             pbar = tqdm(
-                enumerate(test_loader),
-                total=len(test_data["discount"]) // config.pa["sz_batch"],
+                enumerate(eval_dataset),
                 desc="Evaluation",
+                total=eval_len,
                 position=2,
                 leave=False,
             )
             for batch_idx, data in pbar:
+                if batch_idx >= eval_len:
+                    break
                 # labels_gt = data["label"].to(device, dtype=torch.float32)  # [B, 1]
-                state = data["privileged_state"][:, :2].to(device)  # [B, 2]
-                diff = state.unsqueeze(0) - state.unsqueeze(1)  # [B, B, 2]
+                state = torch.tensor(data["privileged_state"][:, :, :2]).to(
+                    device
+                )  # [B, T, 2]
+                state = einops.rearrange(state, "B T Z -> (B T) Z")  # [B*T, 2]
+                diff = state.unsqueeze(0) - state.unsqueeze(1)  # [B*T, B*T, 2]
                 dists = torch.norm(diff, dim=2)
                 labels_gt = torch.clip(1 - 1 / (np.sqrt(2)) * dists, -1, 1)
                 # labels_gt = torch.clip(1 - dists, -1, 1)
 
                 semantic_features, __ = model.semantic_embed(data)  # [B, 1, 512]
+                semantic_features = einops.rearrange(
+                    semantic_features, "B T Z -> (B T) Z"
+                )
 
                 # Normalize all vectors for cosine similarity
                 semantic_features_norm = F.normalize(
@@ -629,12 +409,12 @@ for epoch in tqdm(range(0, config.pa["nb_epochs"]), desc="Training Epochs", posi
                 )  # (10, 1, 512)
 
                 # Compute cosine similarity
-                sem_norm = F.normalize(
-                    semantic_features.squeeze(1), p=2, dim=1
-                )  # Each row becomes unit norm
+                # sem_norm = F.normalize(
+                #     semantic_features.squeeze(1), p=2, dim=1
+                # )  # Each row becomes unit norm
 
-                # Compute cosine similarity via dot product → shape [B, B]
-                cos_sim = sem_norm @ sem_norm.T
+                # Compute cosine similarity via dot product → shape [B*T, B*T]
+                cos_sim = semantic_features_norm @ semantic_features_norm.T
 
                 # loss is MSE between labels gt and cosine similarity
                 loss = F.mse_loss(cos_sim, labels_gt).to(torch.float16)

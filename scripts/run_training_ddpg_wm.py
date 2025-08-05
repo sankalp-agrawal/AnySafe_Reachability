@@ -125,11 +125,12 @@ wm = models.WorldModel(env.observation_space_full, env.action_space, 0, config)
 config = tools.set_wm_name(config)
 
 # ckpt_path = config.rssm_ckpt_path
+# ckpt_path = "logs/dreamer_dubins/dubins_mlp_obs_state_cnn_image_lz_None_sc_F_arrow_0.15/rssm_ckpt.pt"
 # checkpoint = torch.load(ckpt_path)
 # state_dict = {
 #     k[14:]: v for k, v in checkpoint["agent_state_dict"].items() if "_wm" in k
 # }
-# wm.load_state_dict(state_dict)
+# wm.load_state_dict(state_dict, strict=False)
 ckpt_path = "logs/checkpoints_pa/encoder_gs_2_split_uni.pth"
 wm.load_state_dict(torch.load(ckpt_path), strict=False)
 wm.eval()
@@ -440,11 +441,11 @@ for iter in range(warmup + args.total_episodes):
         )  # .split("-")[:-1]  # Take everything before the last dash
 
         wb_name_args = [
-            f"{task_name}",
-            "DDPG",
+            # f"{task_name}",
+            # "DDPG",
             f"dist_type_{config.env_dist_type}",
             f"sim_{config.safety_margin_type}_{config.safety_margin_threshold}{'*' if config.safety_margin_hard_threshold else ''}",
-            f"{config.wm_name}",
+            # f"{config.wm_name}",
         ]
         wandb_name = ""
         for arg in wb_name_args:
@@ -499,5 +500,16 @@ for iter in range(warmup + args.total_episodes):
             )
         }
     )
+
+    # imagined_traj = env.get_trajectory_imagined()
+    # wandb.log(
+    #     {
+    #         "imagined_trajectory": wandb.Video(
+    #             np.array(imagined_traj),
+    #             fps=10,
+    #             format="mp4",
+    #         )
+    #     }
+    # )
 
     plt.close()

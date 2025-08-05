@@ -7,6 +7,7 @@ import h5py
 import imageio
 import numpy as np
 import torch
+import torchvision.transforms.functional as F
 
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(parent_dir)
@@ -90,6 +91,24 @@ norm_transform = transforms.Normalize(
     mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
 )
 
+
+def crop_top_middle(image):
+    top = 30
+    left = 28
+    height = 192
+    width = 192
+    return F.crop(image, top, left, height, width)
+
+
+crop_transform = transforms.Compose(
+    [
+        transforms.ToPILImage(),
+        transforms.Lambda(lambda img: crop_top_middle(img)),
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+    ]
+)
+
 if __name__ == "__main__":
     use_amp = True
     scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
@@ -103,15 +122,21 @@ if __name__ == "__main__":
 
     EVAL_H = 32
     hdf5_file = "/home/sunny/data/sweeper/test/consolidated.h5"
+    # hdf5_file = "/home/sunny/data/sweeper/train/optimal/traj_0001.hdf5"
     database = {}
     with h5py.File(hdf5_file, "r") as hf:
         trajectory_ids = list(hf.keys())
+        print(f"Total trajectories in dataset: {len(trajectory_ids)}")
         total = 0
         for i, traj_id in enumerate(trajectory_ids):
+            if "labels" not in hf[traj_id].keys():
+                # print(f"Skipping {traj_id} as it has no labels")
+                continue
+
             labels = data_from_traj(hf[traj_id])["failure"]
             a = labels[:-1]
             b = labels[1:]
-            transitions = (a == 0) & (b == 1)
+            transitions = ((a == -1) & (b != -1)) | ((a != -1) & (b == -1))
             index = transitions.nonzero(as_tuple=True)[0]
             if len(index) == 0:  # No failure transitions, skip
                 continue
@@ -119,14 +144,17 @@ if __name__ == "__main__":
             if (
                 index < (EVAL_H // 2)
             ).all():  # If all the transitions are before EVAL_H, skip
+                print(f"Skipping {traj_id} as transitions are too early")
                 continue
 
             if (
                 (index + (EVAL_H // 2)) > len(labels)
             ).all():  # If any transition is too close to the end
+                print(f"Skipping {traj_id} as transitions are too close to the end")
                 continue
 
             if total > 10:
+                print("Reached limit of 10 trajectories with failure transitions")
                 break
 
             database[total] = data_from_traj(hf[traj_id])
@@ -134,6 +162,8 @@ if __name__ == "__main__":
                 0
             ].item()  # Store the index of the first failure
             total += 1
+
+    print(f"Total trajectories with failure transitions: {len(database)}")
 
     BL = 4
     transition = VideoTransformer(
@@ -148,9 +178,7 @@ if __name__ == "__main__":
         dropout=0.1,
     ).to(device)
     # load_state_dict_flexible(transition, "../checkpoints_pa/encoder_0.1.pth")
-    load_state_dict_flexible(
-        transition, "../checkpoints_pa/encoder_mrg_0.1_alpha_32_num_ex_all_ul_F.pth"
-    )
+    load_state_dict_flexible(transition, "../checkpoints/best_testing.pth")
 
     # transition.load_state_dict(torch.load("../checkpoints/best_classifier.pth"))
     transition.eval()

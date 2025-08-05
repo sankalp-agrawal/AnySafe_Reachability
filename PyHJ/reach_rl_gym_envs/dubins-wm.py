@@ -146,6 +146,7 @@ class Dubins_WM_Env(gym.Env):
         super().reset(seed=seed)
 
         init_traj = next(self.data)
+        self.privileged_state = init_traj["privileged_state"][:, -1]
         data = self.wm.preprocess(init_traj)
         embed = self.encoder(data)
         self.latent, _ = self.wm.dynamics.observe(
@@ -162,7 +163,10 @@ class Dubins_WM_Env(gym.Env):
             if self.pass_semantic_constraint
             else self.constraints_feat,  # Semantic embedding of the constraints
         }
-        return self.obs, {"is_first": True, "is_terminal": False}
+        return self.obs, {
+            "is_first": True,
+            "is_terminal": False,
+        }
 
     def safety_margin(self, feat):
         g_xList = []
@@ -178,14 +182,8 @@ class Dubins_WM_Env(gym.Env):
 
             safety_margin = np.array(g_xList).reshape(-1)
         elif self.safety_margin_type == "cosine_similarity":
-            feat = feat.detach().cpu().numpy()
             feat_sem = (
-                self.wm.semantic_encoder(
-                    torch.tensor(feat, device=self.device, dtype=torch.float32)
-                )
-                .detach()
-                .cpu()
-                .numpy()
+                self.wm.semantic_encoder(feat.to(torch.float32)).detach().cpu().numpy()
             )
             with torch.no_grad():
                 constraints = self.constraints_sem[..., :-1]  # (N Z)
@@ -202,7 +200,7 @@ class Dubins_WM_Env(gym.Env):
                 )
                 metric = -numerator / (denominator + 1e-8)  # (B N)
                 metric = metric - self.config.safety_margin_threshold
-                metric = np.tanh(3 * metric)
+                # metric = np.tanh(3 * metric)
                 assert metric.ndim == 2, f"Expected dimension 2, got {metric.shape}"
                 safety_margin = np.min(metric, axis=-1)  # (B)
                 if self.config.safety_margin_hard_threshold:
@@ -845,24 +843,26 @@ class Dubins_WM_Env(gym.Env):
             nominal_policy=self.nominal_policy_type, dist_type=self.config.env_dist_type
         )
         obs, __ = self.reset()
-        obs_gt, _ = gt_env.reset()
+        priv_state = self.privileged_state.squeeze()
+        gt_state = torch.tensor(
+            [priv_state[0], priv_state[1], np.sin(priv_state[2]), np.cos(priv_state[2])]
+        )
+        obs_gt, _ = gt_env.reset(initial_state=gt_state.cpu().numpy())
         # TODO: Set constraints of gt_env to the same as self.constraints
+        gt_env.constraints = self.gt_constraints.copy()
         done_gt = False
         imgs_traj = []
         t = 0
 
         while not done_gt:  # Rollout trajectory with safety filtering
-            theta = np.arctan2(obs["state"][2], obs["state"][3])
-            state = torch.tensor([obs["state"][0], obs["state"][1], theta])
+            theta = np.arctan2(obs_gt["state"][2], obs_gt["state"][3])
+            state = torch.tensor([obs_gt["state"][0], obs_gt["state"][1], theta])
             frame = get_frame(states=state, config=self.config)
             with torch.no_grad():
-                feat, lz = self.get_latent(
-                    wm=self.wm,
-                    thetas=torch.tensor([theta], dtype=torch.float32),
-                    imgs=[frame],
+                V, _ = self.safety_margin(
+                    torch.tensor(obs["state"], device=self.device).unsqueeze(0)
                 )
-                V, _ = self.safety_margin(torch.tensor([feat], device=self.device))
-                V = V[0]
+                V = V.squeeze()
             if V < self.config.safety_filter_eps:
                 unsafe = True
                 action = find_a(obs=obs, policy=policy)

@@ -1,5 +1,6 @@
 import argparse
 import os
+import pickle
 import sys
 
 import einops
@@ -120,11 +121,14 @@ wm = models.WorldModel(env.observation_space_full, env.action_space, 0, config)
 config = tools.set_wm_name(config)
 
 ckpt_path = "logs/checkpoints_pa/encoder_gs_2_split_uni.pth"
+# ckpt_path = "logs/dreamer_dubins/dubins_mlp_obs_state_cnn_image_lz_None_sc_F_arrow_0.15/rssm_ckpt.pt"
 # checkpoint = torch.load(ckpt_path, weights_only=True)
 # state_dict = {
 #     k[14:]: v for k, v in checkpoint["agent_state_dict"].items() if "_wm" in k
 # }
+
 wm.load_state_dict(torch.load(ckpt_path), strict=False)
+# wm.load_state_dict(state_dict, strict=False)
 wm.eval()
 
 offline_eps = collections.OrderedDict()
@@ -134,6 +138,24 @@ tools.fill_expert_dataset_dubins(config, offline_eps)
 offline_dataset = make_dataset(offline_eps, config)
 
 env.set_wm(wm, offline_dataset, config)
+
+log_path = os.path.join(
+    args.logdir + "/PyHJ",
+    args.task,
+    "wm_actor_activation_{}_critic_activation_{}_game_gd_steps_{}_tau_{}_training_num_{}_buffer_size_{}_c_net_{}_{}_a1_{}_{}_gamma_{}".format(
+        args.actor_activation,
+        args.critic_activation,
+        args.actor_gradient_steps,
+        args.tau,
+        args.training_num,
+        args.buffer_size,
+        args.critic_net[0],
+        len(args.critic_net),
+        args.control_net[0],
+        len(args.control_net),
+        args.gamma_pyhj,
+    ),
+)
 
 
 def fig_to_image(fig):
@@ -147,31 +169,43 @@ def fig_to_image(fig):
 def make_cache(config, thetas):
     nx, ny = config.nx, config.ny
     cache = {}
-    for theta in thetas:
-        v = np.zeros((nx, ny))
-        xs = np.linspace(-1.1, 1.1, nx, endpoint=True)
-        ys = np.linspace(-1.1, 1.1, ny, endpoint=True)
-        key = theta
-        print("creating cache for key", key)
-        idxs, imgs_prev, thetas, thetas_prev = [], [], [], []
-        xs_prev = xs - config.dt * config.speed * np.cos(theta)
-        ys_prev = ys - config.dt * config.speed * np.sin(theta)
-        theta_prev = theta
-        it = np.nditer(v, flags=["multi_index"])
-        while not it.finished:
-            idx = it.multi_index
-            x_prev = xs_prev[idx[0]]
-            y_prev = ys_prev[idx[1]]
-            thetas.append(theta)
-            thetas_prev.append(theta_prev)
-            imgs_prev.append(
-                get_frame(torch.tensor([x_prev, y_prev, theta_prev]), config)
-            )
-            idxs.append(idx)
-            it.iternext()
-        idxs = np.array(idxs)
-        theta_prev_lin = np.array(thetas_prev)
-        cache[theta] = [idxs, imgs_prev, theta_prev_lin]
+
+    cache_file = os.path.join(log_path, "cache.pkl")
+
+    if os.path.exists(cache_file):
+        with open(cache_file, "rb") as f:
+            cache = pickle.load(f)
+    else:
+        for theta in thetas:
+            v = np.zeros((nx, ny))
+            xs = np.linspace(-1.1, 1.1, nx, endpoint=True)
+            ys = np.linspace(-1.1, 1.1, ny, endpoint=True)
+            key = theta
+            print("creating cache for key", key)
+            idxs, imgs_prev, thetas, thetas_prev = [], [], [], []
+            xs_prev = xs - config.dt * config.speed * np.cos(theta)
+            ys_prev = ys - config.dt * config.speed * np.sin(theta)
+            theta_prev = theta
+            it = np.nditer(v, flags=["multi_index"])
+            while not it.finished:
+                idx = it.multi_index
+                x_prev = xs_prev[idx[0]]
+                y_prev = ys_prev[idx[1]]
+                thetas.append(theta)
+                thetas_prev.append(theta_prev)
+                imgs_prev.append(
+                    get_frame(torch.tensor([x_prev, y_prev, theta_prev]), config)
+                )
+                idxs.append(idx)
+                it.iternext()
+            idxs = np.array(idxs)
+            theta_prev_lin = np.array(thetas_prev)
+            cache[theta] = [idxs, imgs_prev, theta_prev_lin]
+
+        # pickle file
+        cache_file = os.path.join(log_path, "cache.pkl")
+        with open(cache_file, "wb") as f:
+            pickle.dump(cache, f)
 
     return cache
 
@@ -464,7 +498,7 @@ else:
 similarity_metrics = ["Cosine_Similarity"]  # , "Euclidean Distance", "Learned"]
 
 logger = WandbLogger(
-    name=f"wm_Analysis_{config.wm_name}", config=config, project="Dubins"
+    name=f"wm_Analysis_{config.wm_name}", config=config, project="WM Analysis"
 )
 
 for metric in similarity_metrics:
