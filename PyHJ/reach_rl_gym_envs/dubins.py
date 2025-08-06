@@ -1,3 +1,4 @@
+import re
 from typing import Optional
 
 import einops
@@ -7,7 +8,6 @@ import numpy as np
 import torch
 from gymnasium import spaces
 from matplotlib.patches import Circle
-
 from PyHJ.reach_rl_gym_envs.utils.dubins_gt_solver import DubinsHJSolver
 from PyHJ.reach_rl_gym_envs.utils.env_eval_utils import get_eval_plot
 from PyHJ.utils import evaluate_V, find_a
@@ -201,6 +201,32 @@ class Dubins_Env(gym.Env):
                 return in_distribution_set[i]
             else:
                 return np.array([0.0, 0.0, 0.4, 1.0])
+
+        elif bool(re.fullmatch(r"c\d{3}", self.distribution_type)):
+            # e.g., c001, c002, ..., c999
+            match = re.fullmatch(r"c(\d{3})", self.distribution_type)
+            N = int(match.group(1))
+            k = int(np.sqrt(N))
+            assert k * k == N, "N must be a perfect square"
+
+            # Generate 1D coordinates (inclusive of edges)
+            coords = np.linspace(0, 1, k)
+
+            # Create 2D grid
+            X, Y = np.meshgrid(coords, coords)
+
+            # Stack into (N, 2) array of (x, y) pairs
+            centers = np.stack([X.ravel(), Y.ravel()], axis=-1)
+
+            radius = 0.5
+
+            if in_distribution:
+                i = np.random.randint(0, len(centers))
+                center = centers[i]
+                return np.array([center[0], center[1], radius, 1.0])
+            else:  # Out of distribution
+                state = np.random.uniform(-1.0, 1.0, size=2)
+                return np.array([state[0], state[1], radius, 1.0])
         elif self.distribution_type == "fcfe":
             in_distribution_set = [
                 np.array([-0.5, -0.5, 0.5, 1.0]),
@@ -430,4 +456,5 @@ class Dubins_Env(gym.Env):
 
         imgs = np.array(imgs)  # (T, W, H, C)
         imgs = np.transpose(imgs, (0, 3, 1, 2))  # (T, C, W, H)
+        return imgs
         return imgs

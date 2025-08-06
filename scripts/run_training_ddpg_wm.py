@@ -131,7 +131,7 @@ config = tools.set_wm_name(config)
 #     k[14:]: v for k, v in checkpoint["agent_state_dict"].items() if "_wm" in k
 # }
 # wm.load_state_dict(state_dict, strict=False)
-ckpt_path = "logs/checkpoints_pa/encoder_gs_2_split_uni.pth"
+ckpt_path = "logs/checkpoints_pa/encoder_task_dubins-wm.pth"
 wm.load_state_dict(torch.load(ckpt_path), strict=False)
 wm.eval()
 
@@ -445,11 +445,13 @@ for iter in range(warmup + args.total_episodes):
             # "DDPG",
             f"dist_type_{config.env_dist_type}",
             f"sim_{config.safety_margin_type}_{config.safety_margin_threshold}{'*' if config.safety_margin_hard_threshold else ''}",
+            "proto" if config.pass_prototype else None,
             # f"{config.wm_name}",
         ]
         wandb_name = ""
         for arg in wb_name_args:
-            wandb_name += f"{arg}_"
+            if arg is not None:
+                wandb_name += f"{arg}_"
         wandb_name = wandb_name[:-1]  # Remove the last underscore
         logger = WandbLogger(name=wandb_name, project="Dubins", config=config)
         logger.load(writer)

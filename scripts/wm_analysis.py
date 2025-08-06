@@ -120,13 +120,15 @@ wm = models.WorldModel(env.observation_space_full, env.action_space, 0, config)
 
 config = tools.set_wm_name(config)
 
-ckpt_path = "logs/checkpoints_pa/encoder_gs_2_split_uni.pth"
+ckpt_path = "logs/checkpoints_pa/encoder_task_dubins-wm.pth"
 # ckpt_path = "logs/dreamer_dubins/dubins_mlp_obs_state_cnn_image_lz_None_sc_F_arrow_0.15/rssm_ckpt.pt"
 # checkpoint = torch.load(ckpt_path, weights_only=True)
 # state_dict = {
 #     k[14:]: v for k, v in checkpoint["agent_state_dict"].items() if "_wm" in k
 # }
 
+if not os.path.exists(ckpt_path):
+    raise ValueError(f"Checkpoint path {ckpt_path} does not exist!")
 wm.load_state_dict(torch.load(ckpt_path), strict=False)
 # wm.load_state_dict(state_dict, strict=False)
 wm.eval()

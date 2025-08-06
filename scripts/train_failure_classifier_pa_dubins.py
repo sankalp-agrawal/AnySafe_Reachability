@@ -126,18 +126,8 @@ def wandb_setup():
         #     if config.num_examples_per_class is not None
         #     else "all"
         # ),
-        "gs": config.grid_size,
-        "split": config.train_test_split,
+        "task": config.task,
     }
-    if config.pa["use_unlabeled_data"]:
-        wandb_name_kwargs["ul"] = "T"
-        wandb_name_kwargs["ul_ratio"] = (
-            config.unlabeled_ratio
-            if config.unlabeled_ratio != -1.0
-            else f"all_{config.ratio_schedule}"
-        )
-        wandb_name_kwargs["beta"] = config.beta
-        wandb_name_kwargs["temp"] = config.temp
 
     config.wandb_name = "".join(
         f"{key}_{value}_"
@@ -210,8 +200,8 @@ decoder = torch.nn.Sequential(
 ).to(device)
 
 offline_eps = collections.OrderedDict()
-config.pa["batch_size"] = 1
-config.pa["batch_length"] = 2
+# config.pa["batch_size"] = 1
+# config.pa["batch_length"] = 2
 tools.fill_expert_dataset_dubins(config, offline_eps, is_val_set=False)
 offline_dataset = make_dataset(offline_eps, config)
 train_len = len(offline_eps) // config.batch_length
@@ -275,8 +265,7 @@ for epoch in tqdm(range(0, config.pa["nb_epochs"]), desc="Training Epochs", posi
 
     losses_per_epoch = {
         "loss": [],
-        "pos_term": [],
-        "neg_term": [],
+        "mae_loss": [],
         # "ae_loss": [],
     }
     auc_per_epoch = []
@@ -317,7 +306,7 @@ for epoch in tqdm(range(0, config.pa["nb_epochs"]), desc="Training Epochs", posi
             # Normalize along the embedding dimension
             # (B T 512)
             sem_norm = F.normalize(
-                semantic_features[:].squeeze(1), p=2, dim=-1
+                semantic_features[:, :], p=2, dim=-1
             )  # Each row becomes unit norm
 
             sem_norm = einops.rearrange(sem_norm, "B T Z -> (B T) Z")
@@ -326,6 +315,7 @@ for epoch in tqdm(range(0, config.pa["nb_epochs"]), desc="Training Epochs", posi
 
             # loss is MSE between labels gt and cosine similarity
             loss = F.mse_loss(cos_sim, labels_gt).to(torch.float16)
+            loss_mae = F.l1_loss(cos_sim, labels_gt).to(torch.float16)
 
         # semantic_features = einops.rearrange(
         #     semantic_features.float(), "B T Z -> (B T) Z"
@@ -339,9 +329,7 @@ for epoch in tqdm(range(0, config.pa["nb_epochs"]), desc="Training Epochs", posi
         # torch.nn.utils.clip_grad_value_(criterion.parameters(), 10)
 
         losses_per_epoch["loss"].append(loss.data.cpu().numpy())
-        # losses_per_epoch["pos_term"].append(pos_term.data.cpu().numpy())
-        # losses_per_epoch["neg_term"].append(neg_term.data.cpu().numpy())
-        # losses_per_epoch["ae_loss"].append(ae_loss.data.cpu().numpy())
+        losses_per_epoch["mae_loss"].append(loss_mae.data.cpu().numpy())
         # auc_per_epoch.append(auc)
         opt.step()
 
@@ -391,7 +379,7 @@ for epoch in tqdm(range(0, config.pa["nb_epochs"]), desc="Training Epochs", posi
                 # labels_gt = data["label"].to(device, dtype=torch.float32)  # [B, 1]
                 state = torch.tensor(data["privileged_state"][:, :, :2]).to(
                     device
-                )  # [B, T, 2]
+                )  # [B, 1, 2]
                 state = einops.rearrange(state, "B T Z -> (B T) Z")  # [B*T, 2]
                 diff = state.unsqueeze(0) - state.unsqueeze(1)  # [B*T, B*T, 2]
                 dists = torch.norm(diff, dim=2)
@@ -400,7 +388,7 @@ for epoch in tqdm(range(0, config.pa["nb_epochs"]), desc="Training Epochs", posi
 
                 semantic_features, __ = model.semantic_embed(data)  # [B, 1, 512]
                 semantic_features = einops.rearrange(
-                    semantic_features, "B T Z -> (B T) Z"
+                    semantic_features[:, :], "B T Z -> (B T) Z"
                 )
 
                 # Normalize all vectors for cosine similarity

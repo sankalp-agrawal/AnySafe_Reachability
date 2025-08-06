@@ -1,3 +1,4 @@
+import re
 from collections import defaultdict
 from typing import Optional
 
@@ -9,12 +10,11 @@ from generate_data_traj_cont import get_frame
 from gymnasium import spaces
 from matplotlib import pyplot as plt
 from matplotlib.patches import Circle
-from skimage import measure
-
 from PyHJ.reach_rl_gym_envs.dubins import Dubins_Env
 from PyHJ.reach_rl_gym_envs.utils.dubins_gt_solver import DubinsHJSolver
 from PyHJ.reach_rl_gym_envs.utils.env_eval_utils import get_metrics
 from PyHJ.utils.eval_utils import evaluate_V, find_a
+from skimage import measure
 
 
 class Dubins_WM_Env(gym.Env):
@@ -181,7 +181,7 @@ class Dubins_WM_Env(gym.Env):
                 g_xList.append(outputs.detach().cpu().numpy())
 
             safety_margin = np.array(g_xList).reshape(-1)
-        elif self.safety_margin_type == "cosine_similarity":
+        elif self.safety_margin_type == "cos_sim":
             feat_sem = (
                 self.wm.semantic_encoder(feat.to(torch.float32)).detach().cpu().numpy()
             )
@@ -200,8 +200,11 @@ class Dubins_WM_Env(gym.Env):
                 )
                 metric = -numerator / (denominator + 1e-8)  # (B N)
                 metric = metric - self.config.safety_margin_threshold
-                # metric = np.tanh(3 * metric)
+                metric = np.tanh(20 * metric)
                 assert metric.ndim == 2, f"Expected dimension 2, got {metric.shape}"
+                assert metric.shape[1] == 1, (
+                    f"Expected second dimension 1, got {metric.shape[1]}"
+                )
                 safety_margin = np.min(metric, axis=-1)  # (B)
                 if self.config.safety_margin_hard_threshold:
                     safety_margin[safety_margin > 0] = 1.0
@@ -233,6 +236,58 @@ class Dubins_WM_Env(gym.Env):
                 constraint_state = np.array([0.0, 0.0, 0.0])
                 gt_constraint = np.array([0.0, 0.0, 0.5, 1.0])
                 return constraint_state, gt_constraint
+
+        elif bool(re.fullmatch(r"c\d{3}", env_dist_type)):
+            # e.g., c001, c002, ..., c999
+            match = re.fullmatch(r"c(\d{3})", env_dist_type)
+            N = int(match.group(1))
+            k = int(np.sqrt(N))
+            assert k * k == N, "N must be a perfect square"
+
+            # Generate 1D coordinates (inclusive of edges)
+            coords = np.linspace(0, 1, k)
+
+            # Create 2D grid
+            X, Y = np.meshgrid(coords, coords)
+
+            # Stack into (N, 2) array of (x, y) pairs
+            centers = np.stack([X.ravel(), Y.ravel()], axis=-1)
+
+            radius = 0.5
+            theta = 0
+
+            if in_distribution:
+                i = np.random.randint(0, len(centers))
+                center = centers[i]
+                # constraint state is a random state in the circle
+
+                constraint_state = np.array(
+                    [
+                        center[0],
+                        center[1],
+                        theta,
+                    ]
+                )
+                gt_constraint = np.array(
+                    [constraint_state[0], constraint_state[1], radius, 1.0]
+                )
+            else:  # Out of distribution
+                state = np.random.uniform(-1.0, 1.0, size=2)
+                gt_constraint = np.array([state[0], state[1], radius, 1.0])
+
+                if self.config.pass_prototype:
+                    # NOTE: Using prototype, find closest center and pass this to value function
+                    dists = np.linalg.norm(
+                        einops.repeat(state, "D -> B D", B=centers.shape[0])
+                        - centers[:, :2],
+                        axis=1,
+                    )
+                    closest_center = centers[np.argmin(dists)]
+                    constraint_state = np.array(
+                        [closest_center[0], closest_center[1], theta]
+                    )
+                else:
+                    constraint_state = np.array([state[0], state[1], theta])
 
         elif env_dist_type == "4c":  # four circles
             centers = [
@@ -546,9 +601,8 @@ class Dubins_WM_Env(gym.Env):
                     "is_first": firsts[i * bs : (i + 1) * bs],
                     "is_terminal": lasts[i * bs : (i + 1) * bs],
                 }
-            with torch.no_grad():
-                data = wm.preprocess(data)
-                embeds = wm.encoder(data)
+            data = wm.preprocess(data)
+            embeds = wm.encoder(data)
             if i == 0:
                 embed = embeds
             else:
@@ -561,11 +615,10 @@ class Dubins_WM_Env(gym.Env):
             "is_first": firsts,
             "is_terminal": lasts,
         }
-        with torch.no_grad():
-            data = wm.preprocess(data)
-            post, _ = wm.dynamics.observe(embed, data["action"], data["is_first"])
+        data = wm.preprocess(data)
+        post, _ = wm.dynamics.observe(embed, data["action"], data["is_first"])
 
-            feat = wm.dynamics.get_feat(post).detach()
+        feat = wm.dynamics.get_feat(post).detach()
         if compute_lz:
             lz, __ = self.safety_margin(feat)  # lz is the safety margin
             return feat.squeeze().cpu().numpy(), np.array(lz)
@@ -574,7 +627,7 @@ class Dubins_WM_Env(gym.Env):
 
     def get_eval_plot(self, cache, thetas, policy, config, in_distribution=True):
         nx, ny, nt = config.nx, config.ny, config.nt
-        show_constraint = self.safety_margin_type == "cosine_similarity"
+        show_constraint = self.safety_margin_type == "cos_sim"
         if show_constraint:
             fig1, axes1 = plt.subplots(
                 3, len(thetas) + 1, figsize=(3 * (len(thetas) + 1), 10)

@@ -237,14 +237,14 @@ for iter in range(warmup + total_eps):
 
     # import pdb; pdb.set_trace()
     result = offpolicy_trainer(
-        policy,
-        train_collector,
-        test_collector,
-        1,
-        steps,  # steps per epoch
-        8,  # step per collect
-        1,  # test num
-        512,  # batch size
+        policy=policy,
+        train_collector=train_collector,
+        test_collector=test_collector,
+        max_epoch=1,
+        step_per_epoch=steps,  # steps per epoch
+        step_per_collect=8,  # step per collect
+        episode_per_test=1,  # test num
+        batch_size=512,  # batch size
         update_per_step=0.125,
         stop_fn=stop_fn,
         save_best_fn=save_best_fn,

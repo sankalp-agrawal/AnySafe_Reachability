@@ -72,10 +72,23 @@ class WorldModel(nn.Module):
             device=config.device,
             name="Margin",
         )
+        # self.semantic_encoder = nn.Sequential(
+        #     nn.Linear(feat_size, 512),
+        #     nn.LayerNorm(512),
+        #     nn.SiLU(),
+        #     nn.Linear(512, 512),
+        #     nn.SiLU(),
+        #     nn.Linear(512, 512),
+        # )
+
         self.semantic_encoder = nn.Sequential(
-            nn.Linear(feat_size, feat_size),
-            nn.ReLU(),
-            nn.Linear(feat_size, 512),
+            nn.Linear(544, 512, bias=False),
+            nn.LayerNorm(512, eps=0.001, elementwise_affine=True),
+            nn.SiLU(),
+            nn.Linear(512, 512, bias=False),
+            nn.LayerNorm(512, eps=0.001, elementwise_affine=True),
+            nn.SiLU(),
+            nn.Linear(512, 512, bias=False),
         )
 
         self.proxies = nn.Parameter(torch.randn(self.nb_classes, 512).cuda())

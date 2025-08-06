@@ -14,8 +14,7 @@ sys.path.append(parent_dir)
 
 # Import custom modules
 from dino_wm.dino_decoder import VQVAE
-from dino_wm.dino_models import VideoTransformer, normalize_acs
-from dino_wm.proxy_anchor.utils import load_state_dict_flexible
+from dino_wm.dino_models import VideoTransformer, normalize_acs, select_xyyaw_from_state
 from torchvision import transforms
 from tqdm import tqdm
 
@@ -49,7 +48,9 @@ def data_from_traj(traj):
     data["cam_zed_embd"] = torch.tensor(
         np.array(traj["cam_zed_embd"][:]), dtype=torch.float32
     )
-    data["state"] = torch.tensor(np.array(traj["states"][:]), dtype=torch.float32)
+    data["state"] = torch.tensor(
+        np.array(select_xyyaw_from_state(traj["states"][:])), dtype=torch.float32
+    )
     data["action"] = torch.tensor(np.array(traj["actions"][:]), dtype=torch.float32)
     if "labels" in traj.keys():
         data["failure"] = torch.tensor(np.array(traj["labels"][:]), dtype=torch.float32)
@@ -170,7 +171,7 @@ if __name__ == "__main__":
         image_size=(224, 224),
         dim=384,
         ac_dim=10,
-        state_dim=8,
+        state_dim=3,
         depth=6,
         heads=16,
         mlp_dim=2048,
@@ -178,9 +179,9 @@ if __name__ == "__main__":
         dropout=0.1,
     ).to(device)
     # load_state_dict_flexible(transition, "../checkpoints_pa/encoder_0.1.pth")
-    load_state_dict_flexible(transition, "../checkpoints/best_testing.pth")
+    # load_state_dict_flexible(transition, "../checkpoints/best_testing.pth")
 
-    # transition.load_state_dict(torch.load("../checkpoints/best_classifier.pth"))
+    transition.load_state_dict(torch.load("../checkpoints/best_classifier.pth"))
     transition.eval()
 
     decoder = VQVAE().to(device)
@@ -193,33 +194,34 @@ if __name__ == "__main__":
     ):
         save_path = f"results/output_video_{traj_id}.mp4"
         with torch.no_grad():
+            H = BL - 1
             data = database[traj_id]
             start_idx = data["index"] - EVAL_H // 2
-            # H: 3, EVAL_H: 64
-            # eval_data1: [1 64 N P]
+            # H: 3, EVAL_H: 16
+            # eval_data1: [1 EVAL_H N P]
             eval_data1 = data["cam_zed_embd"][start_idx : start_idx + EVAL_H].to(device)
             # inputs1: [1 H N P]
-            inputs1 = eval_data1[0 : BL - 1].unsqueeze(0).to(device)
+            inputs1 = eval_data1[0:H].unsqueeze(0).to(device)
 
-            # all_acs: [1 64 A]
+            # all_acs: [1 EVAL_H A]
             all_acs = (
                 data["action"][start_idx : start_idx + EVAL_H].unsqueeze(0).to(device)
             )
             all_acs = normalize_acs(all_acs, device)
 
             # acs: [1 H A]
-            acs = data["action"][start_idx : BL + start_idx - 1].unsqueeze(0).to(device)
+            acs = data["action"][start_idx : H + start_idx].unsqueeze(0).to(device)
             acs = normalize_acs(acs, device)
 
             # inputs_states: [1 H S]
             inputs_states = (
-                data["state"][start_idx : BL + start_idx - 1].unsqueeze(0).to(device)
+                data["state"][start_idx : H + start_idx].unsqueeze(0).to(device)
             )
             im1s = (
-                data["agentview_image"][start_idx : BL + start_idx].squeeze().to(device)
+                data["agentview_image"][start_idx : H + start_idx].squeeze().to(device)
                 / 255.0
             )
-            for k in range(EVAL_H - BL):
+            for k in range(EVAL_H - H):
                 # inputs1: [1 H N P], inputs_states: [1 H S], acs: [1 H A]
                 pred1, pred_state, _, ___ = transition(inputs1, inputs_states, acs)
 
@@ -236,7 +238,7 @@ if __name__ == "__main__":
                 acs = torch.cat(
                     [
                         acs[[0], 1:],
-                        all_acs[0, BL + k].unsqueeze(0).unsqueeze(0),
+                        all_acs[0, H + k].unsqueeze(0).unsqueeze(0),
                     ],
                     dim=1,
                 )
@@ -263,7 +265,23 @@ if __name__ == "__main__":
             vid = (vid * 255).clip(0, 255).astype(np.uint8)
             # vid = einops.rearrange(vid, "t h w c -> t c h w")
 
+        # Accuracy Metrics
+        state_mse = torch.mean((inputs_states - states) ** 2)
+        vid_mse = torch.mean(
+            (
+                im1s
+                - data["agentview_image"][start_idx : EVAL_H + start_idx]
+                .squeeze()
+                .to(device)
+                / 255.0
+            )
+            ** 2
+        )
+
+        print(f"State MSE: {state_mse.item():.4f}, Image MSE: {vid_mse.item():.4f}")
+
         # Save video/gif
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
         imageio.mimsave(save_path, vid, fps=10)
+        print(f"Saved to {save_path}")
         print(f"Saved to {save_path}")

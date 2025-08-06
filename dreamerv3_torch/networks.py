@@ -129,9 +129,9 @@ class RSSM(nn.Module):
         embed, action, is_first = swap(embed), swap(action), swap(is_first)
         # prev_state[0] means selecting posterior of return(posterior, prior) from obs_step
 
-        # Implement rolled action # TODO: think more about action rolling
-        # rolled_action = torch.cat([action[-1:, :], action[:-1, :]], dim=0)
-        rolled_action = action
+        # Implement rolled action
+        rolled_action = torch.cat([action[-1:, :], action[:-1, :]], dim=0)
+        # rolled_action = action
 
         post, prior = tools.static_scan(
             lambda prev_state, prev_act, embed, is_first: self.obs_step(

@@ -15,6 +15,7 @@ class SplitTrajectoryDataset(Dataset):
         num_test=100,
         provide_labels=True,
         num_examples_per_class=None,
+        only_pass_labeled_examples=False,
     ):
         """
         Custom Dataset that can load either the first 1000 trajectories or the rest.
@@ -51,6 +52,8 @@ class SplitTrajectoryDataset(Dataset):
             with h5py.File(self.hdf5_file, "r") as hf:
                 for traj_id in self.trajectory_ids:
                     trajectory = hf[traj_id]
+                    if "labels" not in trajectory.keys() and only_pass_labeled_examples:
+                        continue
                     traj_len = len(trajectory["actions"])
                     for start_idx in range(0, traj_len - self.segment_length + 1, 1):
                         self.slice_indices.append((traj_id, start_idx))
@@ -60,9 +63,6 @@ class SplitTrajectoryDataset(Dataset):
             with h5py.File(self.hdf5_file, "r") as hf:
                 for traj_id in self.trajectory_ids:
                     for t, label in enumerate(hf[traj_id]["labels"][:]):
-                        if label == 2:
-                            label = 1  # Convert label 2 to 1 # TODO: Change this for general case
-
                         if label not in data_base:
                             data_base[label] = []
 
@@ -129,6 +129,10 @@ class SplitTrajectoryDataset(Dataset):
                     np.array(trajectory["labels"][start_idx:end_idx]),
                     dtype=torch.float32,
                 )
+            # elif "labels" not in trajectory.keys() and self.provide_labels:
+            #     segment_obs_tensor["failure"] = (  # Dummy labels if not present
+            #         torch.ones_like(segment_obs_tensor["action"][:, 0]) * -2.0
+            #     )
             segment_obs_tensor["is_first"] = torch.zeros(self.segment_length)
             segment_obs_tensor["is_last"] = torch.zeros(self.segment_length)
             segment_obs_tensor["is_first"][0] = 1.0

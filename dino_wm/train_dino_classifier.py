@@ -5,7 +5,7 @@ import numpy as np
 import torch
 import wandb
 from dino_decoder import VQVAE
-from dino_models import VideoTransformer, normalize_acs
+from dino_models import VideoTransformer, normalize_acs, select_xyyaw_from_state
 from einops import rearrange
 from test_loader import SplitTrajectoryDataset
 from torch.optim import AdamW
@@ -48,13 +48,11 @@ norm_transform = transforms.Normalize(
 
 
 def fail_loss(pred, fail_data):
-    safe_data = torch.where(fail_data == 0.0)
-    unsafe_data = torch.where(fail_data == 1.0)
-    unsafe_data_weak = torch.where(fail_data == 2.0)
+    safe_data = torch.where(fail_data != -1.0)
+    unsafe_data = torch.where(fail_data == -1.0)
 
     pos = pred[safe_data]
     neg = pred[unsafe_data]
-    neg_weak = pred[unsafe_data_weak]
 
     gamma = 0.75
     lx_loss = (
@@ -65,11 +63,6 @@ def fail_loss(pred, fail_data):
     lx_loss += (
         (1 / neg.size(0)) * torch.sum(torch.relu(gamma + neg))
         if neg.size(0) > 0
-        else 0.0
-    )  # penalizes unsafe for being positive
-    lx_loss += (
-        (1 / neg_weak.size(0)) * torch.sum(torch.relu(neg_weak))
-        if neg_weak.size(0) > 0
         else 0.0
     )  # penalizes unsafe for being positive
 
@@ -95,12 +88,14 @@ if __name__ == "__main__":
     hdf5_file = "/home/sunny/data/sweeper/train/consolidated.h5"
     hdf5_file_test = "/home/sunny/data/sweeper/test/consolidated.h5"
 
-    expert_data = SplitTrajectoryDataset(hdf5_file, BL, split="train", num_test=0)
+    expert_data = SplitTrajectoryDataset(
+        hdf5_file, BL, split="train", num_test=0, only_pass_labeled_examples=True
+    )
     expert_data_eval = SplitTrajectoryDataset(
-        hdf5_file_test, BL, split="test", num_test=5
+        hdf5_file_test, BL, split="test", num_test=5, only_pass_labeled_examples=True
     )
     expert_data_imagine = SplitTrajectoryDataset(
-        hdf5_file_test, 32, split="test", num_test=5
+        hdf5_file_test, 32, split="test", num_test=5, only_pass_labeled_examples=True
     )
 
     expert_loader = iter(DataLoader(expert_data, batch_size=BS, shuffle=True))
@@ -119,7 +114,7 @@ if __name__ == "__main__":
         image_size=(224, 224),
         dim=384,  # DINO feature dimension
         ac_dim=10,  # Action embedding dimension
-        state_dim=8,  # State dimension
+        state_dim=3,  # State dimension
         depth=6,
         heads=16,
         mlp_dim=2048,
@@ -141,7 +136,7 @@ if __name__ == "__main__":
     # inputs2 = data2[:, :-1]
     # output2 = data2[:, 1:]
 
-    data_state = data["state"].to(device)
+    data_state = select_xyyaw_from_state(data["state"].to(device))
     states = data_state[:, :-1]
     output_state = data_state[:, 1:]
 
@@ -183,7 +178,7 @@ if __name__ == "__main__":
         # inputs2 = data2[:, :-1]
         # output2 = data2[:, 1:]
 
-        data_state = data["state"].to(device)
+        data_state = select_xyyaw_from_state(data["state"].to(device))
         states = data_state[:, :-1]
         output_state = data_state[:, 1:]
 
@@ -223,7 +218,7 @@ if __name__ == "__main__":
                 all_acs = normalize_acs(all_acs, device)
                 acs = eval_data["action"][[0], :H].to(device)
                 acs = normalize_acs(acs, device)
-                states = eval_data["state"][[0], :H].to(device)
+                states = select_xyyaw_from_state(eval_data["state"][[0], :H].to(device))
                 im1s = (
                     eval_data["agentview_image"][[0], :H].squeeze().to(device) / 255.0
                 )
@@ -287,7 +282,7 @@ if __name__ == "__main__":
                 inputs1 = data1[:, :-1]
                 output1 = data1[:, 1:]
 
-                data_state = eval_data["state"].to(device)
+                data_state = select_xyyaw_from_state(eval_data["state"].to(device))
                 states = data_state[:, :-1]
                 output_state = data_state[:, 1:]
 

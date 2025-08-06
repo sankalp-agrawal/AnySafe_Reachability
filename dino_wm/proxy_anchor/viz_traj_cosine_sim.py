@@ -18,8 +18,7 @@ sys.path.append(parent_dir)
 
 # Import custom modules
 from dino_wm.dino_decoder import VQVAE
-from dino_wm.dino_models import VideoTransformer, normalize_acs
-from dino_wm.proxy_anchor.utils import load_state_dict_flexible
+from dino_wm.dino_models import VideoTransformer, normalize_acs, select_xyyaw_from_state
 from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 from PyHJ.exploration import GaussianNoise
 from PyHJ.utils.net.common import Net
@@ -310,11 +309,12 @@ if __name__ == "__main__":
         }
 
     BL = 4
+    open_loop = True
     transition = VideoTransformer(
         image_size=(224, 224),
         dim=384,
         ac_dim=10,
-        state_dim=8,
+        state_dim=3,
         depth=6,
         heads=16,
         mlp_dim=2048,
@@ -322,11 +322,9 @@ if __name__ == "__main__":
         dropout=0.1,
     ).to(device)
     # load_state_dict_flexible(transition, "../checkpoints_pa/encoder_0.1.pth")
-    load_state_dict_flexible(
-        transition, "../checkpoints_pa/encoder_mrg_0.1_alpha_32_num_ex_all_ul_F.pth"
-    )
+    # load_state_dict_flexible(transition, "../checkpoints/best_testing.pth")
 
-    # transition.load_state_dict(torch.load("../checkpoints/best_classifier.pth"))
+    transition.load_state_dict(torch.load("../checkpoints/best_classifier.pth"))
     transition.eval()
 
     actor_activation = torch.nn.ReLU
@@ -412,7 +410,9 @@ if __name__ == "__main__":
         )
         # acs = data["action"][t, :].to(device).unsqueeze(0)
         # acs = normalize_acs(acs, device=device)
-        states = data["state"][[t], :].to(device).unsqueeze(0)  # [1, 1, 8]
+        states = select_xyyaw_from_state(
+            data["state"][[t], :].to(device).unsqueeze(0)
+        )  # [1, 1, 3]
 
         semantic_feature = transition.semantic_embed(  # [embedding_dim]
             inp1=inputs1, state=states
@@ -426,6 +426,7 @@ if __name__ == "__main__":
         data = database[traj_id]
 
         none_list = [-1.0 for _ in range(BL - 1)]
+
         output_dict = {
             # "imgs_wrist": [],
             "imgs_front": [
@@ -439,7 +440,7 @@ if __name__ == "__main__":
             "cosine_sim_const2": copy.deepcopy(none_list),
             # "value_fn_ken": copy.deepcopy(none_list),
             # "value_fn": copy.deepcopy(none_list),
-            "gt_fail_label": [1 - (2 * label) for label in data["failure"][:]],
+            "gt_fail_label": -1 + 2 * (data["failure"][:] != -1.0) * 1.0,
         }
         output = {
             "imagination": copy.deepcopy(output_dict),
@@ -456,7 +457,9 @@ if __name__ == "__main__":
         # all_acs: [1 64 A]
         all_acs = data["action"][:].unsqueeze(0).to(device)
         all_acs = normalize_acs(all_acs, device)
-        inputs_states = data["state"][0 : BL - 1, :].to(device).unsqueeze(0)
+        inputs_states = select_xyyaw_from_state(
+            data["state"][0 : BL - 1, :].to(device)
+        ).unsqueeze(0)
 
         # Imagination Loop
         for t in tqdm(
@@ -503,22 +506,26 @@ if __name__ == "__main__":
                     acs = torch.cat(
                         [
                             acs[[0], 1:],
-                            all_acs[0, BL + t].unsqueeze(0).unsqueeze(0),
+                            all_acs[0, BL - 1 + t].unsqueeze(0).unsqueeze(0),
                         ],
                         dim=1,
                     )
                 # inputs1: [1 H N P]
-                # inputs1 = torch.cat(
-                #     [inputs1[[0], 1:], pred1[:, -1].unsqueeze(1)], dim=1
-                # )
-                inputs1 = (
-                    data["cam_zed_embd"][t : t + BL - 1, :].to(device).unsqueeze(0)
-                )
                 # inputs_states: [1 H S]
-                # states = torch.cat(
-                #     [inputs_states[[0], 1:], pred_state[:, -1].unsqueeze(1)], dim=1
-                # )
-                inputs_states = data["state"][t : t + BL - 1, :].to(device).unsqueeze(0)
+                if open_loop:
+                    inputs1 = torch.cat(
+                        [inputs1[[0], 1:], pred1[:, -1].unsqueeze(1)], dim=1
+                    )
+                    states = torch.cat(
+                        [inputs_states[[0], 1:], pred_state[:, -1].unsqueeze(1)], dim=1
+                    )
+                else:
+                    inputs1 = (
+                        data["cam_zed_embd"][t : t + BL - 1, :].to(device).unsqueeze(0)
+                    )
+                    inputs_states = select_xyyaw_from_state(
+                        data["state"][t : t + BL - 1, :].to(device).unsqueeze(0)
+                    )
 
             # pred1_img: [1, H, W, C]
             output["imagination"]["imgs_front"].append(
@@ -576,7 +583,9 @@ if __name__ == "__main__":
 
             # input2_gt = data["cam_rs_embd"][[t + BL - 1], :].to(device).unsqueeze(0)
             input1_gt = data["cam_zed_embd"][[t + BL - 1], :].to(device).unsqueeze(0)
-            state_gt = data["state"][[t + BL - 1], :].to(device).unsqueeze(0)
+            state_gt = select_xyyaw_from_state(
+                data["state"][[t + BL - 1], :].to(device)
+            ).unsqueeze(0)
 
         lengths = [
             len(output["imagination"][key]) for key in output["imagination"].keys()
@@ -589,7 +598,9 @@ if __name__ == "__main__":
         inputs1 = data["cam_zed_embd"][0 : BL - 1, :].to(device).unsqueeze(0)
         acs = data["action"][0 : BL - 1, :].to(device).unsqueeze(0)
         acs = normalize_acs(acs, device=device)
-        states = data["state"][0 : BL - 1, :].to(device).unsqueeze(0)
+        states = select_xyyaw_from_state(
+            data["state"][0 : BL - 1, :].to(device).unsqueeze(0)
+        )
 
         output["ground_truth"]["imgs_front"] = [
             img for img in data["agentview_image"][:].cpu().numpy()
@@ -607,7 +618,7 @@ if __name__ == "__main__":
                     assert inputs1.shape == (1, BL - 1, 256, 384), (
                         f"Inputs1 shape mismatch, got {inputs1.shape}"
                     )
-                    assert states.shape == (1, BL - 1, 8), (
+                    assert states.shape == (1, BL - 1, 3), (
                         f"States shape mismatch, got {states.shape}"
                     )
                     semantic_features = transition.semantic_embed(
@@ -638,7 +649,9 @@ if __name__ == "__main__":
             inputs1 = data["cam_zed_embd"][t : t + BL - 1, :].to(device).unsqueeze(0)
             acs = data["action"][t : t + BL - 1, :].to(device).unsqueeze(0)
             acs = normalize_acs(acs, device=device)
-            states = data["state"][t : t + BL - 1, :].to(device).unsqueeze(0)
+            states = select_xyyaw_from_state(
+                data["state"][t : t + BL - 1, :].to(device)
+            ).unsqueeze(0)
 
             # pred_fail: [1 (T-1), 1] -> [1]
             ken_fail = pred_fail.squeeze().cpu().numpy()[-1]
@@ -689,7 +702,7 @@ if __name__ == "__main__":
 
         line_keys = [
             "ken_fail",
-            "cosine_sim_prox",
+            # "cosine_sim_prox",
             # "cosine_sim_const1",
             # "cosine_sim_const2",
             # "value_fn",

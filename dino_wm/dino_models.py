@@ -51,15 +51,21 @@ def batch_rotvec_to_quat(rotvecs):
     return quaternions
 
 
+def select_xyyaw_from_state(state):
+    """Select x, y, yaw from the state."""
+    # Assuming state is of shape [B, T, 8] where last dimension is [x, y, z, qx, qy, qz, qw, gripper]
+    return state[..., [0, 1, 5]]
+
+
 def normalize_acs(acs, device="cuda:0"):
-    max_ac = torch.tensor(
-        [0.89928758, 0.71893158, 0.69869383, 0.32456627, 0.51343921, 0.28401476, 1.0]
-    ).to(device)
-    min_ac = torch.tensor(
-        [-0.78933347, -1.0, -0.95038878, -0.3243517, -0.30636792, -0.30071826, -1.0]
-    ).to(device)
+    assert acs.shape[-1] == 7, "Actions should have 7 dimensions"
+    max_ac = torch.tensor([1.0, 1.0, 0.0, 0.0, 0.0, 0.8750, 1.0]).to(device)
+    min_ac = torch.tensor([-1.0, -1.0, 0.0, 0.0, 0.0, -0.8967, 1.0]).to(device)
 
     norm_acs = (acs - min_ac) / (max_ac - min_ac)
+
+    # Only get (x, y, yaw)
+    norm_acs = norm_acs[..., [0, 1, 5]]
 
     return norm_acs
 
@@ -291,7 +297,7 @@ class VideoTransformer(nn.Module):
 
         # Improved action embedding
         self.action_encoder = nn.Sequential(
-            nn.Linear(7, 128),
+            nn.Linear(3, 128),
             nn.LayerNorm(128),
             nn.ReLU(),
             nn.Dropout(0.1),

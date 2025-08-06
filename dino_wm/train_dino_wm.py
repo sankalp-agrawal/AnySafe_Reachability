@@ -5,7 +5,7 @@ import numpy as np
 import torch
 import wandb
 from dino_decoder import VQVAE
-from dino_models import VideoTransformer, normalize_acs
+from dino_models import VideoTransformer, normalize_acs, select_xyyaw_from_state
 from einops import rearrange
 from test_loader import SplitTrajectoryDataset
 from torch import nn
@@ -15,7 +15,6 @@ from torchvision import transforms
 from tqdm import tqdm
 
 dino = torch.hub.load("facebookresearch/dinov2", "dinov2_vits14_reg")
-
 
 transform = transforms.Compose(
     [
@@ -56,7 +55,9 @@ if __name__ == "__main__":
     hdf5_file = "/home/sunny/data/sweeper/train/consolidated.h5"
     hdf5_file_test = "/home/sunny/data/sweeper/test/consolidated.h5"
 
-    expert_data = SplitTrajectoryDataset(hdf5_file, BL, split="train", num_test=0)
+    expert_data = SplitTrajectoryDataset(
+        hdf5_file, BL, split="train", num_test=0, provide_labels=False
+    )
     expert_data_eval = SplitTrajectoryDataset(
         hdf5_file_test, BL, split="test", num_test=467
     )
@@ -80,7 +81,7 @@ if __name__ == "__main__":
         image_size=(224, 224),
         dim=384,  # DINO feature dimension
         ac_dim=10,  # Action embedding dimension
-        state_dim=8,  # State dimension
+        state_dim=3,  # State dimension
         depth=6,
         heads=16,
         mlp_dim=2048,
@@ -141,7 +142,9 @@ if __name__ == "__main__":
         # output2 = data2[:, 1:]
 
         # data_state: [B T S] S - state dimension
-        data_state = data["state"].to(device)  # Robot Joint States
+        data_state = select_xyyaw_from_state(
+            data["state"].to(device)
+        )  # Robot Joint States
         inputs_states = data_state[:, :-1]  # Inputs are all but last state
         output_state = data_state[:, 1:]  # Outputs are all but first state
 
@@ -226,7 +229,9 @@ if __name__ == "__main__":
                 acs = normalize_acs(acs, device)
 
                 # inputs_states: [1 H S]
-                inputs_states = eval_data["state"][[0], :H].to(device)
+                inputs_states = select_xyyaw_from_state(
+                    eval_data["state"][[0], :H].to(device)
+                )
                 im1s = (
                     eval_data["agentview_image"][[0], :H].squeeze().to(device) / 255.0
                 )
@@ -272,7 +277,7 @@ if __name__ == "__main__":
                 inputs1 = data1[:, :-1]
                 output1 = data1[:, 1:]
 
-                data_state = eval_data["state"].to(device)
+                data_state = select_xyyaw_from_state(eval_data["state"].to(device))
                 states = data_state[:, :-1]
                 output_state = data_state[:, 1:]
 
