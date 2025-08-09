@@ -32,11 +32,14 @@ crop_transform = transforms.Compose(
 
 
 def on_key_press(event):
-    global current_idx, sep_labels
+    global current_idx
 
     # Label images with '0', '1' or '2'
-    if event.key in {"0", "1"}:
-        labels[current_idx] = int(event.key)
+    if event.key in {"0", "1", "2", '3'}:
+        if int(event.key) == 0:
+            labels[current_idx] = -1
+        else:
+            labels[current_idx] = int(event.key)
         print(f"Image {current_idx} labeled as {labels[current_idx]}")
 
         # Move to the next image
@@ -78,6 +81,8 @@ def update_plot():
 
     width = images[current_idx].shape[1]
     third = width // 3
+    ax.axvline(x=third, color="red", linestyle="--")
+    ax.axvline(x=2 * third, color="red", linestyle="--")
 
     ax.axis("off")
     fig.canvas.draw()
@@ -161,8 +166,8 @@ def postprocess_trajectory(traj_file, labels, label_type):
 plt.ion()
 
 if __name__ == "__main__":
-    directory = "/home/sunny/data/sweeper/test/optimal"
-    label_type = "separated_label"
+    directory = "/home/sunny/data/sweeper/train/optimal"
+    label_type = "label"
     reset_regardless_of_label = False
     start_idx = 0
     # Get all pickle files with "unsafe" in the filename
@@ -211,7 +216,6 @@ if __name__ == "__main__":
             key_press_cid = fig.canvas.mpl_connect("key_press_event", on_key_press)
             print(f"Press '0' as not divided or '1' as divided to label {traj_file}.")
             plt.show(block=True)
-            
 
         postprocess_trajectory(traj_file, labels, label_type=label_type)
         don += 1

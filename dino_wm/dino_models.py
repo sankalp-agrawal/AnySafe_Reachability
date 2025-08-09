@@ -287,6 +287,7 @@ class VideoTransformer(nn.Module):
         dropout: float = 0.0,
         emb_dropout: float = 0.0,
         device: str = "cuda",
+        nb_classes: int = 3,
     ):
         super().__init__()
 
@@ -341,6 +342,13 @@ class VideoTransformer(nn.Module):
             nn.Linear(total_dim, total_dim),
             nn.ReLU(),
             nn.Linear(total_dim, 1),
+        )
+
+        self.multi_class_head = nn.Sequential(
+            LayerNorm(total_dim),
+            nn.Linear(total_dim, total_dim),
+            nn.ReLU(),
+            nn.Linear(total_dim, 3),
         )
 
         semantic_dim = dim + state_dim

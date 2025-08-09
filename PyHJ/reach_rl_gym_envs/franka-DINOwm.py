@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 sys.path.append(parent_dir)
 
-from dino_wm.dino_models import normalize_acs
+from dino_wm.dino_models import normalize_acs, select_xyyaw_from_state
 
 
 class Franka_DINOWM_Env(gym.Env):
@@ -21,14 +21,27 @@ class Franka_DINOWM_Env(gym.Env):
         self.device = device
         self.set_wm(*params)
 
-        self.observation_space = spaces.Box(
-            low=-np.inf, high=np.inf, shape=(1, 1, 786), dtype=np.float32
+        self.observation_space = spaces.Dict(
+            {
+                "state": spaces.Box(
+                    low=-np.inf,
+                    high=np.inf,
+                    shape=(397,),
+                    dtype=np.float32,
+                ),
+                "constraints": spaces.Box(
+                    low=-np.inf,
+                    high=np.inf,
+                    shape=(512 + 1,),
+                    dtype=np.float32,
+                ),
+            }
         )
-        self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(7,), dtype=np.float32)
+        self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(3,), dtype=np.float32)
         self.front_hist = None
-        self.wrist_hist = None
         self.state_hist = None
-        self.constraint = constraint
+        self.constraint_type = "prox"  # "prox" - proxies, "state" - state
+        self.select_constraint()
 
     def _reset_loader(self):
         self.data = iter(DataLoader(self.dataset, batch_size=1, shuffle=True))
@@ -45,26 +58,36 @@ class Franka_DINOWM_Env(gym.Env):
 
         self.ac_hist = torch.cat([self.ac_hist[:, 1:], ac_torch], dim=1)
         rew = np.inf
+        # Latent: [1 T N Z]
         latent = self.wm.forward_features(
-            self.front_hist, self.wrist_hist, self.state_hist, self.ac_hist
+            self.front_hist, self.state_hist, self.ac_hist
         )
 
-        inp1, inp2, state = (
+        # inp1: [1 T N S], state: [1 T 3]
+        inp1, state = (
             self.wm.front_head(latent),
-            self.wm.wrist_head(latent),
             self.wm.state_pred(latent),
         )
         self.front_hist = torch.cat([self.front_hist[:, 1:], inp1[:, [-1]]], dim=1)
-        self.wrist_hist = torch.cat([self.wrist_hist[:, 1:], inp2[:, [-1]]], dim=1)
         self.state_hist = torch.cat([self.state_hist[:, 1:], state[:, [-1]]], dim=1)
 
         rew = self.safety_margin_pa(latent)  # rew is negative if unsafe
         # rew = self.safety_margin_ken(latent)  # rew is negative if unsafe
-        self.latent = latent[:, [-1]].mean(dim=2).detach().cpu().numpy()
+        self.latent = latent.detach().cpu().numpy()
         terminated = False
         truncated = False
         info = {"is_first": False, "is_terminal": terminated}
-        return np.copy(self.latent), rew, terminated, truncated, info
+        obs = {
+            "state": np.copy(self.latent)[:, -1].mean(axis=-2).flatten(),
+            "constraints": self.constraint["semantic_feat"].cpu().numpy(),
+        }
+        assert obs["state"].shape == self.observation_space["state"].shape, (
+            "State shape mismatch with observation space, got {}."
+        ).format(obs["state"].shape)
+        assert (
+            obs["constraints"].shape == self.observation_space["constraints"].shape
+        ), "Constraint shape mismatch with observation space."
+        return obs, rew, terminated, truncated, info
 
     def reset(
         self,
@@ -80,29 +103,46 @@ class Franka_DINOWM_Env(gym.Env):
             # Reset the DataLoader and reshuffle
             self._reset_loader()
             data = next(self.data)
-        inputs2 = data["cam_rs_embd"][[0], :].to(self.device)
+
+        # inputs1: [1 T N P], acs: [1 T 3], states: [1 T 3]
         inputs1 = data["cam_zed_embd"][[0], :].to(self.device)
         acs = data["action"][[0], :].to(self.device)
         acs = normalize_acs(acs, device=self.device)
-        states = data["state"][[0], :].to(self.device)
+        states = select_xyyaw_from_state(data["state"][[0], :]).to(self.device)
 
-        self.latent = self.wm.forward_features(inputs1, inputs2, states, acs)[:, [0]]
-        inp1, inp2, state = (
+        # [1 T N Z]
+        self.latent = self.wm.forward_features(inputs1, states, acs)
+        # inp1: [1 T N S], state: [1 T 3]
+        inp1, state = (
             self.wm.front_head(self.latent),
-            self.wm.wrist_head(self.latent),
             self.wm.state_pred(self.latent),
         )
+        # front_hist: [1 T N P], state_hist: [1 T 3], ac_hist: [1 T 3]
         self.front_hist = torch.cat([inputs1[:, 1:], inp1[:, [-1]]], dim=1)
-        self.wrist_hist = torch.cat([inputs2[:, 1:], inp2[:, [-1]]], dim=1)
         self.state_hist = torch.cat([states[:, 1:], state[:, [-1]]], dim=1)
         self.ac_hist = acs
 
-        return np.copy(self.latent.mean(dim=2).detach().cpu().numpy()), {
+        self.select_constraint()
+
+        obs = {
+            "state": np.copy(
+                self.latent[:, -1].mean(dim=-2).flatten().detach().cpu().numpy()
+            ),
+            "constraints": self.constraint["semantic_feat"].cpu().numpy(),
+        }
+        assert obs["state"].shape == self.observation_space["state"].shape, (
+            "State shape mismatch with observation space, got {}."
+        ).format(obs["state"].shape)
+        assert (
+            obs["constraints"].shape == self.observation_space["constraints"].shape
+        ), "Constraint shape mismatch with observation space."
+
+        return obs, {
             "is_first": True,
             "is_terminal": False,
         }
 
-    def safety_margin_ken(self, latent):
+    def safety_margin_classifier(self, latent):
         g_xList = []
 
         with torch.no_grad():  # Disable gradient calculation
@@ -118,39 +158,50 @@ class Franka_DINOWM_Env(gym.Env):
 
         with torch.no_grad():
             inp1 = self.wm.front_head(latent)
-            inp2 = self.wm.wrist_head(latent)
             state = self.wm.state_pred(latent)
-            semantic_features = self.wm.semantic_embed(
-                inp1=inp1, inp2=inp2, state=state
-            )
+            semantic_features = self.wm.semantic_embed(inp1=inp1, state=state)
             if self.constraint is None:
-                proxies = self.wm.proxies.to(self.device)  # [M Z]
-
-                queries_norm = F.normalize(
-                    semantic_features.squeeze(), p=2, dim=1
-                )  # [N, Z]
-                proxies_norm = F.normalize(proxies, p=2, dim=1)  # [M, Z]
-
-                # Compute cosine similarity
-                cos_sim_matrix = queries_norm @ proxies_norm.T  # [N, M]
-
-                outputs = torch.tanh(2 * -cos_sim_matrix[-1, -1].unsqueeze(0))
+                const = self.wm.proxies.to(self.device).detach()  # [M Z]
             else:
-                proxies = (
-                    self.constraint["semantic_feat"].unsqueeze(0).to(self.device)
+                const = (
+                    self.constraint["semantic_feat"]
+                    .unsqueeze(0)
+                    .to(self.device)[..., :-1]
                 )  # [1, Z]
 
-                queries_norm = F.normalize(
-                    semantic_features.squeeze(), p=2, dim=1
-                )  # [N, Z]
-                proxies_norm = F.normalize(proxies, p=2, dim=1)  # [M, Z]
+            assert const.requires_grad is False, "Proxies should not require gradients."
 
-                # Compute cosine similarity
-                cos_sim_matrix = queries_norm @ proxies_norm.T  # [N, M]
+            queries_norm = F.normalize(
+                semantic_features.squeeze(), p=2, dim=1
+            )  # [T, Z]
 
-                outputs = torch.tanh(2 * -cos_sim_matrix[-1, -1].unsqueeze(0))
+            const_norm = F.normalize(const, p=2, dim=1)  # [M, Z]
+
+            # Compute cosine similarity
+            cos_sim_matrix = queries_norm @ const_norm.T  # [T, M]
+
+            outputs = torch.tanh(2 * -cos_sim_matrix[-1, 0].unsqueeze(0))
 
             g_xList.append(outputs.detach().cpu().numpy())
 
         safety_margin = np.array(g_xList).squeeze()
         return safety_margin
+
+    def select_constraint(self):
+        if self.constraint_type == "prox":
+            num_p = self.wm.proxies.shape[0]
+            idx = np.random.randint(0, num_p)
+            self.constraint = {
+                "semantic_feat": torch.cat(  # Concatenated with 1 means the constraint is active
+                    [self.wm.proxies[idx], torch.tensor([1.0]).to(self.device)], dim=0
+                ).detach(),
+            }
+        else:
+            raise NotImplementedError(
+                f"Constraint type {self.constraint_type} not implemented."
+            )
+
+        assert (
+            self.constraint["semantic_feat"].shape
+            == self.observation_space["constraints"].shape
+        ), "Constraint shape mismatch with observation space."

@@ -11,7 +11,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn.functional as F
-from gymnasium import spaces
 
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(parent_dir)
@@ -20,7 +19,7 @@ sys.path.append(parent_dir)
 from dino_wm.dino_decoder import VQVAE
 from dino_wm.dino_models import VideoTransformer, normalize_acs, select_xyyaw_from_state
 from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
-from PyHJ.exploration import GaussianNoise
+from proxy_anchor.utils import load_state_dict_flexible
 from PyHJ.utils.net.common import Net
 from PyHJ.utils.net.continuous import Actor, Critic
 from torchvision import transforms
@@ -121,22 +120,30 @@ def make_comparison_video(
 
     # Tanh activation on selected outputs
     for key in ["ground_truth", "imagination"]:
-        for subkey in [
-            "ken_fail",
-            "cosine_sim_prox",
-            "cosine_sim_const1",
-            "cosine_sim_const2",
-        ]:
-            output[key][subkey] = np.tanh(2 * np.array(output[key][subkey]).squeeze())
+        for subkey in (
+            [
+                "ken_fail",
+            ]
+            + [f"class_{_class}_prox" for _class in range(nb_classes)]
+            + [f"class_{_class}_logit" for _class in range(nb_classes)]
+        ):
+            if subkey in output[key]:
+                output[key][subkey] = np.tanh(
+                    3 * np.array(output[key][subkey]).squeeze()
+                )
 
     T = len(output["ground_truth"]["ken_fail"])
 
+    lengths = {
+        k: {s: {len(output[k][s])} for s in keys_to_plot}
+        for k in ["ground_truth", "imagination"]
+    }
     # Consistency check
     assert all(
         len(output[k][s]) == T
         for k in ["ground_truth", "imagination"]
         for s in keys_to_plot
-    ), "Inconsistent sequence lengths"
+    ), f"Inconsistent sequence lengths, received lengths: {lengths}"
 
     # Setup figure
     fig = plt.figure(figsize=(12, 8), dpi=100)
@@ -204,13 +211,18 @@ def make_comparison_video(
 
     # Graph axes formatting
     for ax, title in zip(
-        [gt_graph_ax, im_graph_ax], ["Ground Truth Graph", "Imagination Graph"]
+        [gt_graph_ax, im_graph_ax],
+        ["Ground Truth Graph", f"Imagination Graph (H = {EVAL_H})"],
     ):
         ax.set_ylim(-1.1, 1.1)
         ax.set_xlim(0, T)
         ax.set_ylabel("l(z)")
         ax.set_xlabel("Time")
         ax.set_title(title)
+
+    # Add vertical lines on imagine graph every EVAL_H timesteps
+    for x in range(0, T, EVAL_H):
+        im_graph_ax.axvline(x, color="gray", linestyle="--", linewidth=0.5)
 
     # Prepare images
     def prepare_img(img):
@@ -235,17 +247,17 @@ def make_comparison_video(
         # Image updates
         # gt_wrist_img.set_data(prepare_img(output["ground_truth"]["imgs_wrist"][t]))
         gt_front_img.set_data(prepare_img(output["ground_truth"]["imgs_front"][t]))
-        gt_const1_img.set_data(
-            prepare_img(output["ground_truth"]["img_constraint1"][0])
-        )
-        gt_const2_img.set_data(
-            prepare_img(output["ground_truth"]["img_constraint2"][0])
-        )
+        # gt_const1_img.set_data(
+        #     prepare_img(output["ground_truth"]["img_constraint1"][0])
+        # )
+        # gt_const2_img.set_data(
+        #     prepare_img(output["ground_truth"]["img_constraint2"][0])
+        # )
 
         # im_wrist_img.set_data(prepare_img(output["imagination"]["imgs_wrist"][t]))
         im_front_img.set_data(prepare_img(output["imagination"]["imgs_front"][t]))
-        im_const1_img.set_data(prepare_img(output["imagination"]["img_constraint1"][0]))
-        im_const2_img.set_data(prepare_img(output["imagination"]["img_constraint2"][0]))
+        # im_const1_img.set_data(prepare_img(output["imagination"]["img_constraint1"][0]))
+        # im_const2_img.set_data(prepare_img(output["imagination"]["img_constraint2"][0]))
 
         # Render
         canvas.draw()
@@ -321,10 +333,13 @@ if __name__ == "__main__":
         num_frames=BL - 1,
         dropout=0.1,
     ).to(device)
-    # load_state_dict_flexible(transition, "../checkpoints_pa/encoder_0.1.pth")
+    load_state_dict_flexible(
+        transition, "../checkpoints_pa/encoder_mrg_0.1_alpha_32_num_ex_all_ul_F.pth"
+    )
     # load_state_dict_flexible(transition, "../checkpoints/best_testing.pth")
 
-    transition.load_state_dict(torch.load("../checkpoints/best_classifier.pth"))
+    # transition.load_state_dict(torch.load("../checkpoints/best_classifier.pth"))
+    # transition.load_state_dict(torch.load("../checkpoints/best_multi_classifier.pth"))
     transition.eval()
 
     actor_activation = torch.nn.ReLU
@@ -342,8 +357,6 @@ if __name__ == "__main__":
     critic = Critic(critic_net, device=critic_net.device).to(critic_net.device)
     critic_optim = torch.optim.Adam(critic.parameters(), lr=1e-3, weight_decay=1e-3)
 
-    from PyHJ.policy import avoid_DDPGPolicy_annealing_dinowm as DDPGPolicy
-
     print(
         "DDPG under the Avoid annealed Bellman equation with no Disturbance has been loaded!"
     )
@@ -359,25 +372,25 @@ if __name__ == "__main__":
     )
     actor_optim = torch.optim.Adam(actor.parameters(), lr=1e-4)
 
-    policy = DDPGPolicy(
-        critic,
-        critic_optim,
-        tau=0.005,
-        gamma=0.9999,
-        exploration_noise=GaussianNoise(sigma=0.1),
-        reward_normalization=False,
-        estimation_step=1,
-        action_space=spaces.Box(low=-1.0, high=1.0, shape=(7,), dtype=np.float32),
-        actor=actor,
-        actor_optim=actor_optim,
-        actor_gradient_steps=1,
-    )
+    # policy = DDPGPolicy(
+    #     critic,
+    #     critic_optim,
+    #     tau=0.005,
+    #     gamma=0.9999,
+    #     exploration_noise=GaussianNoise(sigma=0.1),
+    #     reward_normalization=False,
+    #     estimation_step=1,
+    #     action_space=spaces.Box(low=-1.0, high=1.0, shape=(7,), dtype=np.float32),
+    #     actor=actor,
+    #     actor_optim=actor_optim,
+    #     actor_gradient_steps=1,
+    # )
     # policy.load_state_dict(
     #     torch.load(
     #         "/home/sunny/anysafe_project/AnySafe_Reachability/scripts/logs/dinowm/epoch_id_16/rotvec_policy.pth"
     #     )
     # )
-    ken_policy = copy.deepcopy(policy)
+    # ken_policy = copy.deepcopy(policy)
     # ken_policy.load_state_dict(
     #     torch.load(
     #         "/home/sunny/anysafe_project/AnySafe_Reachability/scripts/logs/dinowm/epoch_id_16/rotvec_policy_ken.pth"
@@ -388,41 +401,43 @@ if __name__ == "__main__":
     decoder.load_state_dict(torch.load("../checkpoints/testing_decoder.pth"))
     decoder.eval()
 
-    constraint1 = {
-        # "wrist": database[7]["robot0_eye_in_hand_image"][82],
-        "front": database[7]["agentview_image"][82],
-    }  # weak unsafe frame
-    constraint2 = {
-        # "wrist": database[1]["robot0_eye_in_hand_image"][108],
-        "front": database[1]["agentview_image"][108],
-    }  # unsafe frame
+    # constraint1 = {
+    #     # "wrist": database[7]["robot0_eye_in_hand_image"][82],
+    #     "front": database[7]["agentview_image"][82],
+    # }  # weak unsafe frame
+    # constraint2 = {
+    #     # "wrist": database[1]["robot0_eye_in_hand_image"][108],
+    #     "front": database[1]["agentview_image"][108],
+    # }  # unsafe frame
 
     scale = 1.0
 
-    for data, constraint, t in zip(
-        [database[7], database[1]], [constraint1, constraint2], [82, 108]
-    ):
-        # inputs2 = (  # [1, 1, 256, 384]
-        #     data["cam_rs_embd"][[t], :].to(device).unsqueeze(0)
-        # )
-        inputs1 = (  # [1, 1, 256, 384]
-            data["cam_zed_embd"][[t], :].to(device).unsqueeze(0)
-        )
-        # acs = data["action"][t, :].to(device).unsqueeze(0)
-        # acs = normalize_acs(acs, device=device)
-        states = select_xyyaw_from_state(
-            data["state"][[t], :].to(device).unsqueeze(0)
-        )  # [1, 1, 3]
+    # for data, constraint, t in zip(
+    #     [database[7], database[1]], [constraint1, constraint2], [82, 108]
+    # ):
+    #     # inputs2 = (  # [1, 1, 256, 384]
+    #     #     data["cam_rs_embd"][[t], :].to(device).unsqueeze(0)
+    #     # )
+    #     inputs1 = (  # [1, 1, 256, 384]
+    #         data["cam_zed_embd"][[t], :].to(device).unsqueeze(0)
+    #     )
+    #     # acs = data["action"][t, :].to(device).unsqueeze(0)
+    #     # acs = normalize_acs(acs, device=device)
+    #     states = select_xyyaw_from_state(
+    #         data["state"][[t], :].to(device).unsqueeze(0)
+    #     )  # [1, 1, 3]
 
-        semantic_feature = transition.semantic_embed(  # [embedding_dim]
-            inp1=inputs1, state=states
-        )
-        constraint.update({"semantic_feat": semantic_feature.squeeze()})
+    #     semantic_feature = transition.semantic_embed(  # [embedding_dim]
+    #         inp1=inputs1, state=states
+    #     )
+    #     constraint.update({"semantic_feat": semantic_feature.squeeze()})
 
     # for traj_id in tqdm(
     #     range(len(database)), desc="Processing Trajectories", position=0
     # ):
-    for traj_id in tqdm(range(10), desc="Processing Trajectories", position=0):
+    nb_classes = 3
+    num_traj = min(10, len(database))
+    for traj_id in tqdm(range(num_traj), desc="Processing Trajectories", position=0):
         data = database[traj_id]
 
         none_list = [-1.0 for _ in range(BL - 1)]
@@ -432,16 +447,19 @@ if __name__ == "__main__":
             "imgs_front": [
                 img.cpu().numpy() for img in data["agentview_image"][: BL - 1]
             ],
-            "img_constraint1": constraint1["front"].unsqueeze(0).cpu().numpy(),
-            "img_constraint2": constraint2["front"].unsqueeze(0).cpu().numpy(),
+            # "img_constraint1": constraint1["front"].unsqueeze(0).cpu().numpy(),
+            # "img_constraint2": constraint2["front"].unsqueeze(0).cpu().numpy(),
             "ken_fail": copy.deepcopy(none_list),
-            "cosine_sim_prox": copy.deepcopy(none_list),
-            "cosine_sim_const1": copy.deepcopy(none_list),
-            "cosine_sim_const2": copy.deepcopy(none_list),
+            # "cosine_sim_prox": copy.deepcopy(none_list),
+            # "cosine_sim_const1": copy.deepcopy(none_list),
+            # "cosine_sim_const2": copy.deepcopy(none_list),
             # "value_fn_ken": copy.deepcopy(none_list),
             # "value_fn": copy.deepcopy(none_list),
-            "gt_fail_label": -1 + 2 * (data["failure"][:] != -1.0) * 1.0,
+            "gt_fail_label": np.clip(data["failure"][:], a_min=0, a_max=4) / 4,
         }
+        for class_id in range(nb_classes):
+            output_dict[f"class_{class_id}_logit"] = copy.deepcopy(none_list)
+            output_dict[f"class_{class_id}_prox"] = copy.deepcopy(none_list)
         output = {
             "imagination": copy.deepcopy(output_dict),
             "ground_truth": copy.deepcopy(output_dict),
@@ -460,6 +478,8 @@ if __name__ == "__main__":
         inputs_states = select_xyyaw_from_state(
             data["state"][0 : BL - 1, :].to(device)
         ).unsqueeze(0)
+
+        EVAL_H = 10
 
         # Imagination Loop
         for t in tqdm(
@@ -484,6 +504,9 @@ if __name__ == "__main__":
                             return_latent=True,
                         )
                     )
+                    pred_labels = transition.multi_class_head(latent)
+                    pred_labels = torch.mean(pred_labels, dim=-2)
+
                     proxies = transition.proxies.to(device)  # [M Z]
 
                     queries_norm = F.normalize(
@@ -493,7 +516,6 @@ if __name__ == "__main__":
 
                     # Compute cosine similarity
                     cos_sim_matrix = queries_norm @ proxies_norm.T
-                    cos_sim_fail = -cos_sim_matrix[-1, -1].item()
                     # Decode images
                     # pred_ims: [1, C, H, W] H is height not horizon
                     pred_ims, _ = decoder(pred1[:, [-1]])
@@ -519,6 +541,23 @@ if __name__ == "__main__":
                     states = torch.cat(
                         [inputs_states[[0], 1:], pred_state[:, -1].unsqueeze(1)], dim=1
                     )
+
+                    if (t + 1) % EVAL_H == 0:
+                        # inputs1: [1, BL-1, 256, 384], acs: [1, BL-1, 7], states: [1, BL-1, 8]
+                        inputs1 = (
+                            data["cam_zed_embd"][t : t + BL - 1, :]
+                            .to(device)
+                            .unsqueeze(0)
+                        )
+                        acs = data["action"][t : t + BL - 1, :].to(device).unsqueeze(0)
+                        acs = normalize_acs(acs, device=device)
+                        # all_acs: [1 64 A]
+                        all_acs = data["action"][:].unsqueeze(0).to(device)
+                        all_acs = normalize_acs(all_acs, device)
+                        inputs_states = select_xyyaw_from_state(
+                            data["state"][t : t + BL - 1, :].to(device)
+                        ).unsqueeze(0)
+
                 else:
                     inputs1 = (
                         data["cam_zed_embd"][t : t + BL - 1, :].to(device).unsqueeze(0)
@@ -534,19 +573,26 @@ if __name__ == "__main__":
             output["imagination"]["ken_fail"].append(
                 pred_fail.detach().squeeze().cpu().numpy()[-1]
             )
-            output["imagination"]["cosine_sim_prox"].append(cos_sim_fail * scale)
-            output["imagination"]["cosine_sim_const1"].append(
-                -F.cosine_similarity(
-                    semantic_features.squeeze()[-1], constraint1["semantic_feat"], dim=0
-                ).item()
-                * scale
-            )
-            output["imagination"]["cosine_sim_const2"].append(
-                -F.cosine_similarity(
-                    semantic_features.squeeze()[-1], constraint2["semantic_feat"], dim=0
-                ).item()
-                * scale
-            )
+            # output["imagination"]["cosine_sim_prox"].append(cos_sim_fail * scale)
+            # output["imagination"]["cosine_sim_const1"].append(
+            #     -F.cosine_similarity(
+            #         semantic_features.squeeze()[-1], constraint1["semantic_feat"], dim=0
+            #     ).item()
+            #     * scale
+            # )
+            # output["imagination"]["cosine_sim_const2"].append(
+            #     -F.cosine_similarity(
+            #         semantic_features.squeeze()[-1], constraint2["semantic_feat"], dim=0
+            #     ).item()
+            #     * scale
+            # )
+            for class_id in range(nb_classes):
+                output["imagination"][f"class_{class_id}_logit"].append(
+                    -pred_labels.detach().squeeze().cpu().numpy()[-1, class_id]
+                )
+                output["imagination"][f"class_{class_id}_prox"].append(
+                    cos_sim_matrix[-1, class_id].item()
+                )
 
             if t + BL >= len(data["action"]):  # Last step
                 index = t + BL - 1
@@ -633,6 +679,10 @@ if __name__ == "__main__":
                     # pred_fail: [1, (T-1), 1]
                     pred_fail = transition.failure_pred(latent)
 
+                    # pred_labels: [1, (T-1), num_classes]
+                    pred_labels = transition.multi_class_head(latent)
+                    pred_labels = torch.mean(pred_labels, dim=-2)
+
                     # Calculate cos sim for failure margin
                     proxies = transition.proxies.to(device)  # [M Z]
 
@@ -643,7 +693,6 @@ if __name__ == "__main__":
 
                     # Compute cosine similarity
                     cos_sim_matrix = queries_norm @ proxies_norm.T
-                    cos_sim_fail = -cos_sim_matrix[-1, -1].item()
 
             # inputs2 = data["cam_rs_embd"][[t + BL - 1], :].to(device).unsqueeze(0)
             inputs1 = data["cam_zed_embd"][t : t + BL - 1, :].to(device).unsqueeze(0)
@@ -663,6 +712,13 @@ if __name__ == "__main__":
             #     .numpy()[-1]
             # )
             output["ground_truth"]["ken_fail"].append(ken_fail)
+            for class_id in range(nb_classes):
+                output["ground_truth"][f"class_{class_id}_logit"].append(
+                    -pred_labels.detach().squeeze().cpu().numpy()[-1, class_id]
+                )
+                output["ground_truth"][f"class_{class_id}_prox"].append(
+                    2 * cos_sim_matrix[-1, class_id].item()
+                )
             # output["ground_truth"]["cosine_sim_const1"].append(
             #     -F.cosine_similarity(
             #         semantic_features.squeeze()[-1], constraint1["semantic_feat"], dim=0
@@ -675,7 +731,7 @@ if __name__ == "__main__":
             #     ).item()
             #     * scale
             # )
-            output["ground_truth"]["cosine_sim_prox"].append(cos_sim_fail * scale)
+            # output["ground_truth"]["cosine_sim_prox"].append(cos_sim_fail * scale)
             # output["ground_truth"]["value_fn"].append(
             #     policy.critic(
             #         obs=latent[:, [-1]].mean(dim=2),
@@ -701,7 +757,7 @@ if __name__ == "__main__":
             # )
 
         line_keys = [
-            "ken_fail",
+            # "ken_fail",
             # "cosine_sim_prox",
             # "cosine_sim_const1",
             # "cosine_sim_const2",
@@ -709,6 +765,9 @@ if __name__ == "__main__":
             # "value_fn_ken",
             "gt_fail_label",
         ]
+        for _class in range(nb_classes):
+            # line_keys.append(f"class_{_class}_logit")
+            line_keys.append(f"class_{_class}_prox")
 
         make_comparison_video(
             output_dict=output,

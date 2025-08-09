@@ -34,7 +34,7 @@ wm = VideoTransformer(
     image_size=(224, 224),
     dim=384,  # DINO feature dimension
     ac_dim=10,  # Action embedding dimension
-    state_dim=8,  # State dimension
+    state_dim=3,  # State dimension
     depth=6,
     heads=16,
     mlp_dim=2048,
@@ -49,11 +49,11 @@ wm = VideoTransformer(
 # )
 wm.load_state_dict(
     torch.load(
-        "/home/sunny/AnySafe_Reachability/dino_wm/checkpoints_pa/encoder_mrg_0.1_ul_False.pth"
+        "/home/sunny/AnySafe_Reachability/dino_wm/checkpoints_pa/encoder_mrg_0.1_alpha_32_num_ex_all_ul_F.pth"
     )
 )
-hdf5_file = "/home/sunny/data/skittles/consolidated.h5"
-hdf5_file_test = "/home/sunny/data/skittles/vlog-test-labeled/consolidated.h5"
+hdf5_file = "/home/sunny/data/sweeper/train/consolidated.h5"
+hdf5_file_test = "/home/sunny/data/sweeper/test/consolidated.h5"
 bs = 1
 bl = 20
 device = "cuda:0"
@@ -64,8 +64,8 @@ expert_loader = iter(DataLoader(expert_data, batch_size=1, shuffle=True))
 
 env = gymnasium.make("franka_wm_DINO-v0", params=[wm, expert_data], device=device)
 
-
-state_shape = env.observation_space.shape or env.observation_space.n
+state_shape = env.observation_space["state"].shape or env.observation_space.n
+constraint_shape = env.observation_space["constraints"].shape or env.observation_space.n
 action_shape = env.action_space.shape or env.action_space.n
 max_action = env.action_space.high[0]
 
@@ -101,17 +101,13 @@ with h5py.File(hdf5_file_test, "r") as hf:
 
 train_envs = DummyVectorEnv(
     [
-        lambda: gymnasium.make(
-            "franka_wm_DINO-v0", params=[wm, expert_data], constraint=constraint1
-        )
+        lambda: gymnasium.make("franka_wm_DINO-v0", params=[wm, expert_data])
         for _ in range(1)
     ]
 )
 test_envs = DummyVectorEnv(
     [
-        lambda: gymnasium.make(
-            "franka_wm_DINO-v0", params=[wm, expert_data], constraint=constraint1
-        )
+        lambda: gymnasium.make("franka_wm_DINO-v0", params=[wm, expert_data])
         for _ in range(1)
     ]
 )
@@ -130,8 +126,12 @@ critic_activation = torch.nn.ReLU
 
 critic_net = Net(
     state_shape=state_shape,
+    obs_inputs=["state", "constraint"],
     action_shape=action_shape,
     hidden_sizes=[512, 512, 512, 512],
+    constraint_dim=512,
+    constraint_embedding_dim=512,
+    hidden_sizes_constraint=[],
     activation=critic_activation,
     concat=True,
     device=device,
@@ -150,9 +150,13 @@ print(
 
 actor_net = Net(
     state_shape,
+    obs_inputs=["state", "constraint"],
     hidden_sizes=[512, 512, 512, 512],
     activation=actor_activation,
     device=device,
+    constraint_dim=512,
+    constraint_embedding_dim=512,
+    hidden_sizes_constraint=[],
 )
 actor = Actor(actor_net, action_shape, max_action=max_action, device=device).to(device)
 actor_optim = torch.optim.Adam(actor.parameters(), lr=1e-4)
@@ -232,7 +236,7 @@ for iter in range(warmup + total_eps):
             os.makedirs(log_path + "/total_epochs_{}".format(epoch))
         writer = SummaryWriter(log_path + "/total_epochs_{}".format(epoch))
 
-    logger = WandbLogger()
+    logger = WandbLogger(project="DINO Reachability", name="sweeper_reachability_RL")
     logger.load(writer)
 
     # import pdb; pdb.set_trace()

@@ -154,7 +154,7 @@ if isinstance(env.observation_space, gymnasium.spaces.Dict):
     )
 else:
     args.state_shape = env.observation_space.shape or env.observation_space.n
-args.constraint_dim = env.constraints_shape
+args.constraint_dim = env.constraint_shape
 args.action_shape = env.action_space.shape or env.action_space.n
 args.max_action = env.action_space.high[0]
 
@@ -459,14 +459,14 @@ for iter in range(warmup + args.total_episodes):
 
     # import pdb; pdb.set_trace()
     result = offpolicy_trainer(
-        policy,
-        train_collector,
-        test_collector,
-        args.epoch,
-        args.step_per_epoch,
-        args.step_per_collect,
-        args.test_num,
-        args.batch_size_pyhj,
+        policy=policy,
+        train_collector=train_collector,
+        test_collector=test_collector,
+        max_epoch=args.epoch,
+        step_per_epoch=args.step_per_epoch,
+        step_per_collect=args.step_per_collect,
+        episode_per_test=args.test_num,
+        batch_size=args.batch_size_pyhj,
         update_per_step=args.update_per_step,
         stop_fn=stop_fn,
         save_best_fn=save_best_fn,

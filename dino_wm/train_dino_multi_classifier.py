@@ -3,10 +3,12 @@ import random
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+import torch.nn as nn
 import wandb
 from dino_decoder import VQVAE
 from dino_models import VideoTransformer, normalize_acs, select_xyyaw_from_state
 from einops import rearrange
+from sklearn.metrics import balanced_accuracy_score
 from test_loader import SplitTrajectoryDataset
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
@@ -48,29 +50,31 @@ norm_transform = transforms.Normalize(
 
 
 def fail_loss(pred, fail_data):
-    safe_data = torch.where(fail_data != -1.0)
-    unsafe_data = torch.where(fail_data == -1.0)
+    lx_loss = 0.0
+    for class_idx in range(1, 4):  # 1, 2, 3
+        safe_data = torch.where(fail_data != class_idx)
+        unsafe_data = torch.where(fail_data == class_idx)
 
-    pos = pred[safe_data]
-    neg = pred[unsafe_data]
+        pos = pred[safe_data]
+        neg = pred[unsafe_data]
 
-    gamma = 0.75
-    lx_loss = (
-        (1 / pos.size(0)) * torch.sum(torch.relu(gamma - pos))
-        if pos.size(0) > 0
-        else 0.0
-    )  # penalizes safe for being negative
-    lx_loss += (
-        (1 / neg.size(0)) * torch.sum(torch.relu(gamma + neg))
-        if neg.size(0) > 0
-        else 0.0
-    )  # penalizes unsafe for being positive
+        gamma = 0.75
+        lx_loss += (
+            (1 / pos.size(0)) * torch.sum(torch.relu(gamma - pos[:, class_idx - 1]))
+            if pos.size(0) > 0
+            else 0.0
+        )  # penalizes safe for being unsafe (negative value)
+        lx_loss += (
+            (1 / neg.size(0)) * torch.sum(torch.relu(gamma + neg[:, class_idx - 1]))
+            if neg.size(0) > 0
+            else 0.0
+        )  # penalizes unsafe for being safe (positive value)
 
     return lx_loss
 
 
 if __name__ == "__main__":
-    wandb.init(project="dino-WM", name="Classifier")
+    wandb.init(project="dino-WM", name="Multi-Classifier")
 
     use_amp = True
     scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
@@ -84,18 +88,32 @@ if __name__ == "__main__":
     BL = 4
     EVAL_H = 16
     H = 3
+    nb_classes = 3
 
     hdf5_file = "/home/sunny/data/sweeper/train/consolidated.h5"
     hdf5_file_test = "/home/sunny/data/sweeper/test/consolidated.h5"
 
     expert_data = SplitTrajectoryDataset(
-        hdf5_file, BL, split="train", num_test=0, only_pass_labeled_examples=True
+        hdf5_file,
+        BL,
+        split="train",
+        num_test=0,
+        only_pass_labeled_examples=True,
+        num_examples_per_class=5910,
     )
     expert_data_eval = SplitTrajectoryDataset(
-        hdf5_file_test, BL, split="test", num_test=5, only_pass_labeled_examples=True
+        hdf5_file_test,
+        BL,
+        split="test",
+        num_test=5,
+        only_pass_labeled_examples=True,
     )
     expert_data_imagine = SplitTrajectoryDataset(
-        hdf5_file_test, 32, split="test", num_test=5, only_pass_labeled_examples=True
+        hdf5_file_test,
+        32,
+        split="test",
+        num_test=5,
+        only_pass_labeled_examples=True,
     )
 
     expert_loader = iter(DataLoader(expert_data, batch_size=BS, shuffle=True))
@@ -124,7 +142,7 @@ if __name__ == "__main__":
     transition.load_state_dict(torch.load("checkpoints/best_testing.pth"), strict=False)
 
     for name, param in transition.named_parameters():
-        param.requires_grad = name.startswith("failure_head")
+        param.requires_grad = name.startswith("multi_class_head")
 
     data = next(expert_loader)
 
@@ -147,7 +165,7 @@ if __name__ == "__main__":
     # Forward pass
     optimizer = AdamW(
         [
-            {"params": transition.failure_head.parameters(), "lr": 5e-5},
+            {"params": transition.multi_class_head.parameters(), "lr": 5e-5},
         ]
     )
 
@@ -155,6 +173,8 @@ if __name__ == "__main__":
     best_fail = float("inf")
     iters = []
     train_iter = 10000
+
+    criterion = nn.CrossEntropyLoss()
 
     for i in tqdm(range(train_iter), desc="Training", unit="iter"):
         if i % len(expert_loader) == 0:
@@ -189,9 +209,19 @@ if __name__ == "__main__":
         optimizer.zero_grad()
 
         with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=use_amp):
-            pred1, pred_state, pred_fail, __ = transition(inputs1, states, acs)
-            failure_loss = fail_loss(pred_fail, data["failure"][:, 1:])
-            loss = failure_loss
+            __, __, __, __, latent = transition(
+                inputs1, states, acs, return_latent=True
+            )
+            predictions = transition.multi_class_head(latent)  # (B, T, N, 3)
+            pred_labels = torch.mean(predictions, dim=2)  # average over patches (B)
+            gt_labels = data["failure"][:, 1:].to(device).to(torch.int64)  # (B, T)
+            mask = gt_labels != -1.0  # (B, T)
+
+            loss = fail_loss(pred_labels[mask], gt_labels[mask])
+            assert loss.requires_grad
+
+            # failure_loss = 0  # fail_loss(pred_fail, data["failure"][:, 1:])
+            # loss = failure_loss
 
         scaler.scale(loss).backward()
         scaler.step(optimizer)
@@ -199,7 +229,7 @@ if __name__ == "__main__":
         train_loss = loss.item()
         wandb.log({"train_loss": train_loss})
         print(
-            f"\rIter {i}, Train Loss: {train_loss:.4f}, failure Loss: {failure_loss.item():.4f}",
+            f"\rIter {i}, Train Loss: {train_loss:.4f}, Failure Loss: {loss.item():.4f}",
             end="",
             flush=True,
         )
@@ -227,7 +257,9 @@ if __name__ == "__main__":
                 #     / 255.0
                 # )
                 for k in range(EVAL_H - H):
-                    pred1, pred_state, pred_fail, __ = transition(inputs1, states, acs)
+                    pred1, pred_state, ____, __, latent = transition(
+                        inputs1, states, acs, return_latent=True
+                    )
                     pred_latent = pred1[:, [-1]]  # .squeeze()
                     pred_ims, _ = decoder(pred_latent)
 
@@ -235,10 +267,10 @@ if __name__ == "__main__":
                     pred_im1 = pred_ims
 
                     pred_im1 = pred_im1[0].permute(0, 2, 3, 1).detach()
-                    pred_fail = pred_fail[:, -1]
+                    # pred_fail = pred_fail[:, -1]
 
-                    if pred_fail < 0:
-                        pred_im1[:, :, :, 0] *= 2
+                    # if pred_fail < 0:
+                    #     pred_im1[:, :, :, 0] *= 2
 
                     im1s = torch.cat([im1s, pred_im1], dim=0)
 
@@ -255,11 +287,11 @@ if __name__ == "__main__":
                     )
 
                 gt_im1 = eval_data["agentview_image"][[0], :EVAL_H].squeeze().to(device)
-                gt_fail = eval_data["failure"][[0], :EVAL_H].squeeze().to(device)
+                # gt_fail = eval_data["failure"][[0], :EVAL_H].squeeze().to(device)
 
-                for j in range(EVAL_H):
-                    if gt_fail[j] > 0:
-                        gt_im1[j, :, :, 0] *= 2
+                # for j in range(EVAL_H):
+                #     if gt_fail[j] > 0:
+                #         gt_im1[j, :, :, 0] *= 2
 
                 gt_imgs = torch.cat([gt_im1], dim=-3) / 255.0
                 pred_imgs = torch.cat([im1s], dim=-3)
@@ -290,21 +322,48 @@ if __name__ == "__main__":
                 acs = data_acs[:, :-1]
                 acs = normalize_acs(acs, device)
 
-                pred1, pred_state, pred_fail, __ = transition(inputs1, states, acs)
+                pred1, pred_state, __, __, latent = transition(
+                    inputs1, states, acs, return_latent=True
+                )
 
-                failure_loss = fail_loss(pred_fail, eval_data["failure"][:, 1:])
+                predictions = transition.multi_class_head(latent)  # (B, T, N, 3)
+                predictions_labels = torch.mean(
+                    predictions, dim=2
+                )  # average over patches (B, T, 3)
+                gt_labels = (
+                    eval_data["failure"][:, 1:].to(device).to(torch.int64)
+                )  # (B, T)
+                mask = gt_labels != -1.0  # (B, T)
+
+                failure_loss = fail_loss(predictions_labels[mask], gt_labels[mask])
                 loss = failure_loss
-            print(f"\rIter {i}, Eval Loss: {loss.item():.4f},")
 
-            torch.save(transition.state_dict(), "checkpoints/classifier.pth")
+            gt_label = gt_labels[mask]
+            pred_label = predictions_labels[mask]
+
+            balanced_accuracy = balanced_accuracy_score(
+                y_true=torch.argmax(pred_label, dim=-1).cpu(), y_pred=gt_label.cpu()
+            )
+
+            print(
+                f"\rIter {i}, Eval Loss: {loss.item():.4f}, Balanced Accuracy: {balanced_accuracy:.4f}"
+            )
+
+            torch.save(transition.state_dict(), "checkpoints/multi_classifier.pth")
 
             if loss < best_eval:
                 best_eval = loss
                 print(f"New best at iter {i}, saving model.")
-                torch.save(transition.state_dict(), "checkpoints/best_classifier.pth")
+                torch.save(
+                    transition.state_dict(),
+                    "checkpoints/best_multi_classifier.pth",
+                )
 
             transition.train()
-            wandb.log({"eval_loss": loss.item(), "failure_loss": failure_loss.item()})
+            wandb.log(
+                {"eval_loss": loss.item(), "balanced_accuracy": balanced_accuracy}
+            )
 
     plt.legend()
     plt.savefig("training curve.png")
+    print("")

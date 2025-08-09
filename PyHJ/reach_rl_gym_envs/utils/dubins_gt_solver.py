@@ -107,8 +107,8 @@ class DubinsHJSolver:
         self.dyn_sys = Dubins3D()
 
         # Define the computation grid
-        self.grid_min = np.array([-1.0, -1.0, 0.0])  # in meters
-        self.grid_max = np.array([1.0, 1.0, 2 * np.pi])  # in meters
+        self.grid_min = np.array([-1.1, -1.1, 0.0])  # in meters
+        self.grid_max = np.array([1.1, 1.1, 2 * np.pi])  # in meters
         self.num_cells = (nx, ny, nt)  # in cells
         self.grid = hj.Grid.from_lattice_parameters_and_boundary_conditions(
             hj.sets.Box(self.grid_min, self.grid_max), self.num_cells, periodic_dims=2
@@ -123,36 +123,16 @@ class DubinsHJSolver:
         time = 0.0
         target_time = -2.8
 
-        constraints = np.array(constraints)
-
-        if constraints.shape[-1] == (constraints_shape + 1):
-            new_constraints = []
-            for constraint in constraints:
-                if constraint[-1] == 1.0:
-                    new_constraints.append(constraint[:-1])
-                else:
-                    continue
-            constraints = np.array(new_constraints)
-
+        constraints = constraints[:-1]
         assert constraints.shape[-1] == constraints_shape, (
             "Constraints should be masked"
         )
 
-        failure_lx = jnp.zeros(
-            (self.grid.states.shape[:-1] + (constraints.shape[0],))
-        )  # All grid points + num constraints
-
-        for i, constraint in enumerate(constraints):
-            x_c, y_c, radius = constraint
-            obstacle_lx = (
-                jnp.linalg.norm(
-                    np.array([x_c, y_c]) - self.grid.states[..., :2], axis=-1
-                )
-                - radius
-            )
-            failure_lx = failure_lx.at[..., i].set(obstacle_lx)
-
-        self.failure_lx = jnp.min(failure_lx, axis=-1)
+        x_c, y_c, radius = constraints
+        self.failure_lx = (
+            jnp.linalg.norm(np.array([x_c, y_c]) - self.grid.states[..., :2], axis=-1)
+            - radius
+        )
 
         target_values = hj.step(
             self.solver_settings,

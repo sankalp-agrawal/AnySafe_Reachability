@@ -11,11 +11,13 @@ import torch
 
 from PyHJ.data import Batch, ReplayBuffer
 from PyHJ.exploration import BaseNoise, GaussianNoise
-from PyHJ.policy.modelfree.BasePolicy_Annealing_Avoid import BasePolicy_Annealing_Avoid as BasePolicy # correct
+from PyHJ.policy.modelfree.BasePolicy_Annealing_Avoid import (
+    BasePolicy_Annealing_Avoid as BasePolicy,  # correct
+)
 
 
 class avoid_DDPGPolicy_annealing(BasePolicy):
-    """Implementation of Deep Deterministic Policy Gradient. arXiv:1509.02971, 
+    """Implementation of Deep Deterministic Policy Gradient. arXiv:1509.02971,
         for learning the classical reach-avoid value function, arXiv:2112.12288.
 
     :param torch.nn.Module actor: the actor network following the rules in
@@ -57,7 +59,7 @@ class avoid_DDPGPolicy_annealing(BasePolicy):
         estimation_step: int = 1,
         action_scaling: bool = True,
         action_bound_method: str = "clip",
-        actor: Optional[torch.nn.Module] = None, # control policy
+        actor: Optional[torch.nn.Module] = None,  # control policy
         actor_optim: Optional[torch.optim.Optimizer] = None,
         actor_gradient_steps: int = 5,
         **kwargs: Any,
@@ -65,11 +67,13 @@ class avoid_DDPGPolicy_annealing(BasePolicy):
         super().__init__(
             action_scaling=action_scaling,
             action_bound_method=action_bound_method,
-            **kwargs
+            **kwargs,
         )
-        assert action_bound_method != "tanh", "tanh mapping is not supported" \
-            "in policies where action is used as input of critic , because" \
+        assert action_bound_method != "tanh", (
+            "tanh mapping is not supported"
+            "in policies where action is used as input of critic , because"
             "raw action in range (-inf, inf) will cause instability in training"
+        )
         if critic is not None and critic_optim is not None:
             self.critic: torch.nn.Module = critic
             self.critic_old = deepcopy(critic)
@@ -80,7 +84,7 @@ class avoid_DDPGPolicy_annealing(BasePolicy):
             self.actor_old = deepcopy(actor)
             self.actor_old.eval()
             self.actor_optim: torch.optim.Optimizer = actor_optim
-        
+
         assert 0.0 <= tau <= 1.0, "tau should be in [0, 1]"
         self.tau = tau
         assert 0.0 <= gamma <= 1.0, "gamma should be in [0, 1]"
@@ -112,19 +116,22 @@ class avoid_DDPGPolicy_annealing(BasePolicy):
         """Predict the value of a state"""
         batch = buffer[indices]  # batch.obs_next: s_{t+n}
         target_q = self.critic_old(
-            batch.obs_next,
-            self(batch, model='actor_old', input='obs_next').act
+            batch.obs_next, self(batch, model="actor_old", input="obs_next").act
         )
         return target_q
-    
 
     def process_fn(
         self, batch: Batch, buffer: ReplayBuffer, indices: np.ndarray
     ) -> Batch:
         """Compute the target q values"""
         batch = self.compute_nstep_return(
-            batch, buffer, indices, self._target_q, self._gamma, self._n_step,
-            self._rew_norm
+            batch,
+            buffer,
+            indices,
+            self._target_q,
+            self._gamma,
+            self._n_step,
+            self._rew_norm,
         )
         return batch
 
@@ -148,15 +155,14 @@ class avoid_DDPGPolicy_annealing(BasePolicy):
             Please refer to :meth:`~tianshou.policy.BasePolicy.forward` for
             more detailed explanation.
         """
-        if model=='actor_old':
+        if model == "actor_old":
             actor_model = getattr(self, "actor_old")
-        elif model=='actor':
+        elif model == "actor":
             actor_model = getattr(self, "actor")
         obs = batch[input]
         actions1, hidden1 = actor_model(obs, state=state, info=batch.info)
-        
-        return Batch(act=actions1, 
-                    state=hidden1)
+
+        return Batch(act=actions1, state=hidden1)
 
     @staticmethod
     def _mse_optimizer(
@@ -180,7 +186,7 @@ class avoid_DDPGPolicy_annealing(BasePolicy):
         td, critic_loss = self._mse_optimizer(batch, self.critic, self.critic_optim)
         batch.weight = td  # prio-buffer
         # actor
-        
+
         """Note that we update actor 5 times for each critic update!"""
         # update actor
         if not self.warmup:
@@ -192,8 +198,7 @@ class avoid_DDPGPolicy_annealing(BasePolicy):
                 self.actor_optim.step()
         else:
             actor_loss = torch.tensor(0.0)
-               
-        
+
         # soft update the parameters
         self.sync_weight()
         return {
@@ -201,13 +206,13 @@ class avoid_DDPGPolicy_annealing(BasePolicy):
             "loss/critic": critic_loss.item(),
         }
 
-    def exploration_noise(self, act: Union[np.ndarray, Batch],
-                            batch: Batch) -> Union[np.ndarray, Batch]:
-        
+    def exploration_noise(
+        self, act: Union[np.ndarray, Batch], batch: Batch
+    ) -> Union[np.ndarray, Batch]:
         if self._noise is None:
             act = act
         if isinstance(act, np.ndarray):
-            act =  act + self._noise(act.shape)
+            act = act + self._noise(act.shape)
         else:
             warnings.warn("Cannot add exploration noise to non-numpy_array action.")
 
@@ -220,5 +225,3 @@ class avoid_DDPGPolicy_annealing(BasePolicy):
             act = np.random.uniform(-1, 1, act.shape)
 
         return act
-    
-    

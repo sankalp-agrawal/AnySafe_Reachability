@@ -62,10 +62,16 @@ class SplitTrajectoryDataset(Dataset):
             data_base = {}
             with h5py.File(self.hdf5_file, "r") as hf:
                 for traj_id in self.trajectory_ids:
-                    for t, label in enumerate(hf[traj_id]["labels"][:]):
+                    trajectory = hf[traj_id]
+                    if "labels" not in trajectory.keys() and only_pass_labeled_examples:
+                        continue
+
+                    for t, label in enumerate(trajectory["labels"][:]):
                         if label not in data_base:
                             data_base[label] = []
 
+                        if t + self.segment_length > len(trajectory["actions"]):
+                            continue
                         data_base[label].append((traj_id, t))
 
             for label, indices in data_base.items():

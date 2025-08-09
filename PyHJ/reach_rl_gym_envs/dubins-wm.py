@@ -10,11 +10,12 @@ from generate_data_traj_cont import get_frame
 from gymnasium import spaces
 from matplotlib import pyplot as plt
 from matplotlib.patches import Circle
+from skimage import measure
+
 from PyHJ.reach_rl_gym_envs.dubins import Dubins_Env
 from PyHJ.reach_rl_gym_envs.utils.dubins_gt_solver import DubinsHJSolver
 from PyHJ.reach_rl_gym_envs.utils.env_eval_utils import get_metrics
 from PyHJ.utils.eval_utils import evaluate_V, find_a
-from skimage import measure
 
 
 class Dubins_WM_Env(gym.Env):
@@ -44,7 +45,7 @@ class Dubins_WM_Env(gym.Env):
         self.num_constraints = 1
         self.pass_semantic_constraint = config.pass_semantic_constraint
 
-        self.constraints_shape = (
+        self.constraint_shape = (
             config.pa["sz_embedding"]
             if self.pass_semantic_constraint
             else config.constraint_embedding_dim
@@ -60,10 +61,7 @@ class Dubins_WM_Env(gym.Env):
                 "constraints": spaces.Box(
                     low=-np.inf,
                     high=np.inf,
-                    shape=(
-                        self.num_constraints,
-                        self.constraints_shape + 1,
-                    ),
+                    shape=(self.constraint_shape + 1,),
                     dtype=np.float32,
                 ),
             }
@@ -130,9 +128,9 @@ class Dubins_WM_Env(gym.Env):
         truncated = False
         self.obs = {
             "state": self.feat.flatten(),
-            "constraints": self.constraints_sem
+            "constraints": self.constraint_sem
             if self.pass_semantic_constraint
-            else self.constraints_feat,  # Semantic embedding of the constraints
+            else self.constraint_feat,  # Semantic embedding of the constraints
         }
         info = {"is_first": False, "is_terminal": terminated}
         return self.obs, rew, terminated, truncated, info
@@ -159,9 +157,9 @@ class Dubins_WM_Env(gym.Env):
         self.select_constraints()
         self.obs = {
             "state": self.feat.flatten(),
-            "constraints": self.constraints_sem
+            "constraints": self.constraint_sem
             if self.pass_semantic_constraint
-            else self.constraints_feat,  # Semantic embedding of the constraints
+            else self.constraint_feat,  # Semantic embedding of the constraints
         }
         return self.obs, {
             "is_first": True,
@@ -186,26 +184,25 @@ class Dubins_WM_Env(gym.Env):
                 self.wm.semantic_encoder(feat.to(torch.float32)).detach().cpu().numpy()
             )
             with torch.no_grad():
-                constraints = self.constraints_sem[..., :-1]  # (N Z)
+                constraints = self.constraint_sem[..., :-1]  # (Z)
                 constraints = einops.repeat(
-                    constraints, "N Z -> B N Z", B=feat_sem.shape[0]
+                    constraints, "Z -> B Z", B=feat_sem.shape[0]
                 )
-                feat_sem = feat_sem.reshape(constraints.shape)  # (B N Z)
+                feat_sem = feat_sem.reshape(constraints.shape)  # (B Z)
 
-                numerator = np.sum(feat_sem * constraints, axis=-1)  # (B N)
-                denominator = np.linalg.norm(
-                    feat_sem, axis=-1
-                ) * np.linalg.norm(  # (B N)
+                numerator = np.sum(feat_sem * constraints, axis=-1)  # (B)
+                denominator = np.linalg.norm(feat_sem, axis=-1) * np.linalg.norm(  # (B)
                     constraints, axis=-1
                 )
-                metric = -numerator / (denominator + 1e-8)  # (B N)
+                metric = -numerator / (denominator + 1e-8)  # (B)
                 metric = metric - self.config.safety_margin_threshold
-                metric = np.tanh(20 * metric)
-                assert metric.ndim == 2, f"Expected dimension 2, got {metric.shape}"
-                assert metric.shape[1] == 1, (
-                    f"Expected second dimension 1, got {metric.shape[1]}"
-                )
-                safety_margin = np.min(metric, axis=-1)  # (B)
+                # metric = np.tanh(20 * metric)
+                # assert metric.ndim == 2, f"Expected dimension 2, got {metric.shape}"
+                # assert metric.shape[1] == 1, (
+                #     f"Expected second dimension 1, got {metric.shape[1]}"
+                # )
+                # safety_margin = np.min(metric, axis=-1)  # (B)
+                safety_margin = metric  # (B)
                 if self.config.safety_margin_hard_threshold:
                     safety_margin[safety_margin > 0] = 1.0
                     safety_margin[safety_margin <= 0] = -1.0
@@ -492,10 +489,10 @@ class Dubins_WM_Env(gym.Env):
                 imgs=[img],
                 compute_lz=False,
             )
-            self.constraints_feat = np.array(np.append(feat_c, 1.0)).reshape(
-                self.num_constraints, -1
-            )
-            self.constraints_sem = np.append(  # Semantic embedding of the constraints
+            self.constraint_feat = np.array(np.append(feat_c, 1.0))  # .reshape(
+            #     self.num_constraints, -1
+            # )
+            self.constraint_sem = np.append(  # Semantic embedding of the constraints
                 self.wm.semantic_encoder(
                     torch.tensor(
                         np.array(feat_c), device=self.device, dtype=torch.float32
@@ -505,17 +502,17 @@ class Dubins_WM_Env(gym.Env):
                 .cpu()
                 .numpy(),
                 1.0,
-            ).reshape(self.num_constraints, -1)
+            )  # .reshape(self.num_constraints, -1)
 
-            self.gt_constraints = np.array(gt_constraint).reshape(
-                self.num_constraints, -1
-            )  # Store the ground truth constraints
+            self.gt_constraint = np.array(gt_constraint)  # .reshape(
+            #     self.num_constraints, -1
+            # )  # Store the ground truth constraints
         elif self.config.env_dist_type == "prox":
             if in_distribution:
                 i = np.random.randint(
                     0, len(self.wm.proxies) - 1
                 )  # NOTE: last class is safe
-                self.constraints_sem = np.append(
+                self.constraint_sem = np.append(
                     self.wm.proxies[i].detach().cpu().numpy(), 1.0
                 ).reshape(self.num_constraints, -1)
                 centers = [
@@ -524,10 +521,10 @@ class Dubins_WM_Env(gym.Env):
                     np.array([-0.5, 0.5, 0.5, 1.0]),
                     np.array([0.5, 0.5, 0.5, 1.0]),
                 ]
-                self.gt_constraints = centers[i].reshape(self.num_constraints, -1)
+                self.gt_constraint = centers[i].reshape(self.num_constraints, -1)
                 img = (
                     get_frame(
-                        states=torch.tensor([*self.gt_constraints[0][:2], 0.0]),
+                        states=torch.tensor([*self.gt_constraint[0][:2], 0.0]),
                         config=self.config,
                     )
                     * 0.0
@@ -547,10 +544,10 @@ class Dubins_WM_Env(gym.Env):
                     imgs=[img],
                     compute_lz=False,
                 )
-                self.constraints_feat = np.array(np.append(feat_c, 1.0)).reshape(
+                self.constraint_feat = np.array(np.append(feat_c, 1.0)).reshape(
                     self.num_constraints, -1
                 )
-                self.constraints_sem = (
+                self.constraint_sem = (
                     np.append(  # Semantic embedding of the constraints
                         self.wm.semantic_encoder(
                             torch.tensor(
@@ -566,7 +563,7 @@ class Dubins_WM_Env(gym.Env):
                     ).reshape(self.num_constraints, -1)
                 )
 
-                self.gt_constraints = np.array(gt_constraint).reshape(
+                self.gt_constraint = np.array(gt_constraint).reshape(
                     self.num_constraints, -1
                 )  # Store the ground truth constraints
 
@@ -645,7 +642,7 @@ class Dubins_WM_Env(gym.Env):
 
         # constraint = np.array([0.0, 0.0, 0.5, 1.0]).reshape(1, -1)
         self.select_constraints(in_distribution=in_distribution)
-        constraint = self.gt_constraints
+        constraint = self.gt_constraint
         # constraint[:, 2] = 0.5  # Force radius to 0.5
         gt_values = self.solver.solve(
             constraints=constraint,
@@ -677,10 +674,10 @@ class Dubins_WM_Env(gym.Env):
                 obs = {
                     "state": feat,
                     "constraints": einops.repeat(
-                        self.constraints_sem
+                        self.constraint_sem
                         if self.pass_semantic_constraint
-                        else self.constraints_feat,
-                        "1 C -> N 1 C",
+                        else self.constraint_feat,
+                        "C -> N C",
                         N=feat.shape[0],
                     ),
                 }
@@ -693,14 +690,21 @@ class Dubins_WM_Env(gym.Env):
 
             V = V.reshape((nx, ny)).T  # Reshape to match the grid
             metrics = get_metrics(rl_values=V, gt_values=gt_values[:, :, nt_index].T)
+            # trivial solution
+            # metrics = get_metrics(
+            #     rl_values=lz.reshape((nx, ny)).T,
+            #     gt_values=gt_values[:, :, nt_index].T,
+            # )
+            # print(metrics)
+            # exit()
             all_metrics.append(metrics)
 
             # Find contours for gt and rl Value functions
             contours_rl = measure.find_contours(
-                np.array(V > self.config.safety_filter_eps).astype(float), level=0.5
+                np.array(V > self.config.safety_filter_eps).astype(float)  # , level=0.0
             )
             contours_gt = measure.find_contours(
-                np.array(gt_values[:, :, nt_index].T > 0).astype(float), level=0.5
+                np.array(gt_values[:, :, nt_index].T > 0).astype(float)  # , level=0.0
             )
             # contours_safety_margin = measure.find_contours(
             #     np.array(lz.reshape((nx, ny)).T > self.config.safety_filter_eps).astype(
@@ -711,24 +715,24 @@ class Dubins_WM_Env(gym.Env):
 
             # Show sub-zero level set
             axes1[0, graph_index].imshow(
-                V > 0, extent=(-1.0, 1.0, -1.0, 1.0), origin="lower"
+                V > 0, extent=(-1.1, 1.1, -1.1, 1.1), origin="lower"
             )
             axes1[2, graph_index].imshow(
                 gt_values[:, :, nt_index].T > 0,
-                extent=(-1.0, 1.0, -1.0, 1.0),
+                extent=(-1.1, 1.1, -1.1, 1.1),
                 origin="lower",
             )
             # Show value functions
             axes2[0, graph_index].imshow(
                 V,
-                extent=(-1.0, 1.0, -1.0, 1.0),
+                extent=(-1.1, 1.1, -1.1, 1.1),
                 vmin=-1.0,
                 vmax=1.0,
                 origin="lower",
             )
             axes2[2, graph_index].imshow(
                 gt_values[:, :, nt_index].T,
-                extent=(-1.0, 1.0, -1.0, 1.0),
+                extent=(-1.1, 1.1, -1.1, 1.1),
                 vmin=-1.0,
                 vmax=1.0,
                 origin="lower",
@@ -737,7 +741,7 @@ class Dubins_WM_Env(gym.Env):
             # Plot safety margin
             axes3[0, graph_index].imshow(
                 lz.reshape((nx, ny)).T,
-                extent=(-1.0, 1.0, -1.0, 1.0),
+                extent=(-1.1, 1.1, -1.1, 1.1),
                 vmin=-1.0,
                 vmax=1.0,
                 origin="lower",
@@ -745,7 +749,7 @@ class Dubins_WM_Env(gym.Env):
             # GT safety margin
             axes3[2, graph_index].imshow(
                 self.solver.failure_lx[:, :, nt_index].T,
-                extent=(-1.0, 1.0, -1.0, 1.0),
+                extent=(-1.1, 1.1, -1.1, 1.1),
                 vmin=-1.0,
                 vmax=1.0,
                 origin="lower",
@@ -769,8 +773,8 @@ class Dubins_WM_Env(gym.Env):
                     ]
 
             metric = np.array(lz.reshape((nx, ny)).T)
-            x = np.linspace(-1.0, 1.0, metric.shape[1])
-            y = np.linspace(-1.0, 1.0, metric.shape[0])
+            x = np.linspace(-1.1, 1.1, metric.shape[1])
+            y = np.linspace(-1.1, 1.1, metric.shape[0])
             X, Y = np.meshgrid(x, y)
 
             contour = axes3[1, graph_index].contour(
@@ -814,31 +818,30 @@ class Dubins_WM_Env(gym.Env):
             #         ]
 
             # Add constraint patch
-            for constraint in self.gt_constraints:
-                x_c, y_c, radius, u = constraint
-                if u == 0.0:
-                    break
-                for axes in [axes1, axes2, axes3]:
-                    [
-                        ax.add_patch(
-                            Circle(
-                                (x_c, y_c),
-                                radius,
-                                color="red",
-                                fill=False,
-                                label="Constraint",
-                            )
+            x_c, y_c, radius, u = self.gt_constraint
+            if u == 0.0:
+                break
+            for axes in [axes1, axes2, axes3]:
+                [
+                    ax.add_patch(
+                        Circle(
+                            (x_c, y_c),
+                            radius,
+                            color="red",
+                            fill=False,
+                            label="Constraint",
                         )
-                        for ax in axes[:, graph_index]
-                    ]
+                    )
+                    for ax in axes[:, graph_index]
+                ]
 
             for axes in [axes1, axes2, axes3]:
                 for j in range(3):
-                    label = rf"$\theta$={thetas[i]:.2f}"
+                    label = rf"$\theta$={thetas[i]:.2f}, F1={metrics['F1']:.2f}, "
                     if j == 1:
-                        label = rf"$Topo Map, \theta$={thetas[i]:.2f}"
+                        label = rf"Topo Map, $\theta$={thetas[i]:.2f}, AUC={metrics['AUC']:.2f}"
                     elif j == 2:
-                        label = rf"$GT, \theta$={thetas[i]:.2f}"
+                        label = rf"GT, $\theta$={thetas[i]:.2f}"
                     axes[j, graph_index].set_title(
                         label,
                         fontsize=12,
@@ -860,15 +863,17 @@ class Dubins_WM_Env(gym.Env):
             # Remove duplicates while preserving order
             unique = dict(zip(labels, handles))
 
-            # Create a single, global legend
-            fig.legend(unique.values(), unique.keys(), loc="upper center", ncol=3)
-
-            fig.tight_layout(pad=0.5)  # Adjust spacing between subplots
+            fig.tight_layout(
+                pad=0.5, rect=[0, 0, 1, 0.92]
+            )  # Adjust spacing between subplots
 
             # If still overlapping, fine-tune spacing:
             fig.subplots_adjust(hspace=0.05)
 
-        plt.tight_layout(rect=[0, 0, 1, 0.95])  # leave space for the legend
+            # Create a single, global legend
+            fig.legend(unique.values(), unique.keys(), loc="upper center", ncol=3)
+
+        # plt.tight_layout(rect=[0, 0, 1, 0.95])  # leave space for the legend
 
         aggregated = defaultdict(list)
         for metrics in all_metrics:
@@ -901,8 +906,8 @@ class Dubins_WM_Env(gym.Env):
             [priv_state[0], priv_state[1], np.sin(priv_state[2]), np.cos(priv_state[2])]
         )
         obs_gt, _ = gt_env.reset(initial_state=gt_state.cpu().numpy())
-        # TODO: Set constraints of gt_env to the same as self.constraints
-        gt_env.constraints = self.gt_constraints.copy()
+        # TODO: Set constraints of gt_env to the same as self.constraint
+        gt_env.constraints = self.gt_constraint.copy()
         done_gt = False
         imgs_traj = []
         t = 0

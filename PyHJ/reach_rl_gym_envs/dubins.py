@@ -8,6 +8,7 @@ import numpy as np
 import torch
 from gymnasium import spaces
 from matplotlib.patches import Circle
+
 from PyHJ.reach_rl_gym_envs.utils.dubins_gt_solver import DubinsHJSolver
 from PyHJ.reach_rl_gym_envs.utils.env_eval_utils import get_eval_plot
 from PyHJ.utils import evaluate_V, find_a
@@ -22,7 +23,7 @@ class Dubins_Env(gym.Env):
         self.high = np.array([1.1, 1.1, 1.1, 1.1])
         self.low = np.array([-1.1, -1.1, -1.1, -1.1])
         self.num_constraints = 1  # Number of constraints
-        self.constraints_shape = 3  # Shape of one constraint, e.g. [x, y, r]
+        self.constraint_shape = 3  # Shape of one constraint, e.g. [x, y, r]
         self.observation_space = spaces.Dict(
             {
                 "state": spaces.Box(low=self.low, high=self.high, dtype=np.float32),
@@ -35,7 +36,7 @@ class Dubins_Env(gym.Env):
                         "C -> N C",
                         N=self.num_constraints,
                     ),
-                    shape=(self.num_constraints, self.constraints_shape + 1),
+                    shape=(self.num_constraints, self.constraint_shape + 1),
                     dtype=np.float32,
                 ),
             }
@@ -66,17 +67,14 @@ class Dubins_Env(gym.Env):
 
         # l(x) = (x-x0)^2 + (y-y0)^2 - r^2
         rews = []
-        for constraint in self.constraints:
-            x, y, r, u = (
-                constraint  # x, y are the center of the circle, r is the radius, u is the active flag
-            )
-            if u == 0:
-                rew = (
-                    np.inf
-                )  # if the constraint is inactive, we set the reward to infinity
-            else:
-                rew = (self.state[0] - x) ** 2 + (self.state[1] - y) ** 2 - r**2
-            rews.append(rew)
+        x, y, r, u = (
+            self.constraint  # x, y are the center of the circle, r is the radius, u is the active flag
+        )
+        if u == 0:
+            rew = np.inf  # if the constraint is inactive, we set the reward to infinity
+        else:
+            rew = (self.state[0] - x) ** 2 + (self.state[1] - y) ** 2 - r**2
+        rews.append(rew)
 
         rew = np.min(rews)  # take the minimum reward across all constraints
 
@@ -88,7 +86,7 @@ class Dubins_Env(gym.Env):
         info = {}
         self.obs = {
             "state": self.state,
-            "constraints": np.array(self.constraints),
+            "constraints": np.array(self.constraint),
         }
         return self.obs, rew, terminated, truncated, info
 
@@ -104,12 +102,11 @@ class Dubins_Env(gym.Env):
 
         title = title.rstrip(", ")
         ax.set_title(title)
-        for constraint in self.constraints:
-            x, y, r, u = constraint
-            if u == 0.0:
-                break
-            circle = Circle((x, y), r, color="red", fill=False, label="Fail Set")
-            ax.add_patch(circle)
+
+        x, y, r, _ = self.constraint
+        circle = Circle((x, y), r, color="red", fill=False, label="Fail Set")
+        ax.add_patch(circle)
+
         state = self.obs["state"]
         agent_color = "red" if unsafe else "blue"
         plt.scatter(state[0], state[1], s=150, c=agent_color, zorder=3)
@@ -312,32 +309,16 @@ class Dubins_Env(gym.Env):
             )
 
     def select_constraints(self, in_distribution=True):
-        N = np.random.randint(1, self.num_constraints + 1)
-        self.constraints = []
-        for _ in range(N):
-            self.constraints.append(
-                self.select_one_constraint(in_distribution=in_distribution)
-            )
+        N = 1
+        self.constraint = self.select_one_constraint(in_distribution=in_distribution)
 
-        for _ in range(self.num_constraints - N):
-            self.constraints.append(
-                np.array(
-                    [
-                        np.random.uniform(low=-1.0, high=1.0),
-                        np.random.uniform(low=-1.0, high=1.0),
-                        np.random.uniform(low=0.1, high=0.5),
-                        0.0,  # This is used to say that this constraint is inactive
-                    ]
-                )
-            )
+        # assert len(self.constraint) == self.num_constraints, (
+        #     "Number of constraints should be {}, but got {}".format(
+        #         self.num_constraints, len(self.constraint)
+        #     )
+        # )
 
-        assert len(self.constraints) == self.num_constraints, (
-            "Number of constraints should be {}, but got {}".format(
-                self.num_constraints, len(self.constraints)
-            )
-        )
-
-        return np.array(self.constraints)
+        return np.array(self.constraint)
 
     def get_eval_plot(self, policy, critic, in_distribution=True):
         return get_eval_plot(

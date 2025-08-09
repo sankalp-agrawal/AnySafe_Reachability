@@ -11,6 +11,7 @@ import torch
 import torch.nn as nn
 import wandb
 from PyHJ.utils import WandbLogger
+from sklearn.metrics import f1_score
 
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(parent_dir)
@@ -352,6 +353,65 @@ def topographic_map(
             raise ValueError(
                 f"Unknown similarity metric: {similarity_metric}. Supported: ['Cosine_Similarity', 'Euclidean Distance', 'Learned']"
             )
+
+        if similarity_metric == "Cosine_Similarity":
+            pred_vals = einops.rearrange(
+                torch.tensor(metric[:, 0]), "(W H) -> H W", H=config.ny, W=config.nx
+            )  # flatten for plotting
+            grid_points = torch.meshgrid(
+                torch.linspace(-1.1, 1.1, config.nx),
+                torch.linspace(-1.1, 1.1, config.ny),
+            )
+            grid_points = torch.stack(grid_points, dim=-1)
+            dists = torch.norm((grid_points - torch.tensor([0.0, 0.0])), dim=-1)
+            gt_vals = dists > 0.5
+
+            # Flatten
+            pred_flat = pred_vals.flatten()
+            gt_flat = gt_vals.flatten()
+
+            # Get unique sorted prediction values (empirical thresholds)
+            thresholds = torch.arange(
+                pred_flat.min(), pred_flat.max() + 0.01, 0.01
+            )  # [T]
+
+            # Move to NumPy for sklearn
+            pred_np = pred_flat.cpu().numpy()
+            gt_np = gt_flat.cpu().numpy()
+
+            # For all thresholds, compute predicted labels
+            # Shape: [T, N]
+            pred_labels = (pred_np[None, :] > thresholds[:, None].cpu().numpy()).astype(
+                np.uint8
+            )
+
+            # Compute F1 for each threshold (vectorized)
+            # (scikit-learn expects 1D inputs, so use list comprehension)
+            accuracies = np.array(
+                [np.mean(gt_np == pred_labels[i]) for i in range(len(thresholds))]
+            )
+            f1_scores = np.array(
+                [f1_score(gt_np, pred_labels[i]) for i in range(len(thresholds))]
+            )
+
+            # Find the best threshold based on F1 score
+            best_idx = f1_scores.argmax()
+            best_thresh = thresholds[best_idx].item()
+            best_accuracy = accuracies[best_idx]
+
+            print(
+                f"Best threshold: {best_thresh:.4f}, Best F1 Score: {f1_scores[best_idx]:.4f}"
+            )
+
+            # Pick the best threshold
+            best_idx = accuracies.argmax()
+            best_thresh = thresholds[best_idx].item()
+            best_accuracy = accuracies[best_idx]
+
+            print(
+                f"Best threshold: {best_thresh:.4f}, Best accuracy: {best_accuracy:.4f}"
+            )
+            exit()
 
         metrics = einops.rearrange(metric, "(W H) N -> N H W", W=config.nx, H=config.ny)
         for j, metric in enumerate(metrics):

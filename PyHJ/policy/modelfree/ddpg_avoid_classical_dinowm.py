@@ -191,8 +191,9 @@ class avoid_DDPGPolicy_annealing_dinowm(BasePolicy):
         if not self.warmup:
             for _ in range(self.actor_gradient_steps):
                 act = self(batch, model="actor").act
-                rot_cost = torch.norm(act[:, 3:6], dim=1)
-                xyz_cost = torch.norm(act[:, :3], dim=1)
+
+                rot_cost = torch.norm(act[:, [2]], dim=1)  # only yaw rotation
+                xyz_cost = torch.norm(act[:, :2], dim=1)  # only xy position
                 actor_loss = (
                     -self.critic(batch.obs, act).mean()
                     + 0.05 * rot_cost.mean()

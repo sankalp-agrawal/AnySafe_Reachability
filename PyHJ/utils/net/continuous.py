@@ -65,22 +65,18 @@ class Actor(nn.Module):
             raise NotImplementedError(
                 "obs beyond state and constraint is not supported yet."
             )
-        constraints = torch.tensor(
-            obs["constraints"], device=self.device
-        )  # (B, N, C + 1)
+        assert obs["constraints"].ndim == 2, "Constraints should be 2D tensor."
+        constraints = torch.tensor(obs["constraints"], device=self.device)  # (B, C + 1)
 
         encodings = self.preprocess.constraint_encoder(
-            constraints[..., :-1]  # (B, N, C)
-        )  # unmasked encodings of constraints (B, N, Z)
+            constraints[..., :-1]  # (B, C)
+        )  # unmasked encodings of constraints (B, Z)
 
-        mask = constraints[..., -1] == 1  # (B, N)
-        mask_expanded = mask.unsqueeze(-1)  # (B, N, 1)
+        mask = constraints[..., -1] == 1  # (B)
+        mask_expanded = mask.unsqueeze(-1)  # (B, 1)
 
         # Step 2: Zero out masked values and sum
-        encodings_masked = (
-            encodings * mask_expanded
-        )  # masked values are zeroed (B, N, Z)
-        sum_masked = encodings_masked.sum(dim=-2)  # shape (B, Z)
+        encodings_masked = encodings * mask_expanded  # masked values are zeroed (B, Z)
 
         # Step 3: Count number of True entries per batch
         count = mask.sum(dim=-1, keepdim=True).clamp(
@@ -88,8 +84,17 @@ class Actor(nn.Module):
         )  # shape (B, 1), clamp to avoid division by zero
 
         # Step 4: Compute mean
-        encodings_masked = sum_masked / count  # shape (B, Z)
+        encodings_masked = encodings_masked / count  # shape (B, Z)
 
+        assert (
+            torch.tensor(obs["state"], device=self.device).shape[:-1]
+            == encodings_masked.shape[:-1]
+        ), (
+            "State and encodings must have the same shape except for the last dimension. Got {} and {}.".format(
+                torch.tensor(obs["state"], device=self.device).shape[:-1],
+                encodings_masked.shape[:-1],
+            )
+        )
         return torch.cat(
             [torch.tensor(obs["state"], device=self.device), encodings_masked],
             dim=-1,
@@ -172,30 +177,26 @@ class Critic(nn.Module):
                 "obs beyond state and constraint is not supported yet."
             )
 
-        constraints = torch.tensor(
-            obs["constraints"], device=self.device
-        )  # (B, N, C + 1)
+        constraints = torch.tensor(obs["constraints"], device=self.device)  # (B, C + 1)
 
         encodings = self.preprocess.constraint_encoder(
-            constraints[..., :-1]  # (B, N, C)
-        )  # unmasked encodings of constraints (B, N, Z)
+            constraints[..., :-1]  # (B, C)
+        )  # unmasked encodings of constraints (B, Z)
 
-        mask = constraints[..., -1] == 1  # (B, N)
-        mask_expanded = mask.unsqueeze(-1)  # (B, N, 1)
+        mask = constraints[..., -1] == 1  # (B)
+        mask_expanded = mask.unsqueeze(-1)  # (B, 1)
 
         # Step 2: Zero out masked values and sum
-        encodings_masked = (
-            encodings * mask_expanded
-        )  # masked values are zeroed (B, N, Z)
-        sum_masked = encodings_masked.sum(dim=1)  # shape (B, Z)
+        encodings_masked = encodings * mask_expanded  # masked values are zeroed (B, Z)
+        # sum_masked = encodings_masked  # .sum(dim=1)  # shape (B, Z)
 
-        # Step 3: Count number of True entries per batch
-        count = mask.sum(dim=1, keepdim=True).clamp(
-            min=1
-        )  # shape (B, 1), clamp to avoid division by zero
+        # # Step 3: Count number of True entries per batch
+        # count = mask.sum(dim=1, keepdim=True).clamp(
+        #     min=1
+        # )  # shape (B, 1), clamp to avoid division by zero
 
-        # Step 4: Compute mean
-        encodings_masked = sum_masked / count  # shape (B, Z)
+        # # Step 4: Compute mean
+        # encodings_masked = sum_masked / count  # shape (B, Z)
 
         return torch.cat(
             [torch.tensor(obs["state"], device=self.device), encodings_masked], dim=-1

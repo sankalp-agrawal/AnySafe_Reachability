@@ -12,7 +12,7 @@ import torch
 import torch.nn.functional as F
 import umap.umap_ as umap
 import wandb
-from dino_wm.dino_models import VideoTransformer, normalize_acs
+from dino_wm.dino_models import VideoTransformer, normalize_acs, select_xyyaw_from_state
 from dino_wm.test_loader import SplitTrajectoryDataset
 from matplotlib import colormaps
 from matplotlib.cm import rainbow
@@ -203,6 +203,7 @@ train_data_labeled = SplitTrajectoryDataset(
     num_test=0,
     provide_labels=True,  # Labeled data
     num_examples_per_class=args.num_examples_per_class,
+    only_pass_labeled_examples=True,
 )
 
 if args.use_unlabeled_data:
@@ -234,6 +235,11 @@ test_loader = DataLoader(
 device = "cuda:0"
 
 nb_classes = 3  # three regions
+label_to_str = {
+    0: "Left",
+    1: "Middle",
+    2: "Right",
+}
 
 # Backbone Model
 LOG_DIR = "logs_pa"
@@ -243,7 +249,7 @@ model = VideoTransformer(
     image_size=(224, 224),
     dim=384,  # DINO feature dimension
     ac_dim=10,  # Action embedding dimension
-    state_dim=8,  # State dimension
+    state_dim=3,  # State dimension
     depth=6,
     heads=16,
     mlp_dim=2048,
@@ -251,7 +257,7 @@ model = VideoTransformer(
     dropout=0.1,
 ).to(device)
 # model.load_state_dict(torch.load("../checkpoints/best_classifier.pth"), strict=False)
-load_state_dict_flexible(model, "../checkpoints/best_classifier.pth")
+load_state_dict_flexible(model, "../checkpoints/multi_classifier.pth")
 # model.load_state_dict(torch.load("../checkpoints_pa/encoder_0.1.pth"))
 
 for name, param in model.named_parameters():
@@ -286,15 +292,6 @@ with h5py.File(hdf5_file_test, "r") as hf:
     database = {
         i: data_from_traj(hf[traj_id]) for i, traj_id in enumerate(trajectory_ids)
     }
-
-constraint1 = {
-    # "wrist": database[7]["robot0_eye_in_hand_image"][82],
-    "front": database[7]["agentview_image"][82],
-}  # weak unsafe frame
-constraint2 = {
-    # "wrist": database[1]["robot0_eye_in_hand_image"][108],
-    "front": database[1]["agentview_image"][108],
-}  # unsafe frame
 
 
 print("Training parameters: {}".format(vars(args)))
@@ -388,8 +385,8 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
         inputs1 = data1[:, -1:]  # [B 1, 256, 384]
         # inputs2 = data2[:, -1:]  # [B 1, 256, 384]
 
-        data_state = data["state"].to(device)
-        states = data_state[:, -1:]  # [B 1, 8]
+        data_state = select_xyyaw_from_state(data["state"]).to(device)
+        states = data_state[:, -1:]  # [B 1, 3]
 
         data_acs = data["action"].to(device)
         acs = data_acs[:, -1:]  # [B 1, 10]
@@ -403,7 +400,9 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
                     semantic_features_unlabeled = model.semantic_embed(
                         inp1=data_unlabeled["cam_zed_embd"][:, -1:].to(device),
                         # inp2=data_unlabeled["cam_rs_embd"][:, -1:].to(device),
-                        state=data_unlabeled["state"][:, -1:].to(device),
+                        state=select_xyyaw_from_state(
+                            data_unlabeled["state"][:, -1:]
+                        ).to(device),
                     )
                     semantic_features_unlabeled_tensor.append(
                         semantic_features_unlabeled
@@ -431,14 +430,12 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
                         semantic_features_unlabeled_tensor[combined_indices]
                     )
 
-        # unsafe_weak_mask = labels_gt == 2.0
         labels_gt_masked = copy.deepcopy(labels_gt)
         mask = (labels_gt_masked != -1.0).squeeze()
         labels_gt_masked = (
             labels_gt_masked[mask] - 1
         )  # Remove -1 labels, shift range to 0-2
         semantic_features = semantic_features[mask]  # Remove -1 labels
-        # labels_gt_masked[unsafe_weak_mask] = 1.0  # Set
 
         loss, __, __ = criterion(
             X=semantic_features.float(),
@@ -464,9 +461,6 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
             semantic_features.float(), "B T Z -> (B T) Z"
         )  # Ensure X is in the correct shape
 
-        cos_sim_fail = F.linear(losses.l2_norm(semantic_features), losses.l2_norm(P))[
-            :, -1
-        ]
         cos_sim = F.linear(losses.l2_norm(semantic_features), losses.l2_norm(P))
         cos_sim_logits = F.softmax(cos_sim, dim=-1)  # Softmax over classes
 
@@ -499,10 +493,11 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
 
         else:
             auc = roc_auc_score(
-                y_true=labels_gt_masked.cpu().numpy(),
+                y_true=labels_gt_masked.cpu().numpy().squeeze(),
                 y_score=cos_sim_logits.detach().cpu().numpy(),
                 multi_class="ovr",
                 average="macro",
+                labels=np.arange(nb_classes),  # ensures 3 labels for 3 columns
             )
 
         opt.zero_grad()
@@ -536,24 +531,6 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
     scheduler.step()
 
     if epoch >= 0:
-        for data, constraint, t in zip(
-            [database[7], database[1]], [constraint1, constraint2], [82, 108]
-        ):
-            # inputs2 = (  # [1, 1, 256, 384]
-            #     data["cam_rs_embd"][[t], :].to(device).unsqueeze(0)
-            # )
-            inputs1 = (  # [1, 1, 256, 384]
-                data["cam_zed_embd"][[t], :].to(device).unsqueeze(0)
-            )
-            # acs = data["action"][t, :].to(device).unsqueeze(0)
-            # acs = normalize_acs(acs, device=device)
-            states = data["state"][[t], :].to(device).unsqueeze(0)  # [1, 1, 8]
-
-            semantic_feat = model.semantic_embed(  # [embedding_dim]
-                inp1=inputs1, state=states
-            )
-            constraint.update({"semantic_feat": semantic_feat.squeeze()})
-
         metrics = {}
         X = []
         y = []
@@ -577,7 +554,9 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
                 inputs1 = (  # [B, 1, 256, 384]
                     data["cam_zed_embd"][:, -1:].to(device)[mask]
                 )
-                states = data["state"][:, -1:].to(device)[mask]  # [B, 1, 8]
+                states = select_xyyaw_from_state(data["state"][:, -1:]).to(device)[
+                    mask
+                ]  # [B, 1, 3]
 
                 semantic_features = model.semantic_embed(  # [embedding_dim]
                     inp1=inputs1, state=states
@@ -619,7 +598,6 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
             num_classes_eval = len(np.unique(y))
 
             y_gt_masked = copy.deepcopy(y)
-            # y_gt_masked[y == 2] = 1  # Set weak unsafe to unsafe
 
             # Calculate metrics
             metrics["Accuracy"] = balanced_accuracy = accuracy_score(
@@ -652,7 +630,6 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
 
         def cosine_sim_plot_eval(X, y):
             y_masked = copy.deepcopy(y)
-            # y_masked[y == 2] = 1  # Set weak unsafe to unsafe
 
             X_class = {
                 k: X[y_masked == k]
@@ -768,57 +745,35 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
 
         cosine_sim_plot_eval(X, y)
 
-        def const_conditioned_plots(X, y, const1, const2):
+        def const_conditioned_plots(X, y):
             y_masked = copy.deepcopy(y)
-            y_masked[y == 2] = 1  # Set weak unsafe to unsafe
 
             P = criterion.proxies.detach()  # Ensure P is in the same dtype as X
 
-            cos_sim_fail = -F.linear(
+            cos_sim_proxies = -F.linear(
                 losses.l2_norm(torch.tensor(X, device=P.device).float()),
                 losses.l2_norm(P),
-            )[:, -1]
-
-            cos_sim_const1 = -F.linear(
-                losses.l2_norm(torch.tensor(X, device=P.device).float()),
-                losses.l2_norm(const1["semantic_feat"].unsqueeze(0).float()),
-            )[:, -1].detach()
-
-            cos_sim_const2 = -F.linear(
-                losses.l2_norm(torch.tensor(X, device=P.device).float()),
-                losses.l2_norm(const2["semantic_feat"].unsqueeze(0).float()),
-            )[:, -1].detach()
+            ).cpu()
 
             thresholds = np.linspace(-1, 1, 100)
-            fail_proxy_data = {
-                "cos_sim": cos_sim_fail.cpu().numpy(),
-                "tp_rates": [],
-                "tn_rates": [],
-                "fp_rates": [],
-                "fn_rates": [],
-            }
-            const1_data = {
-                "cos_sim": cos_sim_const1.cpu().numpy(),
-                "tp_rates": [],
-                "tn_rates": [],
-                "fp_rates": [],
-                "fn_rates": [],
-            }
-            const2_data = {
-                "cos_sim": cos_sim_const2.cpu().numpy(),
-                "tp_rates": [],
-                "tn_rates": [],
-                "fp_rates": [],
-                "fn_rates": [],
+            proxy_data = {
+                k: {
+                    "cos_sim": cos_sim_proxies[:, k],
+                    "tp_rates": [],
+                    "tn_rates": [],
+                    "fp_rates": [],
+                    "fn_rates": [],
+                }
+                for k in range(nb_classes)
             }
             for t in thresholds:
-                for data in [fail_proxy_data, const1_data, const2_data]:
+                for prox, data in proxy_data.items():
                     cos_sim = data["cos_sim"]
 
-                    tp = ((cos_sim > t) & (y_masked == 0)).sum()
-                    fp = ((cos_sim > t) & (y_masked == 1)).sum()
-                    tn = ((cos_sim <= t) & (y_masked == 1)).sum()
-                    fn = ((cos_sim <= t) & (y_masked == 0)).sum()
+                    tp = ((cos_sim > t) & (y_masked != prox)).sum()
+                    fp = ((cos_sim > t) & (y_masked == prox)).sum()
+                    tn = ((cos_sim <= t) & (y_masked == prox)).sum()
+                    fn = ((cos_sim <= t) & (y_masked != prox)).sum()
 
                     data["tp_rates"].append(tp / (tp + fn) if (tp + fn) > 0 else 0)
                     data["tn_rates"].append(tn / (tn + fp) if (tn + fp) > 0 else 0)
@@ -826,7 +781,7 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
                     data["fn_rates"].append(fn / (fn + tp) if (fn + tp) > 0 else 0)
 
             intersect_thresholds = []
-            for data in [fail_proxy_data, const1_data, const2_data]:
+            for prox, data in proxy_data.items():
                 data["tp_rates"] = np.array(data["tp_rates"])
                 data["tn_rates"] = np.array(data["tn_rates"])
                 thresholds = np.array(thresholds)
@@ -842,18 +797,11 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
 
             # Plot all the metrics
             fig, axes = plt.subplots(1, 3, figsize=(30, 8))
-            for ax, (data, title) in zip(
-                axes,
-                [
-                    (fail_proxy_data, "Fail Proxy"),
-                    (const1_data, "Constraint 1 Conditioned"),
-                    (const2_data, "Constraint 2 Conditioned"),
-                ],
-            ):
+            for ax, (prox, data) in zip(axes, proxy_data.items()):
                 ax.set_aspect("equal")
                 thresholds = np.array(thresholds)
 
-                ax.set_title(title)
+                ax.set_title(f"Conditioned on {label_to_str[prox]} Proxy")
 
                 ax.plot(
                     thresholds,
@@ -867,8 +815,6 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
                     label="True Negative Rate",
                     color="orange",
                 )
-                # ax.plot(thresholds, fp_rates, label="False Positive Rate", color="red")
-                # ax.plot(thresholds, fn_rates, label="False Negative Rate", color="green")
 
                 # Add vertical line and label at intersection
                 ax.axvline(
@@ -908,21 +854,14 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
 
             # Plot AUC curve
             fig, axes = plt.subplots(1, 3, figsize=(30, 8))
-            for ax, (data, title) in zip(
-                axes,
-                [
-                    (fail_proxy_data, "Fail Proxy"),
-                    (const1_data, "Constraint 1 Conditioned"),
-                    (const2_data, "Constraint 2 Conditioned"),
-                ],
-            ):
+            for ax, (prox, data) in zip(axes, proxy_data.items()):
                 ax.set_aspect("equal")
                 fp_rates = np.array(data["fp_rates"])
                 tp_rates = np.array(data["tp_rates"])
                 ax.plot(fp_rates, tp_rates, label="ROC Curve", color="blue")
                 ax.set_xlabel("False Positive Rate")
                 ax.set_ylabel("True Positive Rate")
-                ax.set_title(title)
+                ax.set_title(f"Conditioned on {label_to_str[prox]} Proxy")
                 ax.legend()
             plt.tight_layout()
             wandb.log(
@@ -944,20 +883,8 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
             used_labels = set()
             global_handles = []
             global_labels = []
-            label_to_str = {
-                0: "Safe",
-                1: "Fail",
-                2: "Weak Fail",
-            }
 
-            for ax, (data, title) in zip(
-                axes,
-                [
-                    (fail_proxy_data, "Fail Proxy"),
-                    (const1_data, "Const 1 (Weak Unsafe) Conditioned"),
-                    (const2_data, "Const2 (Unsafe) Conditioned"),
-                ],
-            ):
+            for ax, (prox, data) in zip(axes, proxy_data.items()):
                 ax.set_aspect("auto")
                 cos_sim = -data[
                     "cos_sim"
@@ -982,7 +909,7 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
                         global_handles.append(line)
                         global_labels.append(plot_label)
 
-                ax.set_title(title)
+                ax.set_title(f"Conditioned on {label_to_str[prox]} Proxy")
                 ax.set_xlabel("Cosine Similarity")
                 ax.set_ylabel("Density")
 
@@ -1005,15 +932,12 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
             )
             plt.close()
 
-            return cos_sim_fail
+            return cos_sim_proxies
 
-        cos_sim_fail = const_conditioned_plots(
-            X, y, const1=constraint1, const2=constraint2
-        )
+        cos_sim_proxies = const_conditioned_plots(X, y)
 
         if nb_classes == 2:
             y_masked = copy.deepcopy(y)
-            y_masked[y == 2] = 1
             auc = roc_auc_score(
                 y_true=y_masked,
                 y_score=-cos_sim_fail.cpu().numpy(),
@@ -1116,7 +1040,7 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
             )
             tqdm.write(f"Model saved to /checkpoints_pa/encoder_{model_name}.pth")
 
-            if balanced_accuracy < best_eval:
+            if balanced_accuracy > best_eval:
                 best_eval = balanced_accuracy
                 print(f"New best at iter {i}, saving model.")
                 torch.save(

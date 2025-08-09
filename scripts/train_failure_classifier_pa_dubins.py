@@ -301,7 +301,7 @@ for epoch in tqdm(range(0, config.pa["nb_epochs"]), desc="Training Epochs", posi
             # semantic_features: [B T 512]
             # feat_gt: [B T 544]
             semantic_features, feat_gt = model.semantic_embed(data)
-            feat_pred = decoder(semantic_features)
+            # feat_pred = decoder(semantic_features)
 
             # Normalize along the embedding dimension
             # (B T 512)
