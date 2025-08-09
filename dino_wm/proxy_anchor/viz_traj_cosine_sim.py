@@ -3,9 +3,11 @@ import os
 import random
 import sys
 
+import einops
 import h5py
 import imageio
 import imageio.v2 as imageio
+import matplotlib as mpl
 import matplotlib.gridspec as gridspec
 import matplotlib.pyplot as plt
 import numpy as np
@@ -16,13 +18,19 @@ parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(parent_dir)
 
 # Import custom modules
+import os
+import sys
+
 from dino_wm.dino_decoder import VQVAE
 from dino_wm.dino_models import VideoTransformer, normalize_acs, select_xyyaw_from_state
+from gymnasium import spaces
 from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 from proxy_anchor.utils import load_state_dict_flexible
+from PyHJ.exploration import GaussianNoise
 from PyHJ.utils.net.common import Net
 from PyHJ.utils.net.continuous import Actor, Critic
 from torchvision import transforms
+from tqdm import *
 from tqdm import tqdm
 
 # Add directories to system path
@@ -87,7 +95,6 @@ def data_from_traj(traj):
 
 
 import imageio
-from matplotlib import cm
 
 
 def make_comparison_video(
@@ -129,7 +136,7 @@ def make_comparison_video(
         ):
             if subkey in output[key]:
                 output[key][subkey] = np.tanh(
-                    3 * np.array(output[key][subkey]).squeeze()
+                    2 * np.array(output[key][subkey]).squeeze()
                 )
 
     T = len(output["ground_truth"]["ken_fail"])
@@ -173,7 +180,7 @@ def make_comparison_video(
     im_const2_img = init_img(fig.add_subplot(gs[2, 7]), "Constraint 2")
 
     # Generate colors from rainbow colormap
-    cmap = cm.get_cmap("rainbow")
+    cmap = mpl.colormaps["rainbow"]
     colors = (
         [cmap(i / (len(keys_to_plot) - 1)) for i in range(len(keys_to_plot))]
         if len(keys_to_plot) > 1
@@ -346,9 +353,13 @@ if __name__ == "__main__":
     critic_activation = torch.nn.ReLU
 
     critic_net = Net(
-        state_shape=(1, 1, 786),
-        action_shape=7,
+        state_shape=(397,),
+        obs_inputs=["state", "constraint"],
+        action_shape=(3,),
         hidden_sizes=[512, 512, 512, 512],
+        constraint_dim=512,
+        constraint_embedding_dim=512,
+        hidden_sizes_constraint=[],
         activation=critic_activation,
         concat=True,
         device=device,
@@ -357,39 +368,43 @@ if __name__ == "__main__":
     critic = Critic(critic_net, device=critic_net.device).to(critic_net.device)
     critic_optim = torch.optim.Adam(critic.parameters(), lr=1e-3, weight_decay=1e-3)
 
+    from PyHJ.policy import avoid_DDPGPolicy_annealing_dinowm as DDPGPolicy
+
     print(
         "DDPG under the Avoid annealed Bellman equation with no Disturbance has been loaded!"
     )
 
     actor_net = Net(
-        state_shape=(1, 1, 786),
+        (397,),
+        obs_inputs=["state", "constraint"],
         hidden_sizes=[512, 512, 512, 512],
         activation=actor_activation,
         device=device,
+        constraint_dim=512,
+        constraint_embedding_dim=512,
+        hidden_sizes_constraint=[],
     )
-    actor = Actor(actor_net, action_shape=(7,), max_action=1.0, device=device).to(
-        device
-    )
+    actor = Actor(actor_net, (3,), max_action=1, device=device).to(device)
     actor_optim = torch.optim.Adam(actor.parameters(), lr=1e-4)
 
-    # policy = DDPGPolicy(
-    #     critic,
-    #     critic_optim,
-    #     tau=0.005,
-    #     gamma=0.9999,
-    #     exploration_noise=GaussianNoise(sigma=0.1),
-    #     reward_normalization=False,
-    #     estimation_step=1,
-    #     action_space=spaces.Box(low=-1.0, high=1.0, shape=(7,), dtype=np.float32),
-    #     actor=actor,
-    #     actor_optim=actor_optim,
-    #     actor_gradient_steps=1,
-    # )
-    # policy.load_state_dict(
-    #     torch.load(
-    #         "/home/sunny/anysafe_project/AnySafe_Reachability/scripts/logs/dinowm/epoch_id_16/rotvec_policy.pth"
-    #     )
-    # )
+    policy = DDPGPolicy(
+        critic,
+        critic_optim,
+        tau=0.005,
+        gamma=0.9999,
+        exploration_noise=GaussianNoise(sigma=0.1),
+        reward_normalization=False,
+        estimation_step=1,
+        action_space=spaces.Box(low=-1.0, high=1.0, shape=(3,), dtype=np.float32),
+        actor=actor,
+        actor_optim=actor_optim,
+        actor_gradient_steps=1,
+    )
+    policy.load_state_dict(
+        torch.load(
+            "/home/sunny/AnySafe_Reachability/scripts/logs/dinowm/epoch_id_16/rotvec_policy_const1.pth"
+        )
+    )
     # ken_policy = copy.deepcopy(policy)
     # ken_policy.load_state_dict(
     #     torch.load(
@@ -454,7 +469,7 @@ if __name__ == "__main__":
             # "cosine_sim_const1": copy.deepcopy(none_list),
             # "cosine_sim_const2": copy.deepcopy(none_list),
             # "value_fn_ken": copy.deepcopy(none_list),
-            # "value_fn": copy.deepcopy(none_list),
+            "value_fn": copy.deepcopy(none_list),
             "gt_fail_label": np.clip(data["failure"][:], a_min=0, a_max=4) / 4,
         }
         for class_id in range(nb_classes):
@@ -480,6 +495,12 @@ if __name__ == "__main__":
         ).unsqueeze(0)
 
         EVAL_H = 10
+
+        constraint = einops.repeat(
+            torch.concat((transition.proxies[0], torch.tensor([1.0], device=device))),
+            "C -> B C",
+            B=1,
+        )  # 1 indicates constraint is active
 
         # Imagination Loop
         for t in tqdm(
@@ -598,6 +619,27 @@ if __name__ == "__main__":
                 index = t + BL - 1
             else:
                 index = t + BL
+
+            obs = {
+                "state": latent[:, [-1]].mean(dim=2).reshape(1, -1),
+                "constraints": constraint,
+            }
+            output["imagination"]["value_fn"].append(
+                2
+                * policy.critic(
+                    obs=obs,
+                    act=normalize_acs(
+                        data["action"][[index], :]
+                        .to(device)
+                        .unsqueeze(0)  # Next action
+                    ),
+                )
+                .detach()
+                .squeeze()
+                .cpu()
+                .numpy()
+            )
+            # output["imagination"]["value_fn_ken"].append(
             # output["imagination"]["value_fn"].append(
             #     policy.critic(
             #         obs=latent[:, [-1]].mean(dim=2),
@@ -717,8 +759,30 @@ if __name__ == "__main__":
                     -pred_labels.detach().squeeze().cpu().numpy()[-1, class_id]
                 )
                 output["ground_truth"][f"class_{class_id}_prox"].append(
-                    2 * cos_sim_matrix[-1, class_id].item()
+                    cos_sim_matrix[-1, class_id].item()
                 )
+
+            obs = {
+                "state": latent[:, [-1]].mean(dim=2).reshape(1, -1),
+                "constraints": constraint,
+            }
+            if t + BL >= len(data["action"]):  # Last step
+                index = t + BL - 1
+            else:
+                index = t + BL
+            output["ground_truth"]["value_fn"].append(
+                2
+                * policy.critic(
+                    obs=obs,
+                    act=normalize_acs(
+                        data["action"][index, :].to(device).unsqueeze(0)  # Next action
+                    ),
+                )
+                .detach()
+                .squeeze()
+                .cpu()
+                .numpy()
+            )
             # output["ground_truth"]["cosine_sim_const1"].append(
             #     -F.cosine_similarity(
             #         semantic_features.squeeze()[-1], constraint1["semantic_feat"], dim=0
@@ -761,7 +825,7 @@ if __name__ == "__main__":
             # "cosine_sim_prox",
             # "cosine_sim_const1",
             # "cosine_sim_const2",
-            # "value_fn",
+            "value_fn",
             # "value_fn_ken",
             "gt_fail_label",
         ]

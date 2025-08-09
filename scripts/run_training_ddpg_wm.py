@@ -347,43 +347,49 @@ if not os.path.exists(log_path + "/epoch_id_{}".format(epoch)):
 
 def make_cache(config, thetas):
     nx, ny = config.nx, config.ny
-    cache = {}
 
     cache_file = os.path.join(log_path, "cache.pkl")
     if os.path.exists(cache_file):
         with open(cache_file, "rb") as f:
             cache = pickle.load(f)
-    else:
-        for theta in thetas:
-            v = np.zeros((nx, ny))
-            xs = np.linspace(-1.1, 1.1, nx, endpoint=True)
-            ys = np.linspace(-1.1, 1.1, ny, endpoint=True)
-            key = theta
-            print("creating cache for key", key)
-            idxs, imgs_prev, thetas, thetas_prev = [], [], [], []
-            xs_prev = xs - config.dt * config.speed * np.cos(theta)
-            ys_prev = ys - config.dt * config.speed * np.sin(theta)
-            theta_prev = theta
-            it = np.nditer(v, flags=["multi_index"])
-            while not it.finished:
-                idx = it.multi_index
-                x_prev = xs_prev[idx[0]]
-                y_prev = ys_prev[idx[1]]
-                thetas.append(theta)
-                thetas_prev.append(theta_prev)
-                imgs_prev.append(
-                    get_frame(torch.tensor([x_prev, y_prev, theta_prev]), config)
-                )
-                idxs.append(idx)
-                it.iternext()
-            idxs = np.array(idxs)
-            theta_prev_lin = np.array(thetas_prev)
-            cache[theta] = [idxs, imgs_prev, theta_prev_lin]
 
-        # pickle file
-        cache_file = os.path.join(log_path, "cache.pkl")
-        with open(cache_file, "wb") as f:
-            pickle.dump(cache, f)
+        if cache[0][0].shape[0] != nx * ny:
+            print("Cache file exists but has different dimensions, recreating cache.")
+        else:
+            print("Cache file exists and has correct dimensions, using it.")
+            return cache
+
+    cache = {}
+    for theta in thetas:
+        v = np.zeros((nx, ny))
+        xs = np.linspace(-1.1, 1.1, nx, endpoint=True)
+        ys = np.linspace(-1.1, 1.1, ny, endpoint=True)
+        key = theta
+        print("creating cache for key", key)
+        idxs, imgs_prev, thetas, thetas_prev = [], [], [], []
+        xs_prev = xs - config.dt * config.speed * np.cos(theta)
+        ys_prev = ys - config.dt * config.speed * np.sin(theta)
+        theta_prev = theta
+        it = np.nditer(v, flags=["multi_index"])
+        while not it.finished:
+            idx = it.multi_index
+            x_prev = xs_prev[idx[0]]
+            y_prev = ys_prev[idx[1]]
+            thetas.append(theta)
+            thetas_prev.append(theta_prev)
+            imgs_prev.append(
+                get_frame(torch.tensor([x_prev, y_prev, theta_prev]), config)
+            )
+            idxs.append(idx)
+            it.iternext()
+        idxs = np.array(idxs)
+        theta_prev_lin = np.array(thetas_prev)
+        cache[theta] = [idxs, imgs_prev, theta_prev_lin]
+
+    # pickle file
+    cache_file = os.path.join(log_path, "cache.pkl")
+    with open(cache_file, "wb") as f:
+        pickle.dump(cache, f)
     return cache
 
 

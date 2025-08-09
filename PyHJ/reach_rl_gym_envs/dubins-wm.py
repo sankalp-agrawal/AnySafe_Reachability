@@ -116,18 +116,18 @@ class Dubins_WM_Env(gym.Env):
             * self.turnRate
         )
         self.latent = self.wm.dynamics.imagine_with_action(ac_torch, init)
-
         self.feat = self.wm.dynamics.get_feat(self.latent)
-
         rew, cont = self.safety_margin(self.feat)  # rew is negative if unsafe
+
         self.feat = self.feat.detach().cpu().numpy()
+
         if cont < 0.75:
             terminated = True
         else:
             terminated = False
         truncated = False
         self.obs = {
-            "state": self.feat.flatten(),
+            "state": np.copy(self.feat).flatten(),
             "constraints": self.constraint_sem
             if self.pass_semantic_constraint
             else self.constraint_feat,  # Semantic embedding of the constraints
@@ -156,7 +156,7 @@ class Dubins_WM_Env(gym.Env):
         self.feat = self.wm.dynamics.get_feat(self.latent).detach().cpu().numpy()
         self.select_constraints()
         self.obs = {
-            "state": self.feat.flatten(),
+            "state": np.copy(self.feat).flatten(),
             "constraints": self.constraint_sem
             if self.pass_semantic_constraint
             else self.constraint_feat,  # Semantic embedding of the constraints
@@ -178,11 +178,13 @@ class Dubins_WM_Env(gym.Env):
                 outputs = torch.tanh(self.wm.heads["margin"](feat))
                 g_xList.append(outputs.detach().cpu().numpy())
 
-            safety_margin = np.array(g_xList).reshape(-1)
+            safety_margin = np.array(g_xList).squeeze()
         elif self.safety_margin_type == "cos_sim":
+            # [1 1 512]
             feat_sem = (
                 self.wm.semantic_encoder(feat.to(torch.float32)).detach().cpu().numpy()
             )
+
             with torch.no_grad():
                 constraints = self.constraint_sem[..., :-1]  # (Z)
                 constraints = einops.repeat(
@@ -701,7 +703,7 @@ class Dubins_WM_Env(gym.Env):
 
             # Find contours for gt and rl Value functions
             contours_rl = measure.find_contours(
-                np.array(V > self.config.safety_filter_eps).astype(float)  # , level=0.0
+                np.array(V > 0.0).astype(float)  # , level=0.0
             )
             contours_gt = measure.find_contours(
                 np.array(gt_values[:, :, nt_index].T > 0).astype(float)  # , level=0.0
@@ -761,10 +763,11 @@ class Dubins_WM_Env(gym.Env):
                     axes1,
                     axes2,
                 ]:  # Plot in Continuous plot and binary avoid plot
+                    extent = 1.1
                     [
                         ax.plot(
-                            contour[:, 1] * (2.0 / (nx - 1)) - 1.0,
-                            contour[:, 0] * (2.0 / (ny - 1)) - 1.0,
+                            contour[:, 1] * (2 * extent / (nx - 1)) - extent,
+                            contour[:, 0] * (2 * extent / (ny - 1)) - extent,
                             color="blue",
                             linewidth=2,
                             label=f"RL Value Contour (eps={self.config.safety_filter_eps:.2f})",
@@ -793,10 +796,11 @@ class Dubins_WM_Env(gym.Env):
             # Plot contours for GT Value function
             for contour in contours_gt:
                 for axes in [axes1, axes2]:
+                    extent = 1.1
                     [
                         ax.plot(
-                            contour[:, 1] * (2.0 / (nx - 1)) - 1.0,
-                            contour[:, 0] * (2.0 / (ny - 1)) - 1.0,
+                            contour[:, 1] * (2 * extent / (nx - 1)) - extent,
+                            contour[:, 0] * (2 * extent / (ny - 1)) - extent,
                             color="orange",
                             linewidth=2,
                             label="GT Value Contour",

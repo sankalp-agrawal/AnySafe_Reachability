@@ -9,12 +9,13 @@ from torch.utils.tensorboard import SummaryWriter
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(parent_dir)
 
-import os
-import sys
-
-import wandb
 from dino_wm.dino_models import VideoTransformer
 from dino_wm.test_loader import SplitTrajectoryDataset
+
+# from dreamer import make_dataset
+# NOTE: all the reach-avoid gym environments are in reach_rl_gym, the constraint information is output as an element of the info dictionary in gym.step() function
+from torch.utils.data import DataLoader
+
 from PyHJ.data import Collector, VectorReplayBuffer
 from PyHJ.env import DummyVectorEnv
 from PyHJ.exploration import GaussianNoise
@@ -23,16 +24,11 @@ from PyHJ.utils import WandbLogger
 from PyHJ.utils.net.common import Net
 from PyHJ.utils.net.continuous import Actor, Critic
 
-# from dreamer import make_dataset
-# NOTE: all the reach-avoid gym environments are in reach_rl_gym, the constraint information is output as an element of the info dictionary in gym.step() function
-from torch.utils.data import DataLoader
-from tqdm import *
-
 wm = VideoTransformer(
     image_size=(224, 224),
     dim=384,  # DINO feature dimension
     ac_dim=10,  # Action embedding dimension
-    state_dim=3,  # State dimension
+    state_dim=8,  # State dimension
     depth=6,
     heads=16,
     mlp_dim=2048,
@@ -40,18 +36,13 @@ wm = VideoTransformer(
     dropout=0.1,
 )
 
-# wm.load_state_dict(
-#     torch.load(
-#         "/home/sunny/anysafe_project/AnySafe_Reachability/dino_wm/checkpoints_pa/encoder_mrg_0.1_num_ex_20.pth"
-#     )
-# )
 wm.load_state_dict(
     torch.load(
-        "/home/sunny/AnySafe_Reachability/dino_wm/checkpoints_pa/encoder_mrg_0.1_alpha_32_num_ex_all_ul_F.pth"
+        "/home/kensuke/latent-test/PytorchReachability/dino_wm/checkpoints/best_classifier_gp.pth"
     )
 )
-hdf5_file = "/home/sunny/data/sweeper/train/consolidated.h5"
-hdf5_file_test = "/home/sunny/data/sweeper/test/consolidated.h5"
+
+hdf5_file = "/data/ken/latent-unsafe/consolidated.h5"
 bs = 1
 bl = 20
 device = "cuda:0"
@@ -62,8 +53,8 @@ expert_loader = iter(DataLoader(expert_data, batch_size=1, shuffle=True))
 
 env = gymnasium.make("franka_wm_DINO-v0", params=[wm, expert_data], device=device)
 
-state_shape = env.observation_space["state"].shape or env.observation_space.n
-constraint_shape = env.observation_space["constraints"].shape or env.observation_space.n
+
+state_shape = env.observation_space.shape or env.observation_space.n
 action_shape = env.action_space.shape or env.action_space.n
 max_action = env.action_space.high[0]
 
@@ -93,18 +84,13 @@ critic_activation = torch.nn.ReLU
 
 
 critic_net = Net(
-    state_shape=state_shape,
-    obs_inputs=["state", "constraint"],
-    action_shape=action_shape,
+    state_shape,
+    action_shape,
     hidden_sizes=[512, 512, 512, 512],
-    constraint_dim=512,
-    constraint_embedding_dim=512,
-    hidden_sizes_constraint=[],
     activation=critic_activation,
     concat=True,
     device=device,
 )
-
 
 critic = Critic(critic_net, device=critic_net.device).to(critic_net.device)
 critic_optim = torch.optim.Adam(critic.parameters(), lr=1e-3, weight_decay=1e-3)
@@ -116,15 +102,12 @@ print(
     "DDPG under the Avoid annealed Bellman equation with no Disturbance has been loaded!"
 )
 
+
 actor_net = Net(
     state_shape,
-    obs_inputs=["state", "constraint"],
     hidden_sizes=[512, 512, 512, 512],
     activation=actor_activation,
     device=device,
-    constraint_dim=512,
-    constraint_embedding_dim=512,
-    hidden_sizes_constraint=[],
 )
 actor = Actor(actor_net, action_shape, max_action=max_action, device=device).to(device)
 actor_optim = torch.optim.Adam(actor.parameters(), lr=1e-4)
@@ -194,27 +177,27 @@ for iter in range(warmup + total_eps):
     epoch = epoch + 1
     print("log_path: ", log_path + "/epoch_id_{}".format(epoch))
     if total_eps > 1:
-        writer = SummaryWriter(log_path)
+        writer = SummaryWriter(log_path + "/epoch_id_{}".format(epoch))
     else:
         if not os.path.exists(log_path + "/total_epochs_{}".format(epoch)):
             print("Just created the log directory!")
             print("log_path: ", log_path + "/total_epochs_{}".format(epoch))
             os.makedirs(log_path + "/total_epochs_{}".format(epoch))
-        writer = SummaryWriter(log_path)
+        writer = SummaryWriter(log_path + "/total_epochs_{}".format(epoch))
 
-    logger = WandbLogger(project="DINO Reachability", name="sweeper_reachability_RL")
+    logger = WandbLogger()
     logger.load(writer)
 
     # import pdb; pdb.set_trace()
     result = offpolicy_trainer(
-        policy=policy,
-        train_collector=train_collector,
-        test_collector=test_collector,
-        max_epoch=1,
-        step_per_epoch=steps,  # steps per epoch
-        step_per_collect=8,  # step per collect
-        episode_per_test=1,  # test num
-        batch_size=512,  # batch size
+        policy,
+        train_collector,
+        test_collector,
+        1,
+        steps,  # steps per epoch
+        8,  # step per collect
+        1,  # test num
+        512,  # batch size
         update_per_step=0.125,
         stop_fn=stop_fn,
         save_best_fn=save_best_fn,
@@ -222,4 +205,3 @@ for iter in range(warmup + total_eps):
     )
 
     save_best_fn(policy, epoch=epoch)
-    wandb.log(result)

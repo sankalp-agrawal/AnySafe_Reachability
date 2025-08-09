@@ -17,7 +17,7 @@ from dino_wm.dino_models import normalize_acs, select_xyyaw_from_state
 
 class Franka_DINOWM_Env(gym.Env):
     # TODO: 1. baseline over approximation; 2. our critic loss drop faster
-    def __init__(self, params, device="cuda:0", constraint=None):
+    def __init__(self, params, device="cuda:0"):
         self.device = device
         self.set_wm(*params)
 
@@ -73,12 +73,12 @@ class Franka_DINOWM_Env(gym.Env):
 
         rew = self.safety_margin_pa(latent)  # rew is negative if unsafe
         # rew = self.safety_margin_ken(latent)  # rew is negative if unsafe
-        self.latent = latent.detach().cpu().numpy()
+        self.latent = latent[:, [-1]].mean(dim=2).detach().cpu().numpy()
         terminated = False
         truncated = False
         info = {"is_first": False, "is_terminal": terminated}
         obs = {
-            "state": np.copy(self.latent)[:, -1].mean(axis=-2).flatten(),
+            "state": np.copy(self.latent).flatten(),
             "constraints": self.constraint["semantic_feat"].cpu().numpy(),
         }
         assert obs["state"].shape == self.observation_space["state"].shape, (
@@ -126,7 +126,7 @@ class Franka_DINOWM_Env(gym.Env):
 
         obs = {
             "state": np.copy(
-                self.latent[:, -1].mean(dim=-2).flatten().detach().cpu().numpy()
+                self.latent[:, [-1]].mean(dim=2).flatten().detach().cpu().numpy()
             ),
             "constraints": self.constraint["semantic_feat"].cpu().numpy(),
         }
@@ -159,15 +159,14 @@ class Franka_DINOWM_Env(gym.Env):
         with torch.no_grad():
             inp1 = self.wm.front_head(latent)
             state = self.wm.state_pred(latent)
+            # [1 T S]
             semantic_features = self.wm.semantic_embed(inp1=inp1, state=state)
-            if self.constraint is None:
-                const = self.wm.proxies.to(self.device).detach()  # [M Z]
-            else:
-                const = (
-                    self.constraint["semantic_feat"]
-                    .unsqueeze(0)
-                    .to(self.device)[..., :-1]
-                )  # [1, Z]
+            # if self.constraint is None:
+            #     const = self.wm.proxies.to(self.device).detach()  # [M Z]
+            # else:
+            const = (
+                self.constraint["semantic_feat"].unsqueeze(0).to(self.device)[..., :-1]
+            )  # [1, Z]
 
             assert const.requires_grad is False, "Proxies should not require gradients."
 
@@ -175,12 +174,11 @@ class Franka_DINOWM_Env(gym.Env):
                 semantic_features.squeeze(), p=2, dim=1
             )  # [T, Z]
 
-            const_norm = F.normalize(const, p=2, dim=1)  # [M, Z]
+            const_norm = F.normalize(const, p=2, dim=1)  # [1, Z]
 
             # Compute cosine similarity
-            cos_sim_matrix = queries_norm @ const_norm.T  # [T, M]
-
-            outputs = torch.tanh(2 * -cos_sim_matrix[-1, 0].unsqueeze(0))
+            cos_sim_matrix = queries_norm @ const_norm.T  # [T, 1]
+            outputs = torch.tanh(2 * -cos_sim_matrix[-1])
 
             g_xList.append(outputs.detach().cpu().numpy())
 

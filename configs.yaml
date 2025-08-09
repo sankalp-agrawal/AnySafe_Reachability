@@ -167,7 +167,7 @@ defaults:
 
   env-dist-type: v # 'v' - vanilla, 'fc' - four corners, 'fcfe' - four corners four edges, 'rh' - right half, 'br' - big radii, 'uni' - uniform, 'rhfe' - right half four edges, 'rhbr' - right half big radii
   safety-margin-type: "cos_sim" # cos_sim, learned
-  safety-margin-threshold: -0.60 # type=float, default=0.5)
+  safety-margin-threshold: -0.64 # type=float, default=0.5)
   safety-margin-hard-threshold: False # type=bool, default=False)
   pass-prototype: False # type=bool, default=False) # whether to pass a prototype to the policy net, not the raw constraint
 
@@ -178,9 +178,9 @@ defaults:
   kwargs: {} # type=str, default='{}')
   warm-start-path: null # type=str, default=None) # e.g., log/ra_droneracing_Game-v6/epoch_id_10/policy.pth
 
-  nx: 41
-  ny: 41
-  nt: 41
+  nx: 51
+  ny: 51
+  nt: 51
 
   # Proxy Anchor
   pa:
