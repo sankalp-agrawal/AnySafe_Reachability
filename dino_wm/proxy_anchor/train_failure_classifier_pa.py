@@ -27,7 +27,7 @@ from sklearn.metrics import (
 )
 from torch.utils.data import DataLoader, Subset
 from tqdm import *
-from utils import compare_kdes, load_state_dict_flexible
+from utils import compare_kdes
 from viz_traj_cosine_sim import data_from_traj
 
 base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -256,8 +256,8 @@ model = VideoTransformer(
     num_frames=3,
     dropout=0.1,
 ).to(device)
-# model.load_state_dict(torch.load("../checkpoints/best_classifier.pth"), strict=False)
-load_state_dict_flexible(model, "../checkpoints/multi_classifier.pth")
+model.load_state_dict(torch.load("../checkpoints/best_classifier.pth"), strict=False)
+# load_state_dict_flexible(model, "../checkpoints/multi_classifier.pth")
 # model.load_state_dict(torch.load("../checkpoints_pa/encoder_0.1.pth"))
 
 for name, param in model.named_parameters():
@@ -837,6 +837,10 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
                 ax.set_xlabel("Cosine Similarity Threshold")
                 ax.set_ylabel("Rate")
                 ax.legend()
+
+                # save thresholds to wm
+                model.thresholds[prox] = data["intersect_threshold"]
+
             plt.tight_layout()
 
             wandb.log(

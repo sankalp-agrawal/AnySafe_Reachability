@@ -40,7 +40,7 @@ class Franka_DINOWM_Env(gym.Env):
         self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(3,), dtype=np.float32)
         self.front_hist = None
         self.state_hist = None
-        self.constraint_type = "prox"  # "prox" - proxies, "state" - state
+        self.constraint_type = "database"  # "prox" - proxies, "database"
         self.select_constraint()
 
     def _reset_loader(self):
@@ -72,7 +72,7 @@ class Franka_DINOWM_Env(gym.Env):
         self.state_hist = torch.cat([self.state_hist[:, 1:], state[:, [-1]]], dim=1)
 
         rew = self.safety_margin_pa(latent)  # rew is negative if unsafe
-        # rew = self.safety_margin_ken(latent)  # rew is negative if unsafe
+        # rew = self.safety_margin_classifier(latent)  # rew is negative if unsafe
         self.latent = latent[:, [-1]].mean(dim=2).detach().cpu().numpy()
         terminated = False
         truncated = False
@@ -146,7 +146,7 @@ class Franka_DINOWM_Env(gym.Env):
         g_xList = []
 
         with torch.no_grad():  # Disable gradient calculation
-            outputs = torch.tanh(2 * self.wm.failure_pred(latent)[0, -1])
+            outputs = torch.tanh(2 * self.wm.split_pred(latent)[0, -1])
             g_xList.append(outputs.detach().cpu().numpy())
 
         safety_margin = np.array(g_xList).squeeze()
@@ -192,6 +192,20 @@ class Franka_DINOWM_Env(gym.Env):
             self.constraint = {
                 "semantic_feat": torch.cat(  # Concatenated with 1 means the constraint is active
                     [self.wm.proxies[idx], torch.tensor([1.0]).to(self.device)], dim=0
+                ).detach(),
+            }
+        elif self.constraint_type == "database":
+            data = next(self.data)
+            # cam_zed_embd: [1 1 N P], state: [1 1 3]
+            cam_zed_embd = data["cam_zed_embd"][[0], -1:].to(self.device)
+            state = select_xyyaw_from_state(data["state"][[0], -1:]).to(self.device)
+            # semantic_feat: [Z]
+            semantic_feat = self.wm.semantic_embed(
+                inp1=cam_zed_embd, state=state
+            ).squeeze()
+            self.constraint = {
+                "semantic_feat": torch.cat(  # Concatenated with 1 means the constraint is active
+                    [semantic_feat, torch.tensor([1.0]).to(self.device)], dim=0
                 ).detach(),
             }
         else:

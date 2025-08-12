@@ -25,13 +25,13 @@ from dino_wm.dino_decoder import VQVAE
 from dino_wm.dino_models import VideoTransformer, normalize_acs, select_xyyaw_from_state
 from gymnasium import spaces
 from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
-from proxy_anchor.utils import load_state_dict_flexible
 from PyHJ.exploration import GaussianNoise
 from PyHJ.utils.net.common import Net
 from PyHJ.utils.net.continuous import Actor, Critic
 from torchvision import transforms
 from tqdm import *
 from tqdm import tqdm
+from utils import load_state_dict_flexible
 
 # Add directories to system path
 base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -94,6 +94,31 @@ def data_from_traj(traj):
     return data
 
 
+def evaluate_V(policy, latent, constraint, action, device):
+    constraint = einops.repeat(
+        torch.concat((constraint, torch.tensor([1.0], device=device))),
+        "C -> B C",
+        B=1,
+    )  # 1 indicates constraint is active
+
+    obs = {
+        "state": latent[:, [-1]].mean(dim=2).reshape(1, -1),
+        "constraints": constraint,
+    }
+    return (
+        policy.critic(
+            obs=obs,
+            act=normalize_acs(
+                action.to(device).unsqueeze(0)  # Next action
+            ),
+        )
+        .detach()
+        .squeeze()
+        .cpu()
+        .numpy()
+    )
+
+
 import imageio
 
 
@@ -114,10 +139,10 @@ def make_comparison_video(
 
     # Default keys if not provided
     all_keys = [
-        "ken_fail",
+        "pred_split",
         "cosine_sim_prox",
-        "cosine_sim_const1",
-        "cosine_sim_const2",
+        "const1_cos_sim",
+        "const2_cos_sim",
         "value_fn",
         "value_fn_ken",
         "gt_fail_label",
@@ -128,9 +153,7 @@ def make_comparison_video(
     # Tanh activation on selected outputs
     for key in ["ground_truth", "imagination"]:
         for subkey in (
-            [
-                "ken_fail",
-            ]
+            ["pred_split", "const1_cos_sim"]
             + [f"class_{_class}_prox" for _class in range(nb_classes)]
             + [f"class_{_class}_logit" for _class in range(nb_classes)]
         ):
@@ -139,7 +162,7 @@ def make_comparison_video(
                     2 * np.array(output[key][subkey]).squeeze()
                 )
 
-    T = len(output["ground_truth"]["ken_fail"])
+    T = len(output["ground_truth"]["pred_split"])
 
     lengths = {
         k: {s: {len(output[k][s])} for s in keys_to_plot}
@@ -165,19 +188,22 @@ def make_comparison_video(
     # Image axes
     def init_img(ax, title):
         img_obj = ax.imshow(np.zeros((224, 224, 3), dtype=np.uint8))
+        # add vertical lines at each third
+        for i in range(1, 3):
+            ax.axvline(
+                x=i * (224 / 3), color="black", linestyle="--", linewidth=1, alpha=0.5
+            )
         ax.set_title(title)
         ax.axis("off")
         return img_obj
 
-    gt_wrist_img = init_img(fig.add_subplot(gs[0, 4]), "Wrist View")
-    gt_front_img = init_img(fig.add_subplot(gs[0, 5]), "Front View")
-    gt_const1_img = init_img(fig.add_subplot(gs[0, 6]), "Constraint 1")
-    gt_const2_img = init_img(fig.add_subplot(gs[0, 7]), "Constraint 2")
+    gt_front_img = init_img(fig.add_subplot(gs[0, 4]), "Front View")
+    gt_const1_img = init_img(fig.add_subplot(gs[0, 5]), "Constraint 1")
+    gt_const2_img = init_img(fig.add_subplot(gs[0, 6]), "Constraint 2")
 
-    im_wrist_img = init_img(fig.add_subplot(gs[2, 4]), "Wrist View")
-    im_front_img = init_img(fig.add_subplot(gs[2, 5]), "Front View")
-    im_const1_img = init_img(fig.add_subplot(gs[2, 6]), "Constraint 1")
-    im_const2_img = init_img(fig.add_subplot(gs[2, 7]), "Constraint 2")
+    im_front_img = init_img(fig.add_subplot(gs[2, 4]), "Front View")
+    im_const1_img = init_img(fig.add_subplot(gs[2, 5]), "Constraint 1")
+    im_const2_img = init_img(fig.add_subplot(gs[2, 6]), "Constraint 2")
 
     # Generate colors from rainbow colormap
     cmap = mpl.colormaps["rainbow"]
@@ -228,8 +254,20 @@ def make_comparison_video(
         ax.set_title(title)
 
     # Add vertical lines on imagine graph every EVAL_H timesteps
-    for x in range(0, T, EVAL_H):
+    for x in range(BL - 1, T, EVAL_H):
         im_graph_ax.axvline(x, color="gray", linestyle="--", linewidth=0.5)
+
+    # add vertical lines on ground truth graph every label transition
+    transitions = (
+        np.where(np.diff(output["ground_truth"]["gt_fail_label"], axis=0) != 0)[0] + 1
+    )
+    for x in transitions:
+        gt_graph_ax.axvline(
+            x,
+            color="purple",
+            linestyle="--",
+            linewidth=0.5,
+        )
 
     # Prepare images
     def prepare_img(img):
@@ -252,19 +290,17 @@ def make_comparison_video(
                 lines[k].set_data(time[t_slice], output[key][k][t_slice])
 
         # Image updates
-        # gt_wrist_img.set_data(prepare_img(output["ground_truth"]["imgs_wrist"][t]))
         gt_front_img.set_data(prepare_img(output["ground_truth"]["imgs_front"][t]))
-        # gt_const1_img.set_data(
-        #     prepare_img(output["ground_truth"]["img_constraint1"][0])
-        # )
-        # gt_const2_img.set_data(
-        #     prepare_img(output["ground_truth"]["img_constraint2"][0])
-        # )
+        gt_const1_img.set_data(
+            prepare_img(output["ground_truth"]["img_constraint1"][0])
+        )
+        gt_const2_img.set_data(
+            prepare_img(output["ground_truth"]["img_constraint2"][0])
+        )
 
-        # im_wrist_img.set_data(prepare_img(output["imagination"]["imgs_wrist"][t]))
         im_front_img.set_data(prepare_img(output["imagination"]["imgs_front"][t]))
-        # im_const1_img.set_data(prepare_img(output["imagination"]["img_constraint1"][0]))
-        # im_const2_img.set_data(prepare_img(output["imagination"]["img_constraint2"][0]))
+        im_const1_img.set_data(prepare_img(output["imagination"]["img_constraint1"][0]))
+        im_const2_img.set_data(prepare_img(output["imagination"]["img_constraint2"][0]))
 
         # Render
         canvas.draw()
@@ -324,7 +360,8 @@ if __name__ == "__main__":
     with h5py.File(hdf5_file, "r") as hf:
         trajectory_ids = list(hf.keys())
         database = {
-            i: data_from_traj(hf[traj_id]) for i, traj_id in enumerate(trajectory_ids)
+            i: data_from_traj(hf[traj_id])
+            for i, traj_id in enumerate(trajectory_ids[:20])
         }
 
     BL = 4
@@ -405,51 +442,54 @@ if __name__ == "__main__":
             "/home/sunny/AnySafe_Reachability/scripts/logs/dinowm/epoch_id_16/rotvec_policy_const1.pth"
         )
     )
-    # ken_policy = copy.deepcopy(policy)
-    # ken_policy.load_state_dict(
-    #     torch.load(
-    #         "/home/sunny/anysafe_project/AnySafe_Reachability/scripts/logs/dinowm/epoch_id_16/rotvec_policy_ken.pth"
-    #     )
-    # )
+    split_policy = copy.deepcopy(policy)
+    split_policy.load_state_dict(
+        torch.load(
+            "/home/sunny/AnySafe_Reachability/scripts/logs/dinowm/epoch_id_16/rotvec_policy_split.pth"
+        )
+    )
 
     decoder = VQVAE().to(device)
     decoder.load_state_dict(torch.load("../checkpoints/testing_decoder.pth"))
     decoder.eval()
 
-    # constraint1 = {
-    #     # "wrist": database[7]["robot0_eye_in_hand_image"][82],
-    #     "front": database[7]["agentview_image"][82],
-    # }  # weak unsafe frame
-    # constraint2 = {
-    #     # "wrist": database[1]["robot0_eye_in_hand_image"][108],
-    #     "front": database[1]["agentview_image"][108],
-    # }  # unsafe frame
+    indices = []
+    # for idx, data in database.items():
+    #     if 1.0 in data["failure"]:
+    #         for t in torch.where(data["failure"] == 2.0)[0]:
+    #             indices.append((idx, t.item()))
+
+    # select a random index
+    const1_idx, const1_t = 3, 103  # random.choice(indices)
+    const2_idx, const2_t = 1, 285  # random.choice(indices)
+    print(f"Selected constraint index: {const2_idx}, time: {const2_t}")
+    constraint1, constraint2 = {}, {}
+    for idx, t, constraint in [
+        (const1_idx, const1_t, constraint1),
+        (const2_idx, const2_t, constraint2),
+    ]:
+        constraint.update(
+            {
+                "front": database[idx]["agentview_image"][t],
+                "inputs1": (  # [1, 1, 256, 384]
+                    database[idx]["cam_zed_embd"][[t], :].to(device).unsqueeze(0)
+                ),
+                "semantic_feat": transition.semantic_embed(  # [embedding_dim]
+                    inp1=database[idx]["cam_zed_embd"][[t], :].to(device).unsqueeze(0),
+                    state=select_xyyaw_from_state(database[idx]["state"][[t], :])
+                    .to(device)
+                    .unsqueeze(0),
+                ).squeeze(),
+            }
+        )  # random class 0 frame
+
+    def proxy_id_to_constraint(proxy_id):
+        return torch.append(
+            transition.proxies[proxy_id], torch.tensor([1.0], device=device)
+        ).unsqueeze(0)
 
     scale = 1.0
 
-    # for data, constraint, t in zip(
-    #     [database[7], database[1]], [constraint1, constraint2], [82, 108]
-    # ):
-    #     # inputs2 = (  # [1, 1, 256, 384]
-    #     #     data["cam_rs_embd"][[t], :].to(device).unsqueeze(0)
-    #     # )
-    #     inputs1 = (  # [1, 1, 256, 384]
-    #         data["cam_zed_embd"][[t], :].to(device).unsqueeze(0)
-    #     )
-    #     # acs = data["action"][t, :].to(device).unsqueeze(0)
-    #     # acs = normalize_acs(acs, device=device)
-    #     states = select_xyyaw_from_state(
-    #         data["state"][[t], :].to(device).unsqueeze(0)
-    #     )  # [1, 1, 3]
-
-    #     semantic_feature = transition.semantic_embed(  # [embedding_dim]
-    #         inp1=inputs1, state=states
-    #     )
-    #     constraint.update({"semantic_feat": semantic_feature.squeeze()})
-
-    # for traj_id in tqdm(
-    #     range(len(database)), desc="Processing Trajectories", position=0
-    # ):
     nb_classes = 3
     num_traj = min(10, len(database))
     for traj_id in tqdm(range(num_traj), desc="Processing Trajectories", position=0):
@@ -462,19 +502,19 @@ if __name__ == "__main__":
             "imgs_front": [
                 img.cpu().numpy() for img in data["agentview_image"][: BL - 1]
             ],
-            # "img_constraint1": constraint1["front"].unsqueeze(0).cpu().numpy(),
-            # "img_constraint2": constraint2["front"].unsqueeze(0).cpu().numpy(),
-            "ken_fail": copy.deepcopy(none_list),
-            # "cosine_sim_prox": copy.deepcopy(none_list),
-            # "cosine_sim_const1": copy.deepcopy(none_list),
-            # "cosine_sim_const2": copy.deepcopy(none_list),
-            # "value_fn_ken": copy.deepcopy(none_list),
-            "value_fn": copy.deepcopy(none_list),
+            "img_constraint1": constraint1["front"].unsqueeze(0).cpu().numpy(),
+            "img_constraint2": constraint2["front"].unsqueeze(0).cpu().numpy(),
+            "const1_cos_sim": copy.deepcopy(none_list),
+            "const2_cos_sim": copy.deepcopy(none_list),
+            "const1_value_fn": copy.deepcopy(none_list),
+            "pred_split": copy.deepcopy(none_list),
             "gt_fail_label": np.clip(data["failure"][:], a_min=0, a_max=4) / 4,
+            "split_value_fn": copy.deepcopy(none_list),
         }
         for class_id in range(nb_classes):
             output_dict[f"class_{class_id}_logit"] = copy.deepcopy(none_list)
             output_dict[f"class_{class_id}_prox"] = copy.deepcopy(none_list)
+            output_dict[f"class_{class_id}_value_fn"] = copy.deepcopy(none_list)
         output = {
             "imagination": copy.deepcopy(output_dict),
             "ground_truth": copy.deepcopy(output_dict),
@@ -496,12 +536,6 @@ if __name__ == "__main__":
 
         EVAL_H = 10
 
-        constraint = einops.repeat(
-            torch.concat((transition.proxies[0], torch.tensor([1.0], device=device))),
-            "C -> B C",
-            B=1,
-        )  # 1 indicates constraint is active
-
         # Imagination Loop
         for t in tqdm(
             range(traj_length - BL + 1),
@@ -514,19 +548,18 @@ if __name__ == "__main__":
             ):
                 with torch.no_grad():
                     # Forward pass through the transition model
-                    # pred1: [1, H, N, P], pred_state: [1, H, S], pred_fail: [1, H, 1]
+                    # pred1: [1, H, N, P], pred_state: [1, H, S], pred_split: [1, H, 1]
                     # semantic_features: [1, H, Z], latent: [1, H, N, (P + A + S)]
-                    pred1, pred_state, pred_fail, semantic_features, latent = (
+                    pred1, pred_state, pred_split, semantic_features, latent = (
                         transition(
                             inputs1,
-                            # wrist_hist,
                             inputs_states,
                             acs,
                             return_latent=True,
                         )
                     )
-                    pred_labels = transition.multi_class_head(latent)
-                    pred_labels = torch.mean(pred_labels, dim=-2)
+                    # pred_labels = transition.multi_class_head(latent)
+                    # pred_labels = torch.mean(pred_labels, dim=-2)
 
                     proxies = transition.proxies.to(device)  # [M Z]
 
@@ -555,64 +588,42 @@ if __name__ == "__main__":
                     )
                 # inputs1: [1 H N P]
                 # inputs_states: [1 H S]
-                if open_loop:
-                    inputs1 = torch.cat(
-                        [inputs1[[0], 1:], pred1[:, -1].unsqueeze(1)], dim=1
-                    )
-                    states = torch.cat(
-                        [inputs_states[[0], 1:], pred_state[:, -1].unsqueeze(1)], dim=1
-                    )
-
-                    if (t + 1) % EVAL_H == 0:
-                        # inputs1: [1, BL-1, 256, 384], acs: [1, BL-1, 7], states: [1, BL-1, 8]
-                        inputs1 = (
-                            data["cam_zed_embd"][t : t + BL - 1, :]
-                            .to(device)
-                            .unsqueeze(0)
-                        )
-                        acs = data["action"][t : t + BL - 1, :].to(device).unsqueeze(0)
-                        acs = normalize_acs(acs, device=device)
-                        # all_acs: [1 64 A]
-                        all_acs = data["action"][:].unsqueeze(0).to(device)
-                        all_acs = normalize_acs(all_acs, device)
-                        inputs_states = select_xyyaw_from_state(
-                            data["state"][t : t + BL - 1, :].to(device)
-                        ).unsqueeze(0)
-
-                else:
+                if (t + 1) % EVAL_H == 0 or not open_loop:
+                    # inputs1: [1, BL-1, 256, 384], acs: [1, BL-1, 7], states: [1, BL-1, 8]
                     inputs1 = (
                         data["cam_zed_embd"][t : t + BL - 1, :].to(device).unsqueeze(0)
                     )
                     inputs_states = select_xyyaw_from_state(
                         data["state"][t : t + BL - 1, :].to(device).unsqueeze(0)
                     )
+                else:
+                    inputs1 = torch.cat([inputs1[:, 1:], pred1[:, [-1]]], dim=1)
+                    states = torch.cat(
+                        [inputs_states[:, 1:], pred_state[:, [-1]]], dim=1
+                    )
 
             # pred1_img: [1, H, W, C]
             output["imagination"]["imgs_front"].append(
                 pred_img1[0].cpu().numpy() * 255.0,
             )
-            output["imagination"]["ken_fail"].append(
-                pred_fail.detach().squeeze().cpu().numpy()[-1]
+            output["imagination"]["pred_split"].append(
+                pred_split.detach().squeeze().cpu().numpy()[-1]
             )
-            # output["imagination"]["cosine_sim_prox"].append(cos_sim_fail * scale)
-            # output["imagination"]["cosine_sim_const1"].append(
-            #     -F.cosine_similarity(
-            #         semantic_features.squeeze()[-1], constraint1["semantic_feat"], dim=0
-            #     ).item()
-            #     * scale
-            # )
-            # output["imagination"]["cosine_sim_const2"].append(
-            #     -F.cosine_similarity(
-            #         semantic_features.squeeze()[-1], constraint2["semantic_feat"], dim=0
-            #     ).item()
-            #     * scale
-            # )
-            for class_id in range(nb_classes):
-                output["imagination"][f"class_{class_id}_logit"].append(
-                    -pred_labels.detach().squeeze().cpu().numpy()[-1, class_id]
+            output["imagination"]["split_value_fn"].append(
+                evaluate_V(
+                    policy=split_policy,
+                    latent=latent,
+                    constraint=transition.proxies[0] * 0.0,
+                    action=data["action"][t + BL - 1, :],
+                    device=device,
                 )
+            )
+            for class_id in range(nb_classes):
+                # output["imagination"][f"class_{class_id}_logit"].append(
+                #     -pred_labels.detach().squeeze().cpu().numpy()[-1, class_id]
+                # )
                 output["imagination"][f"class_{class_id}_prox"].append(
-                    cos_sim_matrix[-1, class_id].item()
+                    -cos_sim_matrix[-1, class_id].item()
                 )
 
             if t + BL >= len(data["action"]):  # Last step
@@ -620,67 +631,42 @@ if __name__ == "__main__":
             else:
                 index = t + BL
 
-            obs = {
-                "state": latent[:, [-1]].mean(dim=2).reshape(1, -1),
-                "constraints": constraint,
-            }
-            output["imagination"]["value_fn"].append(
-                2
-                * policy.critic(
-                    obs=obs,
-                    act=normalize_acs(
-                        data["action"][[index], :]
-                        .to(device)
-                        .unsqueeze(0)  # Next action
-                    ),
+            for _class in range(nb_classes):
+                output["imagination"][f"class_{_class}_value_fn"].append(
+                    evaluate_V(
+                        policy=policy,
+                        latent=latent,
+                        constraint=transition.proxies[_class],
+                        action=data["action"][index, :],
+                        device=device,
+                    )
                 )
-                .detach()
-                .squeeze()
-                .cpu()
-                .numpy()
-            )
-            # output["imagination"]["value_fn_ken"].append(
-            # output["imagination"]["value_fn"].append(
-            #     policy.critic(
-            #         obs=latent[:, [-1]].mean(dim=2),
-            #         act=normalize_acs(
-            #             data["action"][[index], :]
-            #             .to(device)
-            #             .unsqueeze(0)  # Next action
-            #         ),
-            #     )
-            #     .detach()
-            #     .squeeze()
-            #     .cpu()
-            #     .numpy()
-            # )
-            # output["imagination"]["value_fn_ken"].append(
-            #     ken_policy.critic(
-            #         obs=latent[:, [-1]].mean(dim=2),
-            #         act=normalize_acs(
-            #             data["action"][[index], :]
-            #             .to(device)
-            #             .unsqueeze(0)  # Next action
-            #         ),
-            #     )
-            #     .detach()
-            #     .squeeze()
-            #     .cpu()
-            #     .numpy()
-            # )
 
-            # input2_gt = data["cam_rs_embd"][[t + BL - 1], :].to(device).unsqueeze(0)
-            input1_gt = data["cam_zed_embd"][[t + BL - 1], :].to(device).unsqueeze(0)
-            state_gt = select_xyyaw_from_state(
-                data["state"][[t + BL - 1], :].to(device)
-            ).unsqueeze(0)
+            for constraint, const_key in [
+                (constraint1, "const1"),
+                (constraint2, "const2"),
+            ]:
+                output["imagination"][f"{const_key}_cos_sim"].append(
+                    -F.cosine_similarity(
+                        semantic_features.squeeze()[-1],
+                        constraint["semantic_feat"],
+                        dim=0,
+                    ).item()
+                )
+
+            output["imagination"]["const1_value_fn"].append(
+                evaluate_V(
+                    policy=policy,
+                    latent=latent,
+                    constraint=constraint1["semantic_feat"],
+                    action=data["action"][index, :],
+                    device=device,
+                )
+            )
 
         lengths = [
             len(output["imagination"][key]) for key in output["imagination"].keys()
         ]
-        # assert all(length == traj_length for length in lengths), (
-        #     f"Inconsistent sequence lengths in imagination output: {lengths} should be {traj_length}"
-        # )
 
         # Do ground truth images
         inputs1 = data["cam_zed_embd"][0 : BL - 1, :].to(device).unsqueeze(0)
@@ -718,12 +704,12 @@ if __name__ == "__main__":
                         video1=inputs1, states=states, actions=acs
                     )
 
-                    # pred_fail: [1, (T-1), 1]
-                    pred_fail = transition.failure_pred(latent)
+                    # pred_split: [1, (T-1), 1]
+                    pred_split = transition.split_pred(latent)
 
                     # pred_labels: [1, (T-1), num_classes]
-                    pred_labels = transition.multi_class_head(latent)
-                    pred_labels = torch.mean(pred_labels, dim=-2)
+                    # pred_labels = transition.multi_class_head(latent)
+                    # pred_labels = torch.mean(pred_labels, dim=-2)
 
                     # Calculate cos sim for failure margin
                     proxies = transition.proxies.to(device)  # [M Z]
@@ -744,8 +730,8 @@ if __name__ == "__main__":
                 data["state"][t : t + BL - 1, :].to(device)
             ).unsqueeze(0)
 
-            # pred_fail: [1 (T-1), 1] -> [1]
-            ken_fail = pred_fail.squeeze().cpu().numpy()[-1]
+            # pred_split: [1 (T-1), 1] -> [1]
+            pred_split = pred_split.squeeze().cpu().numpy()[-1]
 
             # output["ground_truth"]["imgs_wrist"].append(
             #     data["robot0_eye_in_hand_image"][t + BL - 1]
@@ -753,48 +739,59 @@ if __name__ == "__main__":
             #     .cpu()
             #     .numpy()[-1]
             # )
-            output["ground_truth"]["ken_fail"].append(ken_fail)
-            for class_id in range(nb_classes):
-                output["ground_truth"][f"class_{class_id}_logit"].append(
-                    -pred_labels.detach().squeeze().cpu().numpy()[-1, class_id]
+            output["ground_truth"]["pred_split"].append(pred_split)
+            output["ground_truth"]["split_value_fn"].append(
+                evaluate_V(
+                    policy=split_policy,
+                    latent=latent,
+                    constraint=transition.proxies[0] * 0.0,
+                    action=data["action"][t + BL - 1, :],
+                    device=device,
                 )
+            )
+            for class_id in range(nb_classes):
+                # output["ground_truth"][f"class_{class_id}_logit"].append(
+                #     -pred_labels.detach().squeeze().cpu().numpy()[-1, class_id]
+                # )
                 output["ground_truth"][f"class_{class_id}_prox"].append(
-                    cos_sim_matrix[-1, class_id].item()
+                    -cos_sim_matrix[-1, class_id].item()
                 )
 
-            obs = {
-                "state": latent[:, [-1]].mean(dim=2).reshape(1, -1),
-                "constraints": constraint,
-            }
             if t + BL >= len(data["action"]):  # Last step
                 index = t + BL - 1
             else:
                 index = t + BL
-            output["ground_truth"]["value_fn"].append(
-                2
-                * policy.critic(
-                    obs=obs,
-                    act=normalize_acs(
-                        data["action"][index, :].to(device).unsqueeze(0)  # Next action
-                    ),
+
+            for _class in range(nb_classes):
+                output["ground_truth"][f"class_{_class}_value_fn"].append(
+                    evaluate_V(
+                        policy=policy,
+                        latent=latent,
+                        constraint=transition.proxies[_class],
+                        action=data["action"][index, :],
+                        device=device,
+                    )
                 )
-                .detach()
-                .squeeze()
-                .cpu()
-                .numpy()
+            for constraint, const_key in [
+                (constraint1, "const1"),
+                (constraint2, "const2"),
+            ]:
+                output["ground_truth"][f"{const_key}_cos_sim"].append(
+                    -F.cosine_similarity(
+                        semantic_features.squeeze()[-1],
+                        constraint["semantic_feat"],
+                        dim=0,
+                    ).item()
+                )
+            output["ground_truth"]["const1_value_fn"].append(
+                evaluate_V(
+                    policy=policy,
+                    latent=latent,
+                    constraint=constraint1["semantic_feat"],
+                    action=data["action"][index, :],
+                    device=device,
+                )
             )
-            # output["ground_truth"]["cosine_sim_const1"].append(
-            #     -F.cosine_similarity(
-            #         semantic_features.squeeze()[-1], constraint1["semantic_feat"], dim=0
-            #     ).item()
-            #     * scale
-            # )
-            # output["ground_truth"]["cosine_sim_const2"].append(
-            #     -F.cosine_similarity(
-            #         semantic_features.squeeze()[-1], constraint2["semantic_feat"], dim=0
-            #     ).item()
-            #     * scale
-            # )
             # output["ground_truth"]["cosine_sim_prox"].append(cos_sim_fail * scale)
             # output["ground_truth"]["value_fn"].append(
             #     policy.critic(
@@ -821,17 +818,20 @@ if __name__ == "__main__":
             # )
 
         line_keys = [
-            # "ken_fail",
+            # "pred_split",
             # "cosine_sim_prox",
-            # "cosine_sim_const1",
-            # "cosine_sim_const2",
-            "value_fn",
+            "const1_cos_sim",
+            "const2_cos_sim",
             # "value_fn_ken",
-            "gt_fail_label",
+            # "gt_fail_label",
+            # "split_value_fn",
+            # "const1_value_fn",
         ]
         for _class in range(nb_classes):
             # line_keys.append(f"class_{_class}_logit")
             line_keys.append(f"class_{_class}_prox")
+            # line_keys.append(f"class_{_class}_value_fn")
+            1 + 1
 
         make_comparison_video(
             output_dict=output,

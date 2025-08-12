@@ -45,9 +45,14 @@ wm = VideoTransformer(
 #         "/home/sunny/anysafe_project/AnySafe_Reachability/dino_wm/checkpoints_pa/encoder_mrg_0.1_num_ex_20.pth"
 #     )
 # )
+# wm.load_state_dict(
+#     torch.load(
+#         "/home/sunny/AnySafe_Reachability/dino_wm/checkpoints_pa/encoder_mrg_0.1_alpha_32_num_ex_all_ul_F.pth"
+#     )
+# )
 wm.load_state_dict(
     torch.load(
-        "/home/sunny/AnySafe_Reachability/dino_wm/checkpoints_pa/encoder_mrg_0.1_alpha_32_num_ex_all_ul_F.pth"
+        "/home/sunny/AnySafe_Reachability/dino_wm/checkpoints/best_classifier.pth"
     )
 )
 hdf5_file = "/home/sunny/data/sweeper/train/consolidated.h5"
