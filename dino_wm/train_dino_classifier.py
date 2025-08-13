@@ -25,7 +25,6 @@ transform = transforms.Compose(
     ]
 )
 
-
 transform1 = transforms.Compose(
     [
         transforms.Resize(520),
@@ -34,7 +33,6 @@ transform1 = transforms.Compose(
         transforms.Normalize(mean=0.5, std=0.2),
     ]
 )
-
 
 DINO_transform = transforms.Compose(
     [

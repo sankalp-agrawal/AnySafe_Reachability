@@ -45,16 +45,16 @@ wm = VideoTransformer(
 #         "/home/sunny/anysafe_project/AnySafe_Reachability/dino_wm/checkpoints_pa/encoder_mrg_0.1_num_ex_20.pth"
 #     )
 # )
-# wm.load_state_dict(
-#     torch.load(
-#         "/home/sunny/AnySafe_Reachability/dino_wm/checkpoints_pa/encoder_mrg_0.1_alpha_32_num_ex_all_ul_F.pth"
-#     )
-# )
 wm.load_state_dict(
     torch.load(
-        "/home/sunny/AnySafe_Reachability/dino_wm/checkpoints/best_classifier.pth"
+        "/home/sunny/AnySafe_Reachability/dino_wm/checkpoints_pa/encoder_mrg_0.1_alpha_32_num_ex_all_ul_F.pth"
     )
 )
+# wm.load_state_dict(
+#     torch.load(
+#         "/home/sunny/AnySafe_Reachability/dino_wm/checkpoints/best_classifier.pth"
+#     )
+# )
 hdf5_file = "/home/sunny/data/sweeper/train/consolidated.h5"
 hdf5_file_test = "/home/sunny/data/sweeper/test/consolidated.h5"
 bs = 1
@@ -62,10 +62,15 @@ bl = 20
 device = "cuda:0"
 H = 3
 expert_data = SplitTrajectoryDataset(hdf5_file, 3, split="train", num_test=0)
+constraint_data = SplitTrajectoryDataset(
+    hdf5_file, 3, split="train", num_test=0, only_pass_labeled_examples=True
+)
 
 expert_loader = iter(DataLoader(expert_data, batch_size=1, shuffle=True))
 
-env = gymnasium.make("franka_wm_DINO-v0", params=[wm, expert_data], device=device)
+env = gymnasium.make(
+    "franka_wm_DINO-v0", params=[wm, expert_data, constraint_data], device=device
+)
 
 state_shape = env.observation_space["state"].shape or env.observation_space.n
 constraint_shape = env.observation_space["constraints"].shape or env.observation_space.n
@@ -74,13 +79,17 @@ max_action = env.action_space.high[0]
 
 train_envs = DummyVectorEnv(
     [
-        lambda: gymnasium.make("franka_wm_DINO-v0", params=[wm, expert_data])
+        lambda: gymnasium.make(
+            "franka_wm_DINO-v0", params=[wm, expert_data, constraint_data]
+        )
         for _ in range(1)
     ]
 )
 test_envs = DummyVectorEnv(
     [
-        lambda: gymnasium.make("franka_wm_DINO-v0", params=[wm, expert_data])
+        lambda: gymnasium.make(
+            "franka_wm_DINO-v0", params=[wm, expert_data, constraint_data]
+        )
         for _ in range(1)
     ]
 )

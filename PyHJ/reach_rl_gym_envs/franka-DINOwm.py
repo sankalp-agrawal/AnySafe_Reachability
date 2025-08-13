@@ -45,10 +45,14 @@ class Franka_DINOWM_Env(gym.Env):
 
     def _reset_loader(self):
         self.data = iter(DataLoader(self.dataset, batch_size=1, shuffle=True))
+        self.data_const = iter(
+            DataLoader(self.const_dataset, batch_size=1, shuffle=True)
+        )
 
-    def set_wm(self, wm, past_data):
+    def set_wm(self, wm, past_data, const_data):
         self.wm = wm.to(self.device)
         self.dataset = past_data
+        self.const_dataset = const_data
         self._reset_loader()
 
     def step(self, action):
@@ -195,7 +199,15 @@ class Franka_DINOWM_Env(gym.Env):
                 ).detach(),
             }
         elif self.constraint_type == "database":
-            data = next(self.data)
+            try:
+                data = next(self.data_const)
+            except StopIteration:
+                # Reset the DataLoader and reshuffle
+                self._reset_loader()
+                data = next(self.data_const)
+            if data["failure"][0, -1] == -1:
+                self.select_constraint()
+
             # cam_zed_embd: [1 1 N P], state: [1 1 3]
             cam_zed_embd = data["cam_zed_embd"][[0], -1:].to(self.device)
             state = select_xyyaw_from_state(data["state"][[0], -1:]).to(self.device)

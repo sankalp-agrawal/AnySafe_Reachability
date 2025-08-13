@@ -13,6 +13,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn.functional as F
+from dino_wm.test_loader import SplitTrajectoryDataset
+from matplotlib.patches import Rectangle
+from torch.utils.data import DataLoader
 
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(parent_dir)
@@ -177,33 +180,13 @@ def make_comparison_video(
 
     # Setup figure
     fig = plt.figure(figsize=(12, 8), dpi=100)
-    plt.subplots_adjust(top=0.85)
+    plt.subplots_adjust(top=0.95)
     canvas = FigureCanvas(fig)
-    gs = gridspec.GridSpec(4, 8, figure=fig)
+    gs = gridspec.GridSpec(2, 6, figure=fig, hspace=0.05)  # match image pixel height
 
     # Graph axes
-    gt_graph_ax = fig.add_subplot(gs[0, 0:4])
-    im_graph_ax = fig.add_subplot(gs[2, 0:4])
-
-    # Image axes
-    def init_img(ax, title):
-        img_obj = ax.imshow(np.zeros((224, 224, 3), dtype=np.uint8))
-        # add vertical lines at each third
-        for i in range(1, 3):
-            ax.axvline(
-                x=i * (224 / 3), color="black", linestyle="--", linewidth=1, alpha=0.5
-            )
-        ax.set_title(title)
-        ax.axis("off")
-        return img_obj
-
-    gt_front_img = init_img(fig.add_subplot(gs[0, 4]), "Front View")
-    gt_const1_img = init_img(fig.add_subplot(gs[0, 5]), "Constraint 1")
-    gt_const2_img = init_img(fig.add_subplot(gs[0, 6]), "Constraint 2")
-
-    im_front_img = init_img(fig.add_subplot(gs[2, 4]), "Front View")
-    im_const1_img = init_img(fig.add_subplot(gs[2, 5]), "Constraint 1")
-    im_const2_img = init_img(fig.add_subplot(gs[2, 6]), "Constraint 2")
+    gt_graph_ax = fig.add_subplot(gs[0, 0:3])
+    im_graph_ax = fig.add_subplot(gs[1, 0:3])
 
     # Generate colors from rainbow colormap
     cmap = mpl.colormaps["rainbow"]
@@ -211,6 +194,72 @@ def make_comparison_video(
         [cmap(i / (len(keys_to_plot) - 1)) for i in range(len(keys_to_plot))]
         if len(keys_to_plot) > 1
         else [cmap(0.5)]
+    )
+
+    # Image axes
+    def init_img(ax, title, color=None):
+        img_obj = ax.imshow(np.zeros((224, 224, 3), dtype=np.uint8))
+        # add vertical lines at each third
+        for i in range(1, 3):
+            ax.axvline(
+                x=i * (224 / 3), color="black", linestyle="--", linewidth=1, alpha=0.5
+            )
+        ax.set_title(title)
+
+        if color is not None:
+            # Get the extent of the image (left, right, bottom, top)
+            extent = img_obj.get_extent()
+
+            # Outline thickness in data units (positive = outside, negative = inside)
+            thickness = 3  # adjust for thickness
+
+            # Colored outline (inside)
+            rect = Rectangle(
+                (extent[0] + thickness, extent[3] + thickness),  # bottom-left corner
+                224 - 2 * thickness,  # width
+                224 - 2 * thickness,  # height
+                linewidth=thickness,
+                edgecolor=color,
+                facecolor="none",
+            )
+            # rect = Rectangle(
+            #     (0, 0),  # bottom-left corner
+            #     80,  # width
+            #     80,  # height
+            #     linewidth=thickness,
+            #     edgecolor=color,
+            #     facecolor=color,
+            # )
+            ax.add_patch(rect)
+
+        ax.axis("off")
+        return img_obj
+
+    const1_color = (
+        colors[keys_to_plot.index("const1_cos_sim")]
+        if "const1_cos_sim" in keys_to_plot
+        else None
+    )
+    const2_color = (
+        colors[keys_to_plot.index("const2_cos_sim")]
+        if "const2_cos_sim" in keys_to_plot
+        else None
+    )
+
+    gt_front_img = init_img(fig.add_subplot(gs[0, 3]), "Front View")
+    gt_const1_img = init_img(
+        fig.add_subplot(gs[0, 4]), "Constraint 1", color=const1_color
+    )
+    gt_const2_img = init_img(
+        fig.add_subplot(gs[0, 5]), "Constraint 2", color=const2_color
+    )
+
+    im_front_img = init_img(fig.add_subplot(gs[1, 3]), "Front View")
+    im_const1_img = init_img(
+        fig.add_subplot(gs[1, 4]), "Constraint 1", color=const1_color
+    )
+    im_const2_img = init_img(
+        fig.add_subplot(gs[1, 5]), "Constraint 2", color=const2_color
     )
 
     # Create legend handles
@@ -252,6 +301,7 @@ def make_comparison_video(
         ax.set_ylabel("l(z)")
         ax.set_xlabel("Time")
         ax.set_title(title)
+        ax.set_box_aspect(224 / (3 * 224))  # 1 for square
 
     # Add vertical lines on imagine graph every EVAL_H timesteps
     for x in range(BL - 1, T, EVAL_H):
@@ -262,12 +312,15 @@ def make_comparison_video(
         np.where(np.diff(output["ground_truth"]["gt_fail_label"], axis=0) != 0)[0] + 1
     )
     for x in transitions:
-        gt_graph_ax.axvline(
-            x,
-            color="purple",
-            linestyle="--",
-            linewidth=0.5,
-        )
+        for graph in [gt_graph_ax, im_graph_ax]:
+            graph.axvline(
+                x,
+                color=colors[keys_to_plot.index("gt_fail_label")]
+                if "gt_fail_label" in keys_to_plot
+                else "gray",
+                linestyle="--",
+                linewidth=1.0,
+            )
 
     # Prepare images
     def prepare_img(img):
@@ -356,13 +409,29 @@ if __name__ == "__main__":
     device = "cuda:0"
 
     hdf5_file = "/home/sunny/data/sweeper/test/consolidated.h5"
+    # hdf5_file = "/home/sunny/data/sweeper/train/consolidated.h5"
     database = {}
     with h5py.File(hdf5_file, "r") as hf:
         trajectory_ids = list(hf.keys())
-        database = {
-            i: data_from_traj(hf[traj_id])
-            for i, traj_id in enumerate(trajectory_ids[:20])
-        }
+        random.shuffle(trajectory_ids)
+        i = 0
+        for traj_id in trajectory_ids:
+            data = data_from_traj(hf[traj_id])
+            if "failure" not in data.keys():
+                continue
+            database.update({i: data})
+            i += 1
+            if i > 50:
+                break
+
+    constraint_data = SplitTrajectoryDataset(
+        "/home/sunny/data/sweeper/train/consolidated.h5",
+        3,
+        split="train",
+        num_test=0,
+        only_pass_labeled_examples=True,
+    )
+    const_data_loader = iter(DataLoader(constraint_data, batch_size=1, shuffle=True))
 
     BL = 4
     open_loop = True
@@ -378,7 +447,7 @@ if __name__ == "__main__":
         dropout=0.1,
     ).to(device)
     load_state_dict_flexible(
-        transition, "../checkpoints_pa/encoder_mrg_0.1_alpha_32_num_ex_all_ul_F.pth"
+        transition, "../checkpoints_pa/encoder_mrg_0.5_alpha_32_num_ex_all_ul_F.pth"
     )
     # load_state_dict_flexible(transition, "../checkpoints/best_testing.pth")
 
@@ -439,7 +508,7 @@ if __name__ == "__main__":
     )
     policy.load_state_dict(
         torch.load(
-            "/home/sunny/AnySafe_Reachability/scripts/logs/dinowm/epoch_id_16/rotvec_policy_const1.pth"
+            "/home/sunny/AnySafe_Reachability/scripts/logs/dinowm/epoch_id_16/rotvec_policy.pth"
         )
     )
     split_policy = copy.deepcopy(policy)
@@ -453,32 +522,47 @@ if __name__ == "__main__":
     decoder.load_state_dict(torch.load("../checkpoints/testing_decoder.pth"))
     decoder.eval()
 
-    indices = []
-    # for idx, data in database.items():
-    #     if 1.0 in data["failure"]:
-    #         for t in torch.where(data["failure"] == 2.0)[0]:
-    #             indices.append((idx, t.item()))
+    def randomly_select_constraint(const_data_loader, class_id):
+        try:
+            data = next(const_data_loader)
+        except StopIteration:
+            const_data_loader = iter(
+                DataLoader(constraint_data, batch_size=1, shuffle=True)
+            )
+            data = next(const_data_loader)
+
+        if data["failure"][0, -1] != class_id:
+            return randomly_select_constraint(const_data_loader, class_id)
+
+        return data
 
     # select a random index
-    const1_idx, const1_t = 3, 103  # random.choice(indices)
-    const2_idx, const2_t = 1, 285  # random.choice(indices)
-    print(f"Selected constraint index: {const2_idx}, time: {const2_t}")
+    data_const_1 = randomly_select_constraint(const_data_loader, 3)  # 3, 103
+    data_const_2 = randomly_select_constraint(const_data_loader, 3)  # 1, 285
+
+    data_const_1 = {k: v[20:23].unsqueeze(0).to(device) for k, v in database[2].items()}
+    data_const_2 = {
+        k: v[270:273].unsqueeze(0).to(device) for k, v in database[6].items()
+    }
+
     constraint1, constraint2 = {}, {}
-    for idx, t, constraint in [
-        (const1_idx, const1_t, constraint1),
-        (const2_idx, const2_t, constraint2),
+    for data_const, constraint in [
+        (data_const_1, constraint1),
+        (data_const_2, constraint2),
     ]:
         constraint.update(
             {
-                "front": database[idx]["agentview_image"][t],
+                "front": data_const["agentview_image"][0, -1].to(
+                    device
+                ),  # [1, 3, 224, 224]
                 "inputs1": (  # [1, 1, 256, 384]
-                    database[idx]["cam_zed_embd"][[t], :].to(device).unsqueeze(0)
+                    data_const["cam_zed_embd"][[0], -1:].to(device)
                 ),
                 "semantic_feat": transition.semantic_embed(  # [embedding_dim]
-                    inp1=database[idx]["cam_zed_embd"][[t], :].to(device).unsqueeze(0),
-                    state=select_xyyaw_from_state(database[idx]["state"][[t], :])
-                    .to(device)
-                    .unsqueeze(0),
+                    inp1=data_const["cam_zed_embd"][[0], -1:].to(device),
+                    state=select_xyyaw_from_state(data_const["state"][[0], -1:]).to(
+                        device
+                    ),
                 ).squeeze(),
             }
         )  # random class 0 frame
@@ -507,6 +591,7 @@ if __name__ == "__main__":
             "const1_cos_sim": copy.deepcopy(none_list),
             "const2_cos_sim": copy.deepcopy(none_list),
             "const1_value_fn": copy.deepcopy(none_list),
+            "const2_value_fn": copy.deepcopy(none_list),
             "pred_split": copy.deepcopy(none_list),
             "gt_fail_label": np.clip(data["failure"][:], a_min=0, a_max=4) / 4,
             "split_value_fn": copy.deepcopy(none_list),
@@ -654,15 +739,15 @@ if __name__ == "__main__":
                     ).item()
                 )
 
-            output["imagination"]["const1_value_fn"].append(
-                evaluate_V(
-                    policy=policy,
-                    latent=latent,
-                    constraint=constraint1["semantic_feat"],
-                    action=data["action"][index, :],
-                    device=device,
+                output["imagination"][f"{const_key}_value_fn"].append(
+                    evaluate_V(
+                        policy=policy,
+                        latent=latent,
+                        constraint=constraint["semantic_feat"],
+                        action=data["action"][index, :],
+                        device=device,
+                    )
                 )
-            )
 
         lengths = [
             len(output["imagination"][key]) for key in output["imagination"].keys()
@@ -783,15 +868,15 @@ if __name__ == "__main__":
                         dim=0,
                     ).item()
                 )
-            output["ground_truth"]["const1_value_fn"].append(
-                evaluate_V(
-                    policy=policy,
-                    latent=latent,
-                    constraint=constraint1["semantic_feat"],
-                    action=data["action"][index, :],
-                    device=device,
+                output["ground_truth"][f"{const_key}_value_fn"].append(
+                    evaluate_V(
+                        policy=policy,
+                        latent=latent,
+                        constraint=constraint["semantic_feat"],
+                        action=data["action"][index, :],
+                        device=device,
+                    )
                 )
-            )
             # output["ground_truth"]["cosine_sim_prox"].append(cos_sim_fail * scale)
             # output["ground_truth"]["value_fn"].append(
             #     policy.critic(
@@ -820,12 +905,13 @@ if __name__ == "__main__":
         line_keys = [
             # "pred_split",
             # "cosine_sim_prox",
-            "const1_cos_sim",
-            "const2_cos_sim",
+            # "const1_cos_sim",
+            # "const2_cos_sim",
             # "value_fn_ken",
-            # "gt_fail_label",
+            "gt_fail_label",
             # "split_value_fn",
             # "const1_value_fn",
+            # "const2_value_fn",
         ]
         for _class in range(nb_classes):
             # line_keys.append(f"class_{_class}_logit")

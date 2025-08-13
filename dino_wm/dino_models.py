@@ -345,29 +345,31 @@ class VideoTransformer(nn.Module):
             nn.Linear(semantic_dim, 512),
         )
 
-        # self.split_classifier = nn.Sequential(
-        #     LayerNorm(total_dim),
-        #     nn.Linear(total_dim, total_dim),
-        #     nn.ReLU(),
-        #     nn.Linear(total_dim, 1),
-        # )
-
         self.split_classifier = nn.Sequential(
-            # CNN layers
-            # Input: [(N, T), D, H, W]
-            nn.Conv2d(total_dim, 256, kernel_size=5, padding=1),  # [(N, T), 256, H, W]
+            LayerNorm(total_dim),
+            nn.Linear(total_dim, total_dim),
             nn.ReLU(),
-            nn.Conv2d(256, 128, kernel_size=5, padding=1),  # [(N, T), 128, H, W]
+            nn.Linear(total_dim, total_dim),
             nn.ReLU(),
-            nn.Conv2d(128, 32, kernel_size=5, padding=1),  # [(N, T), 32, H, W]
-            nn.ReLU(),
-            # MLP layers
-            nn.AdaptiveAvgPool2d(1),  # [(N, T), 32, 1, 1]
-            nn.Flatten(),  # [(N, T), 32]
-            nn.Linear(32, 256),  # [(N, T), 256], flatten_size = 32
-            nn.ReLU(),
-            nn.Linear(256, 1),  # [(N, T), 1]
+            nn.Linear(total_dim, 1),
         )
+
+        # self.split_classifier = nn.Sequential(
+        #     # CNN layers
+        #     # Input: [(N, T), D, H, W]
+        #     nn.Conv2d(total_dim, 256, kernel_size=5, padding=1),  # [(N, T), 256, H, W]
+        #     nn.ReLU(),
+        #     nn.Conv2d(256, 128, kernel_size=5, padding=1),  # [(N, T), 128, H, W]
+        #     nn.ReLU(),
+        #     nn.Conv2d(128, 32, kernel_size=5, padding=1),  # [(N, T), 32, H, W]
+        #     nn.ReLU(),
+        #     # MLP layers
+        #     nn.AdaptiveAvgPool2d(1),  # [(N, T), 32, 1, 1]
+        #     nn.Flatten(),  # [(N, T), 32]
+        #     nn.Linear(32, 256),  # [(N, T), 256], flatten_size = 32
+        #     nn.ReLU(),
+        #     nn.Linear(256, 1),  # [(N, T), 1]
+        # )
 
         self.proxies = nn.Parameter(torch.randn(3, 512).cuda())
         self.thresholds = nn.Parameter(torch.zeros(3), requires_grad=False)
@@ -453,13 +455,9 @@ class VideoTransformer(nn.Module):
         x = rearrange(x, "b (s n) d -> b s n d", s=num_frames)
         return x
 
-    def split_pred(self, latent):
-        # features = torch.mean(features, dim=-2)
-        B, T, N, D = latent.shape
-
-        features = rearrange(latent, "b t (h w) d -> (b t) d h w", h=16, w=16)
+    def split_pred(self, features):
+        features = torch.mean(features, dim=-2)
         split_preds = self.split_classifier(features)
-        split_preds = rearrange(split_preds, "(b t) 1 -> b t 1", b=B, t=T)
         # split_preds = torch.mean(split_preds, dim=2)  # Average over patches
         return split_preds
 
