@@ -5,18 +5,12 @@ import random
 import sys
 
 import einops
-import h5py
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn.functional as F
 import umap.umap_ as umap
 import wandb
-from dino_wm.dino_models import VideoTransformer, normalize_acs, select_xyyaw_from_state
-from dino_wm.test_loader import SplitTrajectoryDataset
-from matplotlib import colormaps
-from matplotlib.cm import rainbow
-from proxy_anchor.code import losses
 from scipy.stats import gaussian_kde
 from sklearn.metrics import (
     accuracy_score,
@@ -27,8 +21,11 @@ from sklearn.metrics import (
 )
 from torch.utils.data import DataLoader, Subset
 from tqdm import *
-from utils import compare_kdes
-from viz_traj_cosine_sim import data_from_traj
+from utils import compare_kdes, load_state_dict_flexible
+
+from dino_wm.dino_models import VideoTransformer, normalize_acs, select_xyyaw_from_state
+from dino_wm.test_loader import SplitTrajectoryDataset
+from proxy_anchor.code import losses
 
 base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.extend(
@@ -225,6 +222,7 @@ test_data = SplitTrajectoryDataset(
     provide_labels=True,
     num_examples_per_class=None,  # Don't limit number of examples per class for evaluation
 )
+
 train_loader_labeled = DataLoader(
     train_data_labeled, batch_size=BS, shuffle=True, num_workers=args.nb_workers
 )
@@ -234,12 +232,49 @@ test_loader = DataLoader(
 
 device = "cuda:0"
 
-nb_classes = 3  # three regions
+# labels is a tensor of shape (B, 2)
+x_class_boundaries = [0, 224 // 3, 224 * 2 // 3, 224]  # x boundaries for 3 classes
+y_class_boundaries = [224 // 3, 224 * 2 // 3, 224]  # y boundaries for 3 classes
+# 3 * 2 = 6 classes in total
+nb_classes = (len(x_class_boundaries) - 1) * (len(y_class_boundaries) - 1)
 label_to_str = {
-    0: "Left",
-    1: "Middle",
-    2: "Right",
+    0: "Left Top",
+    1: "Left Bottom",
+    2: "Middle Top",
+    3: "Middle Bottom",
+    4: "Right Top",
+    5: "Right Bottom",
 }
+cmap = plt.cm.rainbow
+class_to_colors = {i: cmap(i / nb_classes) for i in range(nb_classes)}
+
+
+def get_class_from_xy(labels):
+    assert labels.shape[-1] == 2, "Labels should have shape (B, 2)"
+    x_labels = torch.bucketize(
+        labels[..., 0], torch.tensor(x_class_boundaries, device=device)
+    ).unsqueeze(1)
+    y_labels = torch.bucketize(
+        labels[..., 1], torch.tensor(y_class_boundaries, device=device)
+    ).unsqueeze(1)
+
+    class_labels = (x_labels - 1) * (len(y_class_boundaries) - 1) + (y_labels - 1)
+    class_labels[torch.logical_or(x_labels <= 0, y_labels <= 0)] = -1
+    class_labels[
+        torch.logical_or(
+            labels[..., 0] < x_class_boundaries[0],
+            labels[..., 0] >= x_class_boundaries[-1],
+        )
+    ] = -1
+    class_labels[
+        torch.logical_or(
+            labels[..., 1] < y_class_boundaries[0],
+            labels[..., 1] >= y_class_boundaries[-1],
+        )
+    ] = -1
+
+    return class_labels
+
 
 # Backbone Model
 LOG_DIR = "logs_pa"
@@ -255,9 +290,10 @@ model = VideoTransformer(
     mlp_dim=2048,
     num_frames=3,
     dropout=0.1,
+    nb_classes=nb_classes,
 ).to(device)
-model.load_state_dict(torch.load("../checkpoints/best_classifier.pth"), strict=False)
-# load_state_dict_flexible(model, "../checkpoints/multi_classifier.pth")
+# model.load_state_dict(torch.load("../checkpoints/best_classifier.pth"), strict=False)
+load_state_dict_flexible(model, "../checkpoints/best_classifier.pth")
 # model.load_state_dict(torch.load("../checkpoints_pa/encoder_0.1.pth"))
 
 for name, param in model.named_parameters():
@@ -286,14 +322,6 @@ scheduler = torch.optim.lr_scheduler.StepLR(
     opt, step_size=args.lr_decay_step, gamma=args.lr_decay_gamma
 )
 
-database = {}
-with h5py.File(hdf5_file_test, "r") as hf:
-    trajectory_ids = list(hf.keys())
-    database = {
-        i: data_from_traj(hf[traj_id]) for i, traj_id in enumerate(trajectory_ids)
-    }
-
-
 print("Training parameters: {}".format(vars(args)))
 print("Training for {} epochs.".format(args.nb_epochs))
 losses_list = []
@@ -307,6 +335,14 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
 
     losses_per_epoch = []
     auc_per_epoch = []
+    metrics = {
+        "Accuracy": [],
+        "Precision": [],
+        "Recall": [],
+        "F1-score": [],
+    }
+    y_pred_tot = []
+    y_true_tot = []
 
     # Warmup: Train only new params, helps stabilize learning.
     # TODO: implement warmup training if needed
@@ -377,8 +413,24 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
 
     # args.beta = np.linspace(0.2, 1.0, args.nb_epochs)[epoch]  # Linear increase of beta
 
+    def create_coverage_plot():
+        fig_coverage, ax_coverage = plt.subplots(figsize=(8, 8))
+        ax_coverage.set_title("Coverage of Data on Table")
+        ax_coverage.set_xlabel("X Coordinate")
+        ax_coverage.set_ylabel("Y Coordinate")
+        ax_coverage.set_xlim(0, 224)
+        ax_coverage.set_ylim(0, 224)
+        ax_coverage.set_aspect("equal")
+        ax_coverage.invert_yaxis()
+        return fig_coverage, ax_coverage
+
+    fig_coverage, ax_coverage = create_coverage_plot()
+    fig_coverage_eval, ax_coverage_eval = create_coverage_plot()
+
     for batch_idx, data in pbar:
-        labels_gt = data["failure"][:].to(device, dtype=torch.float32)
+        # labels_gt: [150 2]
+        labels_gt = data["failure"][:].to(device, dtype=torch.float32).squeeze()
+        labels_gt = get_class_from_xy(labels_gt)
 
         data1 = data["cam_zed_embd"].to(device)  # [B 1, 256, 384]
         # data2 = data["cam_rs_embd"].to(device)  # [B 1, 256, 384]
@@ -432,10 +484,17 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
 
         labels_gt_masked = copy.deepcopy(labels_gt)
         mask = (labels_gt_masked != -1.0).squeeze()
-        labels_gt_masked = (
-            labels_gt_masked[mask] - 1
-        )  # Remove -1 labels, shift range to 0-2
+        labels_gt_masked = labels_gt_masked[mask]
         semantic_features = semantic_features[mask]  # Remove -1 labels
+
+        ax_coverage.scatter(
+            data["failure"][:, -1][mask.cpu(), 0],
+            data["failure"][:, -1][mask.cpu(), 1],
+            color=[
+                class_to_colors[label.item()]
+                for label in labels_gt[mask.cpu()].cpu().numpy()
+            ],
+        )
 
         loss, __, __ = criterion(
             X=semantic_features.float(),
@@ -495,10 +554,42 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
             auc = roc_auc_score(
                 y_true=labels_gt_masked.cpu().numpy().squeeze(),
                 y_score=cos_sim_logits.detach().cpu().numpy(),
-                multi_class="ovr",
+                multi_class="ovo",
                 average="macro",
-                labels=np.arange(nb_classes),  # ensures 3 labels for 3 columns
+                labels=np.arange(nb_classes),
             )
+
+        y_pred = cos_sim_logits.argmax(dim=-1)  # Predicted labels
+
+        metrics["Accuracy"].append(
+            (y_pred == labels_gt_masked.squeeze()).float().mean().item()
+        )
+        metrics["Precision"].append(
+            precision_score(
+                labels_gt_masked.squeeze().cpu().numpy(),
+                y_pred.cpu().numpy(),
+                average="macro",
+                zero_division=0,
+            )
+        )
+        metrics["Recall"].append(
+            recall_score(
+                labels_gt_masked.squeeze().cpu().numpy(),
+                y_pred.cpu().numpy(),
+                average="macro",
+                zero_division=0,
+            )
+        )
+        metrics["F1-score"].append(
+            f1_score(
+                labels_gt_masked.squeeze().cpu().numpy(),
+                y_pred.cpu().numpy(),
+                average="macro",
+                zero_division=0,
+            )
+        )
+        y_pred_tot.append(y_pred.cpu().numpy())
+        y_true_tot.append(labels_gt_masked.cpu().numpy())
 
         opt.zero_grad()
         loss.backward()
@@ -518,6 +609,34 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
             )
         )
 
+    fig_coverage.legend(
+        handles=[
+            plt.Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="w",
+                label=label_to_str[label],
+                markersize=10,
+                markerfacecolor=color,
+            )
+            for label, color in class_to_colors.items()
+        ],
+        title="Classes",
+    )
+    wandb.log({"train/coverage": wandb.Image(fig_coverage)}, step=num_updates)
+
+    wandb.log(
+        {
+            "train/Confusion Matrix": wandb.plot.confusion_matrix(
+                preds=np.concatenate(y_pred_tot),
+                y_true=np.concatenate(y_true_tot).squeeze(),
+                class_names=list(label_to_str.values()),
+            )
+        },
+        step=num_updates,
+    )
+
     losses_list.append(np.mean(losses_per_epoch))
     wandb.log(
         {"train/Proxy Anchor Loss": losses_list[-1], "num_updates": num_updates},
@@ -527,6 +646,11 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
         {"train/AUC": np.mean(auc_per_epoch), "num_updates": num_updates},
         step=num_updates,
     )
+    for metric, values in metrics.items():
+        wandb.log(
+            {f"train/{metric}": np.mean(values), "num_updates": num_updates},
+            step=num_updates,
+        )
 
     scheduler.step()
 
@@ -547,10 +671,18 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
                 labels_gt = data["failure"][:, -1:].to(
                     device, dtype=torch.float32
                 )  # [B, 1]
+                labels_gt = get_class_from_xy(labels_gt)
                 mask = (labels_gt != -1.0).squeeze()
-                # inputs2 = (  # [B, 1, 256, 384]
-                #     data["cam_rs_embd"][:, -1:].to(device)
-                # )
+
+                ax_coverage_eval.scatter(
+                    data["failure"][:, -1][mask.cpu(), 0],
+                    data["failure"][:, -1][mask.cpu(), 1],
+                    color=[
+                        class_to_colors[label.item()]
+                        for label in labels_gt[mask.cpu()].cpu().numpy()
+                    ],
+                )
+
                 inputs1 = (  # [B, 1, 256, 384]
                     data["cam_zed_embd"][:, -1:].to(device)[mask]
                 )
@@ -562,8 +694,7 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
                     inp1=inputs1, state=states
                 )
 
-                labels_gt = labels_gt[mask] - 1  # Remove -1 labels, shift range to 0-2
-                labels_gt_masked = copy.deepcopy(labels_gt)
+                labels_gt_masked = copy.deepcopy(labels_gt)[mask]
 
                 # Normalize all vectors for cosine similarity
                 semantic_features_norm = F.normalize(
@@ -589,17 +720,36 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
                 pred_labels = logits.argmax(dim=-1)  # (10, 1)
 
                 X.append(semantic_features.cpu().numpy())
-                y.append(labels_gt.cpu().numpy())
+                y.append(labels_gt_masked.cpu().numpy())
                 y_pred.append(pred_labels.cpu().numpy())
 
             X = einops.rearrange(np.concatenate(X, axis=0), "B T Z -> (B T) Z")
-            y = einops.rearrange(np.concatenate(y, axis=0), "B T -> (B T)")
-            y_pred = einops.rearrange(np.concatenate(y_pred, axis=0), "B T -> (B T)")
+            y = np.concatenate(y, axis=0).squeeze()
+            y_pred = np.concatenate(y_pred, axis=0).squeeze()
+            classes_eval = np.unique(y)
             num_classes_eval = len(np.unique(y))
 
             y_gt_masked = copy.deepcopy(y)
 
             # Calculate metrics
+            fig_coverage_eval.legend(
+                handles=[
+                    plt.Line2D(
+                        [0],
+                        [0],
+                        marker="o",
+                        color="w",
+                        label=label_to_str[label],
+                        markersize=10,
+                        markerfacecolor=color,
+                    )
+                    for label, color in class_to_colors.items()
+                ],
+                title="Classes",
+            )
+            wandb.log(
+                {"eval/coverage": wandb.Image(fig_coverage_eval)}, step=num_updates
+            )
             metrics["Accuracy"] = balanced_accuracy = accuracy_score(
                 y_gt_masked, y_pred
             )
@@ -623,10 +773,7 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
             #     F.cross_entropy(cos_sim, gt_labels, reduction="mean").item()
             # )
 
-        cosine_sims = {
-            i: {j: [] for j in range(i, num_classes_eval)}
-            for i in range(num_classes_eval)
-        }
+        cosine_sims = {i: {j: [] for j in classes_eval} for i in classes_eval}
 
         def cosine_sim_plot_eval(X, y):
             y_masked = copy.deepcopy(y)
@@ -637,46 +784,87 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
                 for k in np.unique(y_masked)
             }
 
-            fig, ax = plt.subplots(figsize=(10, 8))
-            class_to_label = {0: "Region 1", 1: "Region 2", 2: "Region 3"}
+            fig, ax = plt.subplots(figsize=(5 * num_classes_eval, 8))
 
             plt.title("Cosine Similarity Distribution per Class")
             plt.xlabel("Cosine Similarity")
             plt.ylabel("Normalized Density")
 
             class_pairs = []
-            for i in range(len(np.unique(y_masked))):
-                for j in range(i, len(np.unique(y_masked))):
-                    class_pairs.append((i, j))
+            for i in classes_eval:
+                for j in classes_eval:
+                    if i <= j:
+                        class_pairs.append((i, j))
 
             cmap = plt.cm.rainbow
             colors = [cmap(i / len(class_pairs)) for i in range(len(class_pairs))]
 
             kde_dict = {}
 
-            for idx, (i, j) in enumerate(class_pairs):
-                cos_sim = X_class[i] @ X_class[j].T
-
-                if i == j:  # Avoid self-comparison and double counting
+            if len(class_pairs) > 10:  # If too many pairs, do one vs. rest
+                ovr = True
+                for i in classes_eval:
+                    # Same to same comparison
+                    cos_sim = X_class[i] @ X_class[i].T
                     mask = np.triu(np.ones_like(cos_sim, dtype=bool), k=1)
                     cos_sim = np.where(mask, cos_sim, -2.0)
+                    cos_sim = cos_sim[cos_sim != -2.0].flatten()
 
-                cos_sim = cos_sim[cos_sim != -2.0].flatten()
+                    if len(cos_sim) > 1000:
+                        cos_sim_sampled = np.random.choice(cos_sim, 1000, replace=False)
+                    else:
+                        cos_sim_sampled = cos_sim
 
-                if len(cos_sim) > 1000:
-                    cos_sim_sampled = np.random.choice(cos_sim, 1000, replace=False)
-                else:
-                    cos_sim_sampled = cos_sim
+                    kde_cs = gaussian_kde(cos_sim_sampled)
+                    kde_dict[(i, i)] = kde_cs
 
-                kde_cs = gaussian_kde(cos_sim_sampled)
-                kde_dict[(i, j)] = kde_cs
+                    # One vs. rest comparison
+                    cos_sim_list = []
+                    for j in classes_eval:
+                        if i != j:
+                            cos_sim = X_class[i] @ X_class[j].T
+
+                            cos_sim_list.append(cos_sim.flatten())
+
+                    cos_sim = np.concatenate(cos_sim_list, axis=0)
+                    if len(cos_sim) > 1000:
+                        cos_sim_sampled = np.random.choice(cos_sim, 1000, replace=False)
+                    else:
+                        cos_sim_sampled = cos_sim
+                    kde_cs = gaussian_kde(cos_sim_sampled)
+                    kde_dict[(i, "rest")] = kde_cs
+
+            else:
+                ovr = False
+                for idx, (i, j) in enumerate(class_pairs):
+                    cos_sim = X_class[i] @ X_class[j].T
+
+                    if i == j:  # Avoid self-comparison and double counting
+                        mask = np.triu(np.ones_like(cos_sim, dtype=bool), k=1)
+                        cos_sim = np.where(mask, cos_sim, -2.0)
+
+                    cos_sim = cos_sim[cos_sim != -2.0].flatten()
+
+                    if len(cos_sim) > 1000:
+                        cos_sim_sampled = np.random.choice(cos_sim, 1000, replace=False)
+                    else:
+                        cos_sim_sampled = cos_sim
+
+                    kde_cs = gaussian_kde(cos_sim_sampled)
+                    kde_dict[(i, j)] = kde_cs
+
+            for idx, ((i, j), kde_cs) in enumerate(kde_dict.items()):
                 x_cs = np.linspace(-1 - 1e-3, 1 + 1e-3, 1000)
                 y_pdf = kde_cs(x_cs)
                 dx = x_cs[1] - x_cs[0]
                 y_pdf_normalized = y_pdf / (np.sum(y_pdf) * dx)
 
-                color = colors[idx]
-                label = f"{class_to_label[i]}-{class_to_label[j]}"
+                if j == "rest":
+                    color = colors[idx]
+                    label = f"{label_to_str[i]}-rest"
+                else:
+                    color = "black"
+                    label = f"{label_to_str[i]}-{label_to_str[j]}"
                 ax.plot(x_cs, y_pdf_normalized, label=label, color=color)
 
                 # Statistics
@@ -727,16 +915,31 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
                 {"eval/cosine_sim_plot": wandb.Image(fig), "num_updates": num_updates},
                 step=num_updates,
             )
-            js_div1, ws_dist_1 = compare_kdes(
-                kde1=kde_dict[(0, 0)], kde2=kde_dict[(0, 1)]
-            )
-            js_div2, ws_dist_2 = compare_kdes(
-                kde1=kde_dict[(1, 1)], kde2=kde_dict[(0, 1)]
-            )
+
+            # Generate comparison statistics
+            js_div, ws_dist = [], []
+            for _class in np.unique(y_masked):
+                if ovr:
+                    js_div_, ws_dist_ = compare_kdes(
+                        kde1=kde_dict[(_class, _class)],
+                        kde2=kde_dict[(_class, "rest")],
+                    )
+                    js_div.append(js_div_)
+                    ws_dist.append(ws_dist_)
+                else:
+                    for _class2 in np.unique(y_masked):
+                        if _class < _class2:
+                            js_div_, ws_dist_ = compare_kdes(
+                                kde1=kde_dict[(_class, _class)],
+                                kde2=kde_dict[(_class, _class2)],
+                            )
+                            js_div.append(js_div_)
+                            ws_dist.append(ws_dist_)
+
             wandb.log(
                 {
-                    "eval/avg_JS": (js_div1 + js_div2) / 2.0,
-                    "eval/avg_wass_dist": (ws_dist_1 + ws_dist_2) / 2.0,
+                    "eval/avg_JS": np.mean(js_div),
+                    "eval/avg_wass_dist": np.mean(ws_dist),
                     "num_updates": num_updates,
                 },
                 step=num_updates,
@@ -764,7 +967,7 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
                     "fp_rates": [],
                     "fn_rates": [],
                 }
-                for k in range(nb_classes)
+                for k in classes_eval
             }
             for t in thresholds:
                 for prox, data in proxy_data.items():
@@ -796,7 +999,9 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
                 data["intersect_value"] = intersect_value
 
             # Plot all the metrics
-            fig, axes = plt.subplots(1, 3, figsize=(30, 8))
+            fig, axes = plt.subplots(
+                1, num_classes_eval, figsize=(10 * 8, num_classes_eval)
+            )
             for ax, (prox, data) in zip(axes, proxy_data.items()):
                 ax.set_aspect("equal")
                 thresholds = np.array(thresholds)
@@ -857,7 +1062,9 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
             plt.close()
 
             # Plot AUC curve
-            fig, axes = plt.subplots(1, 3, figsize=(30, 8))
+            fig, axes = plt.subplots(
+                1, num_classes_eval, figsize=(10 * num_classes_eval, 8)
+            )
             for ax, (prox, data) in zip(axes, proxy_data.items()):
                 ax.set_aspect("equal")
                 fp_rates = np.array(data["fp_rates"])
@@ -875,33 +1082,28 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
             plt.close()
 
             # Plot cosine similarity distribution
-            fig, axes = plt.subplots(1, 3, figsize=(30, 8))
-
-            # Unique class labels
-            class_labels = np.unique(y)
-            n_classes = len(class_labels)
-
-            # Generate distinct rainbow colors
-            colors = [rainbow(i / n_classes) for i in range(n_classes)]
+            fig, axes = plt.subplots(
+                1, num_classes_eval, figsize=(10 * num_classes_eval, 8)
+            )
 
             used_labels = set()
             global_handles = []
             global_labels = []
 
             for ax, (prox, data) in zip(axes, proxy_data.items()):
-                ax.set_aspect("auto")
+                # ax.set_aspect("equal")
                 cos_sim = -data[
                     "cos_sim"
                 ]  # It's already negative cosine similarity, so we make it positive for plotting
 
-                for idx, label in enumerate(class_labels):
+                for idx, label in enumerate(classes_eval):
                     class_data = cos_sim[y == label]
                     if len(class_data) < 2:
                         continue
                     kde = gaussian_kde(class_data)
                     x_vals = np.linspace(-1, 1, 200)
                     y_vals = kde(x_vals)
-                    color = colors[idx]
+                    color = class_to_colors[label]
 
                     plot_label = f"{label_to_str[label]}"
                     (line,) = ax.plot(
@@ -951,19 +1153,29 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
         else:
             auc = roc_auc_score(
                 y_true=losses.binarize(
-                    einops.rearrange(labels_gt_masked, "B T -> (B T)"),
+                    labels_gt_masked.flatten(),
                     nb_classes=nb_classes,
                 )
                 .cpu()
                 .numpy(),
                 y_score=einops.rearrange(logits, "B T L -> (B T) L").cpu().numpy(),
-                multi_class="ovr",
+                multi_class="ovo",
                 average="macro",
             )
             wandb.log({"eval/AUC": auc, "num_updates": num_updates}, step=num_updates)
 
         for key, value in metrics.items():
             metrics[key] = np.mean(value)
+        wandb.log(
+            {
+                "eval/Confusion matrix": wandb.plot.confusion_matrix(
+                    preds=y_pred,
+                    y_true=y_gt_masked,
+                    class_names=list(label_to_str.values()),
+                )
+            },
+            step=num_updates,
+        )
         wandb_log = {f"eval/{k}": v for k, v in metrics.items()}
         wandb_log["num_updates"] = num_updates
         wandb.log(wandb_log, step=num_updates)
@@ -986,21 +1198,17 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
         X_umap = umap_output[:-nb_classes]
         proxies_umap = umap_output[-nb_classes:]
 
-        # ---- Rainbow Color Setup ----
-        cmap = colormaps.get_cmap("hsv")
-        class_colors = [cmap(i / num_classes_eval) for i in range(num_classes_eval)]
-
         # ---- Plot ----
         plt.figure(figsize=(8, 6))
 
         # Plot data points
         for class_idx in range(num_classes_eval):
-            idxs = y == class_idx
+            idxs = y == classes_eval[class_idx]
             plt.scatter(
                 X_umap[idxs, 0],
                 X_umap[idxs, 1],
                 s=15,
-                color=class_colors[class_idx],
+                color=class_to_colors[class_idx],
                 label=f"Class {class_idx} (data)",
                 alpha=0.7,
             )
@@ -1010,7 +1218,7 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
             plt.scatter(
                 proxy[0],
                 proxy[1],
-                color=class_colors[i],
+                color=class_to_colors[i],
                 marker="X",
                 s=100,
                 edgecolor="black",
@@ -1027,7 +1235,7 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
         plt.tight_layout()
 
         wandb.log(
-            {"umap_plot": wandb.Image(plt), "num_updates": num_updates},
+            {"eval/umap_plot": wandb.Image(plt), "num_updates": num_updates},
             step=num_updates,
         )
         plt.close()

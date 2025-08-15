@@ -55,11 +55,13 @@ if __name__ == "__main__":
     hdf5_file = "/home/sunny/data/sweeper/train/consolidated.h5"
     hdf5_file_test = "/home/sunny/data/sweeper/test/consolidated.h5"
 
+    use_xy_pred_loss = True
+
     expert_data = SplitTrajectoryDataset(
-        hdf5_file, BL, split="train", num_test=0, provide_labels=False
+        hdf5_file, BL, split="train", num_test=0, provide_labels=True
     )
     expert_data_eval = SplitTrajectoryDataset(
-        hdf5_file_test, BL, split="test", num_test=467
+        hdf5_file_test, BL, split="test", num_test=467, provide_labels=True
     )
     expert_data_imagine = SplitTrajectoryDataset(
         hdf5_file_test, 32, split="test", num_test=467
@@ -156,8 +158,8 @@ if __name__ == "__main__":
         optimizer.zero_grad()
 
         with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=use_amp):
-            pred1, pred_state, _, __ = transition(  # Forward pass
-                inputs1, inputs_states, acs
+            pred1, pred_state, _, __, latent = transition(  # Forward pass
+                inputs1, inputs_states, acs, return_latent=True
             )
             # pred1: [B (T-1) N P] - Predicted front camera embeddings
             # pred_state: [B (T-1) S] - Predicted robot joint states
@@ -166,7 +168,16 @@ if __name__ == "__main__":
             )
             # im2_loss_tf = nn.MSELoss()(pred2, output2)
             state_loss_tf = nn.MSELoss()(pred_state, output_state)
-            loss_tf = im1_loss_tf + state_loss_tf
+
+            if use_xy_pred_loss:
+                xy_gt = (data["failure"][:, 1:].to(device) - 112.0) / 244.0
+                mask = xy_gt[:, -1, -1] != -1.0
+                xy_gt = xy_gt[mask]
+                pred_xy = transition.xy_pred(latent[mask]).squeeze()
+                pred_xy_tf = nn.MSELoss()(pred_xy, xy_gt)
+            else:
+                pred_xy_tf = 0
+            loss_tf = im1_loss_tf + state_loss_tf + pred_xy_tf
 
         with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=use_amp):
             # Imagine step
@@ -284,7 +295,11 @@ if __name__ == "__main__":
                 data_acs = eval_data["action"].to(device)
                 data_acs = normalize_acs(data_acs, device)
                 acs = data_acs[:, :-1]
-                pred1, pred_state, _, __ = transition(inputs1, states, acs)
+                pred1, pred_state, _, __, latent = transition(
+                    inputs1, states, acs, return_latent=True
+                )
+                pred_xy = transition.xy_pred(latent).squeeze()
+                gt_xy = (eval_data["failure"][:, 1:].to(device) - 112.0) / 244.0
 
                 pred_latent = pred1[:, [H - 1]]
                 pred_ims, _ = decoder(pred_latent)
@@ -293,17 +308,34 @@ if __name__ == "__main__":
                 im1 = eval_data["agentview_image"][0, H].numpy()
                 im1_loss = nn.MSELoss()(pred1, output1)
                 state_loss = nn.MSELoss()(pred_state, output_state)
-                loss = im1_loss + state_loss
+                if use_xy_pred_loss:
+                    mask = gt_xy[:, -1, -1] != -1.0
+                    gt_xy = gt_xy[mask]
+                    pred_xy = pred_xy[mask]
+                    xy_loss = nn.MSELoss()(pred_xy, gt_xy)
+                    loss = im1_loss + state_loss + xy_loss
+                else:
+                    loss = im1_loss + state_loss
             print()
             print(
                 f"\rIter {i}, Eval Loss: {loss.item():.4f}, front Loss: {im1_loss.item():.4f}, state Loss: {state_loss.item():.4f}"
             )
 
-            torch.save(transition.state_dict(), f"checkpoints/testing_iter{i}.pth")
+            if use_xy_pred_loss:
+                torch.save(
+                    transition.state_dict(), f"checkpoints/testing_iter{i}_xy.pth"
+                )
+            else:
+                torch.save(transition.state_dict(), f"checkpoints/testing_iter{i}.pth")
 
             if loss < best_eval:
                 best_eval = loss
-                torch.save(transition.state_dict(), "checkpoints/best_testing.pth")
+                if use_xy_pred_loss:
+                    torch.save(
+                        transition.state_dict(), "checkpoints/best_testing_xy.pth"
+                    )
+                else:
+                    torch.save(transition.state_dict(), "checkpoints/best_testing.pth")
 
             transition.train()
             wandb.log(
@@ -315,6 +347,12 @@ if __name__ == "__main__":
                     "front": wandb.Image(im1),
                 }
             )
+            if use_xy_pred_loss:
+                wandb.log(
+                    {
+                        "xy_loss": xy_loss.item(),
+                    }
+                )
 
     plt.legend()
     plt.savefig("training curve.png")

@@ -1,619 +1,396 @@
-import argparse
-import collections
 import os
-import pathlib
+import random
 import sys
-import numpy as np
-import ruamel.yaml as yaml
-import torch
-from termcolor import cprint
-import cv2
-# add to os sys path
-import sys
+
+import einops
 import matplotlib.pyplot as plt
-parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-sys.path.append(parent_dir)
-dreamer_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '../model_based_irl_torch'))
-sys.path.append(dreamer_dir)
-env_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '../real_envs'))
-sys.path.append(env_dir)
-print(dreamer_dir)
-print(sys.path)
-import model_based_irl_torch.dreamer.tools as tools
-from model_based_irl_torch.dreamer.dreamer import Dreamer
-from termcolor import cprint
-from real_envs.env_utils import normalize_eef_and_gripper, unnormalize_eef_and_gripper, get_env_spaces
-import pickle
-from collections import defaultdict
-from model_based_irl_torch.dreamer.tools import add_to_cache
-from tqdm import tqdm, trange
-from model_based_irl_torch.common.utils import to_np
-import wandb
-from test_loader import SplitTrajectoryDataset
+import numpy as np
+import torch
+import torch.nn.functional as F
+from matplotlib.patches import Rectangle
 from torch.utils.data import DataLoader
-dino = torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14_reg')
-saferl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '../Lipschitz_Continuous_Reachability_Learning'))
-sys.path.append(saferl_dir)
-import gymnasium #as gym
-import gym
-import requests
-from PIL import Image
 from torchvision import transforms
+from tqdm import tqdm
 
-import torch
-from torch import nn
-from torch.optim import AdamW
+# Import custom modules
+from dino_wm.dino_models import VideoTransformer, normalize_acs, select_xyyaw_from_state
+from dino_wm.test_loader import SplitTrajectoryDataset
 
-from einops import rearrange, repeat
-from einops.layers.torch import Rearrange
-import imageio.v3 as iio
+parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+sys.path.append(parent_dir)
 
+# Import custom modules
+import os
+import sys
 
-transform = transforms.Compose([           
-                                transforms.Resize(256),                    
-                                transforms.CenterCrop(224),               
-                                transforms.ToTensor(),                    
-                                transforms.Normalize(                      
-                                mean=[0.485, 0.456, 0.406],                
-                                std=[0.229, 0.224, 0.225]              
-                                )])
+from gymnasium import spaces
+from tqdm import *
 
+from proxy_anchor.utils import load_state_dict_flexible
+from PyHJ.exploration import GaussianNoise
+from PyHJ.utils.net.common import Net
+from PyHJ.utils.net.continuous import Actor, Critic
 
-transform1 = transforms.Compose([           
-                                transforms.Resize(520),
-                                transforms.CenterCrop(518), #should be multiple of model patch_size                 
-                                transforms.ToTensor(),                    
-                                transforms.Normalize(mean=0.5, std=0.2)
-                                ])
+print(sys.path)
+dino = torch.hub.load("facebookresearch/dinov2", "dinov2_vits14_reg")
 
 
+def evaluate_V(policy, latent, constraint, action, device):
+    # constraint: [B (C + 1)]
+    constraint = einops.repeat(
+        torch.concat((constraint, torch.tensor([1.0], device=device))),
+        "C -> B C",
+        B=latent.shape[0],
+    )  # 1 indicates constraint is active
 
-
-
-import torch
-from torch import nn
-
-from einops import rearrange, repeat
-from einops.layers.torch import Rearrange
-from dino_models import Decoder, VideoTransformer, normalize_acs
-
-# helpers
-
-
-
-
-DINO_transform = transforms.Compose([           
-                                transforms.Resize(224),
-                                #transforms.CenterCrop(224), #should be multiple of model patch_size                 
-                                
-                                transforms.ToTensor(),])
-
-
-from LCRL.data import Collector, VectorReplayBuffer
-from LCRL.env import DummyVectorEnv
-from LCRL.exploration import GaussianNoise
-from LCRL.trainer import offpolicy_trainer
-from LCRL.utils import TensorboardLogger
-from LCRL.utils.net.common import Net
-from LCRL.utils.net.continuous import Actor, Critic
-import LCRL.reach_rl_gym_envs as reach_rl_gym_envs
-
-from termcolor import cprint
-from datetime import datetime
-import pathlib
-from pathlib import Path
-import collections
-#from dreamer import make_dataset
-# NOTE: all the reach-avoid gym environments are in reach_rl_gym, the constraint information is output as an element of the info dictionary in gym.step() function
-from test_loader import SplitTrajectoryDataset
-from torch.utils.data import DataLoader
-from dino_decoders_official import VQVAE
-"""
-    Note that, we can pass arguments to the script by using
-    python run_training_ddpg.py --task ra_droneracing_Game-v6 --control-net 512 512 512 512 --disturbance-net 512 512 512 512 --critic-net 512 512 512 512 --epoch 10 --total-episodes 160 --gamma 0.9
-    python run_training_ddpg.py --task ra_highway_Game-v2 --control-net 512 512 512 --disturbance-net 512 512 512 --critic-net 512 512 512 --epoch 10 --total-episodes 160 --gamma 0.9
-    python run_training_ddpg.py --task ra_1d_Game-v0 --control-net 32 32 --disturbance-net 4 4 --critic-net 4 4 --epoch 10 --total-episodes 160 --gamma 0.9
-    
-    For learning the classical reach-avoid value function (baseline):
-    python run_training_ddpg.py --task ra_droneracing_Game-v6 --control-net 512 512 512 512 --disturbance-net 512 512 512 512 --critic-net 512 512 512 512 --epoch 10 --total-episodes 160 --gamma 0.9 --is-game-baseline True
-    python run_training_ddpg.py --task ra_highway_Game-v2 --control-net 512 512 512 --disturbance-net 512 512 512 --critic-net 512 512 512 --epoch 10 --total-episodes 160 --gamma 0.9 --is-game-baseline True
-    python run_training_ddpg.py --task ra_1d_Game-v0 --control-net 32 32 --disturbance-net 4 4 --critic-net 4 4 --epoch 10 --total-episodes 160 --gamma 0.9 --is-game-baseline True
-
-"""
-def recursive_update(base, update):
-    for key, value in update.items():
-        if isinstance(value, dict) and key in base:
-            recursive_update(base[key], value)
-        else:
-            base[key] = value
-
-
-def get_args():
-    parser = argparse.ArgumentParser()
-    
-    parser.add_argument("--configs", nargs="+")
-    parser.add_argument("--expt_name", type=str, default=None)
-    parser.add_argument("--resume_run", type=bool, default=False)
-    # environment parameters
-    config, remaining = parser.parse_known_args()
-
-
-    if not config.resume_run:
-        curr_time = datetime.now().strftime("%m%d/%H%M%S")
-        config.expt_name = (
-            f"{curr_time}_{config.expt_name}" if config.expt_name else curr_time
+    obs = {
+        "state": latent[:, [-1]].mean(dim=2).squeeze(),  # [B, 397]
+        "constraints": constraint,  # [B, C + 1]
+    }
+    return (
+        policy.critic(
+            obs=obs,
+            act=normalize_acs(
+                action.to(device)  # Next action
+            ),
         )
-    else:
-        assert config.expt_name, "Need to provide experiment name to resume run."
-
-    yml = yaml.YAML(typ="safe", pure=True)
-    configs = yml.load(
-        #(pathlib.Path(sys.argv[0]).parent / "../configs/config.yaml").read_text()
-        (pathlib.Path(sys.argv[0]).parent / "../configs/config.yaml").read_text()
+        .detach()
+        .squeeze()
+        .cpu()
+        .numpy()
     )
 
-    name_list = ["defaults", *config.configs] if config.configs else ["defaults"]
 
-    defaults = {}
-    for name in name_list:
-        recursive_update(defaults, configs[name])
-    parser = argparse.ArgumentParser()
-    for key, value in sorted(defaults.items(), key=lambda x: x[0]):
-        arg_type = tools.args_type(value)
-        parser.add_argument(f"--{key}", type=arg_type, default=arg_type(value))
-    final_config = parser.parse_args(remaining)
+def transition_from_data(data, transition, device, use_amp=True):
+    data1 = data["cam_zed_embd"].to(device)
+    data2 = data["cam_rs_embd"].to(device)
 
-    final_config.logdir = f"{final_config.logdir+'/lcrl'}/{config.expt_name}"
-    #final_config.time_limit = HORIZONS[final_config.task.split("_")[-1]]
+    inputs1 = data1[:, :-1]
+    inputs2 = data2[:, :-1]
 
-    print("---------------------")
-    cprint(f"Experiment name: {config.expt_name}", "red", attrs=["bold"])
-    cprint(f"Task: {final_config.task_lcrl}", "cyan", attrs=["bold"])
-    cprint(f"Logging to: {final_config.logdir+'/lcrl'}", "cyan", attrs=["bold"])
-    print("---------------------")
-    return final_config
+    states = data["state"].to(device)[:, :-1]
+    acs = normalize_acs(data["action"].to(device)[:, :-1], device=device)
+
+    with torch.autocast(device_type="cuda", dtype=torch.float32, enabled=use_amp):
+        with torch.no_grad():
+            pred1, pred2, pred_state, pred_fail, semantic_feat = transition(
+                inputs1, inputs2, states, acs
+            )
+
+    return pred1, pred2, pred_state, pred_fail, semantic_feat
 
 
-
-args=get_args()
-config = args
-
-
-
-
-image_size = config.size[0] #128
-cam_obs_space = gym.spaces.Box(
-        low=0, high=255, shape=(image_size, image_size, 3), dtype=np.uint8
+def data_from_traj(traj):
+    data = {}
+    segment_length = traj["actions"].shape[0]
+    # data["robot0_eye_in_hand_image"] = torch.tensor(
+    #     np.array(traj["camera_0"][:]) * 255.0, dtype=torch.uint8
+    # )
+    data["agentview_image"] = torch.tensor(
+        np.array(traj["camera_1"][:]) * 255.0, dtype=torch.uint8
     )
-policy_obs_space = gym.spaces.Box(
-        low=-np.inf, high=np.inf, shape=(7,), dtype=np.float32
+    # data["cam_rs_embd"] = torch.tensor(
+    #     np.array(traj["cam_rs_embd"][:]), dtype=torch.float32
+    # )
+    data["cam_zed_embd"] = torch.tensor(
+        np.array(traj["cam_zed_embd"][:]), dtype=torch.float32
     )
-bool_space = gym.spaces.Box(
-        low=False, high=True, shape=(), dtype=bool
-    )
-observation_space = gym.spaces.Dict({
-        'front_cam': cam_obs_space,
-        'is_first': bool_space,
-        'is_last': bool_space,
-        'is_terminal': bool_space,
-        'policy': policy_obs_space,
-        'wrist_cam': cam_obs_space,
-    })
-action_space = gym.spaces.Box(low=-0.15, high=0.15, shape=(7,), dtype=np.float32)
+    data["state"] = torch.tensor(np.array(traj["states"][:]), dtype=torch.float32)
+    data["action"] = torch.tensor(np.array(traj["actions"][:]), dtype=torch.float32)
+    if "labels" in traj.keys():
+        data["failure"] = torch.tensor(np.array(traj["labels"][:]), dtype=torch.float32)
+    data["is_first"] = torch.zeros(segment_length)
+    data["is_last"] = torch.zeros(segment_length)
+    data["is_first"][0] = 1.0
+    data["is_terminal"] = data["is_last"]
+    data["discount"] = torch.ones(segment_length, dtype=torch.float32)
+    return data
 
 
-config.num_actions = action_space.n if hasattr(action_space, "n") else action_space.shape[0]
-
-
-wm = VideoTransformer(
-        image_size=(224, 224),
-        dim=384,  # DINO feature dimension
-        ac_dim=10,  # Action embedding dimension
-        state_dim=8,  # State dimension
-        depth=6,
-        heads=16,
-        mlp_dim=2048,
-        num_frames=3,
-        dropout=0.1
-    )
-
-#wm.load_state_dict(torch.load('checkpoints/claude_zero_wfail4900.pth'))
-#wm.load_state_dict(torch.load('checkpoints/claude_zero_wfail20500_rotvec.pth'))
-wm.load_state_dict(torch.load('checkpoints/best_classifier.pth'))
-
-hdf5_file = '/data/ken/latent-unsafe/consolidated.h5'
-bs = 1
-bl= 10
-device = 'cuda:0'
-H = 3
-expert_data = SplitTrajectoryDataset(hdf5_file, 3, split='train', num_test=100)
-
-expert_loader = iter(DataLoader(expert_data, batch_size=1, shuffle=True))
-
-env = gymnasium.make(args.task_lcrl, params = [wm, expert_data], device=device)
-
-# check if the environment has control and disturbance actions:
-assert hasattr(env, 'action1_space') #and hasattr(env, 'action2_space'), "The environment does not have control and disturbance actions!"
-args.state_shape = env.observation_space.shape or env.observation_space.n
-
-args.action_shape = env.action_space.shape or env.action_space.n
-
-args.max_action = env.action_space.high[0]
-
-args.action1_shape = env.action1_space.shape or env.action1_space.n
-#args.action2_shape = env.action2_space.shape or env.action2_space.n
-args.max_action1 = env.action1_space.high[0]
-#args.max_action2 = env.action2_space.high[0]
-
-
-from LCRL.data import Batch
-
-#if args.wm:
-from LCRL.policy import avoid_DDPGPolicy_annealing_dino as DDPGPolicy
-
-print("DDPG under the Avoid annealed Bellman equation with no Disturbance has been loaded!")
-
-# seed
-#np.random.seed(args.seed)
-#torch.manual_seed(args.seed)
-# model
-
-if args.actor_activation == 'ReLU':
-    actor_activation = torch.nn.ReLU
-elif args.actor_activation == 'Tanh':
-    actor_activation = torch.nn.Tanh
-elif args.actor_activation == 'Sigmoid':
-    actor_activation = torch.nn.Sigmoid
-elif args.actor_activation == 'SiLU':
-    actor_activation = torch.nn.SiLU
-
-if args.critic_activation == 'ReLU':
-    critic_activation = torch.nn.ReLU
-elif args.critic_activation == 'Tanh':
-    critic_activation = torch.nn.Tanh
-elif args.critic_activation == 'Sigmoid':
-    critic_activation = torch.nn.Sigmoid
-elif args.critic_activation == 'SiLU':
-    critic_activation = torch.nn.SiLU
-
-if args.critic_net is not None:
-    critic_net = Net(
-        args.state_shape,
-        args.action_shape,
-        hidden_sizes=args.critic_net,
-        activation=critic_activation,
-        concat=True,
-        device=args.device
-    )
-else:
-    # report error:
-    raise ValueError("Please provide critic_net!")
-
-critic = Critic(critic_net, device=args.device).to(args.device)
-critic_optim = torch.optim.Adam(critic.parameters(), lr=args.critic_lr)
-
-# import pdb; pdb.set_trace()
-log_path = None
-
-
-actor1_net = Net(args.state_shape, hidden_sizes=args.control_net, activation=actor_activation, device=args.device)
-actor1 = Actor(
-    actor1_net, args.action1_shape, max_action=args.max_action1, device=args.device
-).to(args.device)
-actor1_optim = torch.optim.Adam(actor1.parameters(), lr=args.actor_lr)
-
-
-
-
-
-policy = DDPGPolicy(
-critic,
-critic_optim,
-tau=args.tau,
-gamma=args.gamma_lcrl,
-exploration_noise=GaussianNoise(sigma=args.exploration_noise),
-reward_normalization=args.rew_norm,
-estimation_step=args.n_step,
-action_space=env.action_space,
-actor1=actor1,
-actor1_optim=actor1_optim,
-actor_gradient_steps=args.actor_gradient_steps,
+# Define transforms
+transform = transforms.Compose(
+    [
+        transforms.Resize(256),
+        transforms.CenterCrop(224),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ]
 )
 
-#policy.load_state_dict(torch.load('/home/kensuke/latent-safety/scripts/logs/dreamer_dubins/lcrl/1227/151847/lcrl/franka_wm_DINO-v0/wm_actor_activation_ReLU_critic_activation_ReLU_game_gd_steps_1_tau_0.005_training_num_1_buffer_size_40000_c_net_512_4_a1_512_4_a2_512_4_gamma_0.95/noise_0.1_actor_lr_0.0001_critic_lr_0.001_batch_512_step_per_epoch_40000_kwargs_{}_seed_0/epoch_id_100/policy.pth'))
-#policy.load_state_dict(torch.load('/home/kensuke/latent-safety/scripts/logs/dreamer_dubins/lcrl/0112/152128/lcrl/franka_wm_DINO-v0/wm_actor_activation_ReLU_critic_activation_ReLU_game_gd_steps_1_tau_0.005_training_num_1_buffer_size_40000_c_net_512_4_a1_512_4_a2_512_4_gamma_0.95/noise_0.1_actor_lr_0.0001_critic_lr_0.001_batch_512_step_per_epoch_40000_kwargs_{}_seed_0/epoch_id_100/rotvec_policy.pth'))
-policy.load_state_dict(torch.load('/home/kensuke/latent-safety/scripts/logs/dreamer_dubins/lcrl/0615/000549/lcrl/franka_wm_DINO-v0/wm_actor_activation_ReLU_critic_activation_ReLU_game_gd_steps_1_tau_0.005_training_num_1_buffer_size_40000_c_net_512_4_a1_512_4_a2_512_4_gamma_0.95/noise_0.1_actor_lr_0.0001_critic_lr_0.001_batch_512_step_per_epoch_40000_kwargs_{}_seed_0/epoch_id_130/rotvec_policy.pth'))
-print('state dict loaded')
-def find_a(state):
-    tmp_obs = np.array(state).reshape(1,-1)
-    tmp_batch = Batch(obs = tmp_obs, info = Batch())
-    tmp = policy(tmp_batch, model = "actor_old").act
-    act = policy.map_action(tmp).cpu().detach().numpy().flatten()
-    return act
+transform1 = transforms.Compose(
+    [
+        transforms.Resize(520),
+        transforms.CenterCrop(518),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=0.5, std=0.2),
+    ]
+)
 
-def evaluate_V(state):
-    tmp_obs = np.array(state).reshape(1,-1)
-    tmp_batch = Batch(obs = tmp_obs, info = Batch())
-    tmp = policy.critic_old(tmp_batch.obs, policy(tmp_batch, model="actor_old").act)
-    return tmp.cpu().detach().numpy().flatten()
+DINO_transform = transforms.Compose(
+    [
+        transforms.Resize(224),
+        transforms.ToTensor(),
+    ]
+)
 
-
-def fill_eps_from_pkl_files(cache, cache_eval): 
-    demo_path = "/home/kensuke/data/skittles/"
-    # Get a list of all pickle files in the directory
-    pkl_files = [os.path.join(demo_path, f) for f in os.listdir(demo_path) if f.endswith('.pkl')]
-    
-    pixel_keys = ["cam_rs", "cam_zed_crop"] # zed_right gets priority over zed_left
-    embd_keys = ["cam_rs_embd", "cam_zed_embd"]
-    for i, pkl_file in tqdm(
-        enumerate(pkl_files),
-        desc="Loading in expert data",
-        ncols=0,
-        leave=False,
-        total=len(pkl_files),
-    ):
-        with open(pkl_file, "rb") as f:
-            data = pickle.load(f)[0]
-        
-        for t, (obs, action, reward) in enumerate(data):
-            transition = defaultdict(np.array)
-            for obs_key in pixel_keys:
-                if obs_key in obs:
-                    if obs_key == "cam_zed_crop":
-                        img = 255*obs[obs_key]
-                        img = img.astype(np.uint8)
-                    else:
-                        img = obs[obs_key][0]
-                    if obs_key == "cam_rs":
-                        img_key = "robot0_eye_in_hand_image"
-                    elif obs_key == "cam_zed_crop" or obs_key == "cam_zed_right":
-                        img_key = "agentview_image"
-                    # downsample img to 128x128
-
-                    img_PIL = Image.fromarray(np.uint8(img)).convert('RGB')
-                    img_obs = DINO_transform(img_PIL)
-                    transition[img_key] = np.array(img_obs)
-                    #img_obs = cv2.resize(img, (128, 128))
-                    #transition[img_key] = np.array(img_obs, dtype=np.uint8)
-            for obs_key in embd_keys:
-                if obs_key in obs:
-                    embd = obs[obs_key]
-                    if obs_key == "cam_rs_embd":
-                        emb_key = "robot0_eye_in_hand_embd"
-                    elif obs_key == "cam_zed_embd":
-                        emb_key = "agentview_embd"
-                    transition[emb_key] = embd
-            
-            state = obs["state"]
-            state_norm = normalize_eef_and_gripper(state)
-            transition["state"] = state_norm
-            transition["is_first"] = np.array(t == 0, dtype=np.bool_)
-            transition["is_last"] = np.array(t == len(data) - 1, dtype=np.bool_)
-            transition["is_terminal"] = np.array(t == len(data) - 1, dtype=np.bool_)
-            transition["discount"] = np.array(1, dtype=np.float32)
-            
-            # Normalize action and insert into transition
-            action = np.array(action, dtype=np.float32)
-            action_norm = normalize_eef_and_gripper(action)
-            transition["action"] = action_norm
-            
-            if i < 200:
-                add_to_cache(cache, f"exp_traj_{i}", transition)
-            else:
-                add_to_cache(cache_eval, f"exp_traj_{i}", transition)
+norm_transform = transforms.Normalize(
+    mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
+)
 
 
-def make_dataset(episodes, bs, bl):
-    generator = tools.sample_episodes(episodes, bl) #bl
-    dataset = tools.from_generator(generator, bs) #bs
-    return dataset
+def isolate_red_chocolates(images):
+    """
+    Isolate red chocolates from batched images.
+
+    Args:
+        images (torch.Tensor): Batched images of shape (B, H, W, 3), values in [0, 1]
+
+    Returns:
+        masks (torch.Tensor): Binary masks of shape (B, 1, H, W)
+    """
+    images = images.permute(0, 3, 1, 2)  # Change to (B, C, H, W)
+    B, C, H, W = images.shape
+    assert C == 3, "Images must have 3 channels (RGB)"
+
+    # Convert RGB to HSV (vectorized)
+    r, g, b = images[:, 0:1], images[:, 1:2], images[:, 2:3]
+    maxc = torch.max(images, dim=1, keepdim=True)[0]
+    minc = torch.min(images, dim=1, keepdim=True)[0]
+    v = maxc
+    s = (maxc - minc) / (maxc + 1e-6)
+
+    # Hue calculation
+    h = torch.zeros_like(maxc)
+    mask = (maxc == r) & (maxc != minc)
+    h[mask] = (60 * ((g - b) / (maxc - minc + 1e-6)))[mask]
+    mask = (maxc == g) & (maxc != minc)
+    h[mask] = (60 * ((b - r) / (maxc - minc + 1e-6) + 2))[mask]
+    mask = (maxc == b) & (maxc != minc)
+    h[mask] = (60 * ((r - g) / (maxc - minc + 1e-6) + 4))[mask]
+    h = (h % 360) / 360.0  # normalize to [0,1]
+
+    # Define red range in HSV
+    red_mask = ((h < 0.05) | (h > 0.95)) & (s > 0.5) & (v > 0.2)
+
+    return red_mask.float().squeeze()
 
 
-if __name__ == "__main__":
-    #wandb.init(project="dino")
+# --- Average positions ---
+def get_avg_positions(mask):
+    B, H, W = mask.shape
+    ys = torch.arange(H, device=mask.device).view(1, H, 1).expand(B, H, W)
+    xs = torch.arange(W, device=mask.device).view(1, 1, W).expand(B, H, W)
 
-    #hdf5_file = '/data/ken/ken_data/skittles_trajectories_unsafe_labeled.h5'
-    bs = 1
-    bl=12
-    H = 3
-    expert_data_imagine = SplitTrajectoryDataset(hdf5_file, bl, split='train', num_test=0)
+    counts = mask.sum(dim=(1, 2)).clamp(min=1)
+    avg_x = (xs * mask).sum(dim=(1, 2)) / counts
+    avg_y = (ys * mask).sum(dim=(1, 2)) / counts
 
-    expert_loader_imagine = iter(DataLoader(expert_data_imagine, batch_size=1, shuffle=True))
-
-    threshold = 0.7
-
-    decoder = VQVAE().to(device)
-    #decoder.load_state_dict(torch.load('checkpoints/best_decoder_10m.pth'))
-    decoder.load_state_dict(torch.load('checkpoints/testing_decoder.pth'))
-    decoder.eval()
-
-    transition = wm
-
-    #transition.load_state_dict(torch.load('checkpoints/claude_zero_wfail4900.pth'))
-    #transition.load_state_dict(torch.load('checkpoints/claude_zero_wfail20500_rotvec.pth'))
-    transition.load_state_dict(torch.load('checkpoints/best_classifier.pth'))
-    
-    transition.eval()
-
-    tp_ol, tn_ol, fp_ol, fn_ol = 0, 0, 0, 0
-    tp_cl, tn_cl, fp_cl, fn_cl = 0, 0, 0, 0
-    #data = next(expert_dataset)
-
-    num = 0
-    while True:
-        data = next(expert_loader_imagine)
-
-        
-        while (data["failure"][[0], :9]==0).all() or (data["failure"][[0], 6:]>0).all() :
-            data = next(expert_loader_imagine)
-
-        inputs2 = data['cam_rs_embd'][[0], :H].to(device)
-        inputs1 = data['cam_zed_embd'][[0], :H].to(device)
-        all_acs = data['action'][[0]].to(device)
-        all_acs = normalize_acs(all_acs, device=device)
-        all_fails = data['failure'][[0]].to(device)
-        acs = data['action'][[0],:H].to(device)
-        acs = normalize_acs(acs, device=device)
-        states = data['state'][[0],:H].to(device)
-        im1s = (data['agentview_image'][[0], :H].squeeze().to(device)/255.).detach().cpu().numpy()
-        im2s = (data['robot0_eye_in_hand_image'][[0], :H].squeeze().to(device)/255.).detach().cpu().numpy()
-        
-        pred_failures = []
-        pred_brts = []
-        for i in range(bl-H):
-            latent = transition.forward_features(inputs1, inputs2, states, acs)
-
-            pred1, pred2, pred_state, pred_fail = transition.front_head(latent), transition.wrist_head(latent), transition.state_pred(latent), transition.failure_pred(latent)
-            
-            latent = torch.mean(latent[:, [-1]], axis=2).detach().cpu().numpy()
-            pred_brt = evaluate_V(latent)
-
-            pred_latent = torch.cat([pred1[:,[-1]], pred2[:,[-1]]], dim=0)#.squeeze()
-            pred_ims, _ = decoder(pred_latent)
-
-            pred_ims = rearrange(pred_ims, "(b t) c h w -> b t h w c", t=1)
-            pred_im1, pred_im2 = torch.split(pred_ims, [inputs1.shape[0], inputs2.shape[0]], dim=0)
-            pred_im1 = pred_im1.squeeze(0).detach().cpu().numpy()
-            pred_im2 = pred_im2.squeeze(0).detach().cpu().numpy()
+    return torch.stack([avg_x, avg_y], dim=1)
 
 
-            #pred_im1 = decoder(pred1[:,-1])[0].unsqueeze(0).detach().cpu().numpy()
-            #pred_im2 = decoder(pred2[:,-1])[0].unsqueeze(0).detach().cpu().numpy()
-            im1s = np.concatenate([im1s, pred_im1], axis=0)
-            im2s = np.concatenate([im2s, pred_im2], axis=0)
+use_amp = True
+scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
 
-            pred_failures.append(pred_fail[:,-1].item())
-            pred_brts.append(pred_brt.item())
-            
-            
-            # getting next inputs
-            acs = torch.cat([acs[[0], 1:], all_acs[0,H+i].unsqueeze(0).unsqueeze(0)], dim=1)
-            inputs1 = torch.cat([inputs1[[0], 1:], pred1[:, -1].unsqueeze(1)], dim=1)
-            inputs2 = torch.cat([inputs2[[0], 1:], pred2[:, -1].unsqueeze(1)], dim=1)
-            states = torch.cat([states[[0], 1:], pred_state[:,-1].unsqueeze(1)], dim=1)
+seed = 0
+random.seed(seed)
+np.random.seed(seed)
+torch.manual_seed(seed)
+torch.cuda.manual_seed(seed)
+device = "cuda:0"
 
-        pred_failures = (torch.tensor(pred_failures) < 0.5).to(torch.int32)
+x_class_boundaries = [0, 224 // 3, 224 * 2 // 3, 224]  # x boundaries for 3 classes
+y_class_boundaries = [224 // 3, 224 * 2 // 3, 224]  # y boundaries for 3 classes
+# 3 * 2 = 6 classes in total
+nb_classes = (len(x_class_boundaries) - 1) * (len(y_class_boundaries) - 1)
+label_to_str = {
+    0: "Left Top",
+    1: "Left Bottom",
+    2: "Middle Top",
+    3: "Middle Bottom",
+    4: "Right Top",
+    5: "Right Bottom",
+}
 
-        
-        gt_im1 = (data['agentview_image'][[0], :bl].squeeze().to(device)/255.).detach().cpu().numpy()
-        gt_im2 = (data['robot0_eye_in_hand_image'][[0], :bl].squeeze().to(device)/255.).detach().cpu().numpy()
+BL = 4
+BS = 16
+open_loop = True
+transition = VideoTransformer(
+    image_size=(224, 224),
+    dim=384,
+    ac_dim=10,
+    state_dim=3,
+    depth=6,
+    heads=16,
+    mlp_dim=2048,
+    num_frames=BL - 1,
+    dropout=0.1,
+    nb_classes=nb_classes,
+).to(device)
+# load_state_dict_flexible(transition, "../checkpoints_pa/encoder_0.1.pth")
+# load_state_dict_flexible(transition, "../checkpoints/best_testing.pth")
 
+load_state_dict_flexible(
+    transition, "checkpoints_pa/encoder_mrg_0.1_alpha_32_num_ex_all_ul_F.pth"
+)
+transition.eval()
 
-        gt_imgs = np.concatenate([gt_im1, gt_im2], axis=-3)
-        pred_imgs = np.concatenate([im1s, im2s], axis=-3)
-        pred_imgs2 = np.concatenate([im1s, im2s], axis=-3)
+actor_activation = torch.nn.ReLU
+critic_activation = torch.nn.ReLU
 
+critic_net = Net(
+    state_shape=(397,),
+    obs_inputs=["state", "constraint"],
+    action_shape=(3,),
+    hidden_sizes=[512, 512, 512, 512],
+    constraint_dim=512,
+    constraint_embedding_dim=512,
+    hidden_sizes_constraint=[],
+    activation=critic_activation,
+    concat=True,
+    device=device,
+)
 
-        for i in range(len(pred_failures)):
-            if pred_brts[i] < threshold:
-                pred_imgs2[H+i, :,:,1] *= 1.2
-            if pred_failures[i] == 1:
-                pred_imgs[H+i, :,:,0] *= 1.2
-            if all_fails[0,H+i] == 1 or all_fails[0,H+i] == 2:
-                gt_imgs[H+i, :,:,0] *= 1.2
+critic = Critic(critic_net, device=critic_net.device).to(critic_net.device)
+critic_optim = torch.optim.Adam(critic.parameters(), lr=1e-3, weight_decay=1e-3)
 
-            if pred_failures[i] == 0 and all_fails[0,H+i] == 0:
-                tn_ol+= 1
-            if pred_failures[i] == 0 and all_fails[0,H+i] != 0:
-                fp_ol+= 1
-            if pred_failures[i] == 1 and all_fails[0,H+i] == 0:
-                fn_ol+= 1
-            if pred_failures[i] == 1 and all_fails[0,H+i] != 0:
-                tp_ol+= 1
-            
-        print('open loop: tn, fp fn tp', tn_ol, fp_ol, fn_ol, tp_ol)
-        print('doomed f', (torch.tensor(pred_brts)<threshold).to(torch.int32))
-        print('failures', pred_failures)
-        vid = np.concatenate([gt_imgs, pred_imgs2, pred_imgs], axis=-2)
+from PyHJ.policy import avoid_DDPGPolicy_annealing_dinowm as DDPGPolicy
 
-        vid = (vid * 255).clip(0, 255).astype(np.uint8)
-        print('vid shape', vid.shape)
-        fps = 20  # Frames per second
-        iio.imwrite(f'output_video_dino_ol_{num}.gif', vid, duration=1/fps, loop=0)
+print(
+    "DDPG under the Avoid annealed Bellman equation with no Disturbance has been loaded!"
+)
 
-        # Release the video writer
-        inputs2 = data['cam_rs_embd'][[0], :H].to(device)
-        inputs1 = data['cam_zed_embd'][[0], :H].to(device)
-        all_acs = data['action'][[0]].to(device)
-        all_acs = normalize_acs(all_acs, device=device)
-        all_states = data['state'][[0]].to(device)
-        all_in2s = data['cam_rs_embd'][[0]].squeeze().to(device)
-        all_in1s = data['cam_zed_embd'][[0]].squeeze().to(device)
+actor_net = Net(
+    (397,),
+    obs_inputs=["state", "constraint"],
+    hidden_sizes=[512, 512, 512, 512],
+    activation=actor_activation,
+    device=device,
+    constraint_dim=512,
+    constraint_embedding_dim=512,
+    hidden_sizes_constraint=[],
+)
+actor = Actor(actor_net, (3,), max_action=1, device=device).to(device)
+actor_optim = torch.optim.Adam(actor.parameters(), lr=1e-4)
 
+policy = DDPGPolicy(
+    critic,
+    critic_optim,
+    tau=0.005,
+    gamma=0.9999,
+    exploration_noise=GaussianNoise(sigma=0.1),
+    reward_normalization=False,
+    estimation_step=1,
+    action_space=spaces.Box(low=-1.0, high=1.0, shape=(3,), dtype=np.float32),
+    actor=actor,
+    actor_optim=actor_optim,
+    actor_gradient_steps=1,
+)
+policy.load_state_dict(
+    torch.load(
+        "/home/sunny/AnySafe_Reachability/scripts/logs/dinowm/epoch_id_16/rotvec_policy.pth"
+    )
+)
 
-        acs = data['action'][[0],:H].to(device)
-        acs = normalize_acs(acs, device=device)
-        states = data['state'][[0],:H].to(device)
-        im1s = (data['agentview_image'][[0], :H].squeeze().to(device)/255.).detach().cpu().numpy()
-        im2s = (data['robot0_eye_in_hand_image'][[0], :H].squeeze().to(device)/255.).detach().cpu().numpy()
-        pred_failures = []
-        pred_brts = []
-        for i in range(bl-H):
-            latent = transition.forward_features(inputs1, inputs2, states, acs)
+hdf5_file = "/home/sunny/data/sweeper/test/consolidated.h5"
+train_data = SplitTrajectoryDataset(
+    hdf5_file,
+    BL,
+    split="train",
+    num_test=0,
+    provide_labels=True,
+    only_pass_labeled_examples=True,
+)
+train_loader = DataLoader(train_data, batch_size=BS, shuffle=True, num_workers=4)
 
-            pred1, pred2, pred_state, pred_fail = transition.front_head(latent), transition.wrist_head(latent), transition.state_pred(latent), transition.failure_pred(latent)
-            
-            latent = torch.mean(latent[:, [-1]], axis=2).detach().cpu().numpy()
-            pred_brt = evaluate_V(latent)
-            act = find_a(latent)
-            
-            pred_latent = torch.cat([pred1[:,[-1]], pred2[:,[-1]]], dim=0)#.squeeze()
-            pred_ims, _ = decoder(pred_latent)
+coverage_total = torch.zeros((224, 224), dtype=torch.float32, device="cuda")  # if GPU
 
-            pred_ims = rearrange(pred_ims, "(b t) c h w -> b t h w c", t=1)
-            pred_im1, pred_im2 = torch.split(pred_ims, [inputs1.shape[0], inputs2.shape[0]], dim=0)
-            pred_im1 = pred_im1.squeeze(0).detach().cpu().numpy()
-            pred_im2 = pred_im2.squeeze(0).detach().cpu().numpy()
-            #pred_im1 = decoder(pred1[:,-1])[0].unsqueeze(0).detach().cpu().numpy()
-            #pred_im2 = decoder(pred2[:,-1])[0].unsqueeze(0).detach().cpu().numpy()
-            im1s = np.concatenate([im1s, pred_im1], axis=0)
-            im2s = np.concatenate([im2s, pred_im2], axis=0)
-            pred_failures.append(pred_fail[:,-1].item())
-            pred_brts.append(pred_brt.item())
-            # getting next inputs
-            acs = torch.cat([acs[[0], 1:], all_acs[0,H+i].unsqueeze(0).unsqueeze(0)], dim=1)
-            inputs1 = torch.cat([inputs1[[0], 1:], all_in1s[H+i].unsqueeze(0).unsqueeze(0)], dim=1)
-            inputs2 = torch.cat([inputs2[[0], 1:], all_in2s[H+i].unsqueeze(0).unsqueeze(0)], dim=1)
-            states = torch.cat([states[[0], 1:], all_states[0, H+i].unsqueeze(0).unsqueeze(0)], dim=1)
+_class = 0
+label_y = _class % (len(y_class_boundaries) - 1)
+label_x = _class // (len(y_class_boundaries) - 1)
 
+fig, axes = plt.subplots(2, nb_classes, figsize=(6 * nb_classes, 12))
+for ax in axes.flat:
+    ax.set_xlim(0, 224)
+    ax.set_ylim(0, 224)
+    ax.invert_yaxis()  # Invert y-axis to match image coordinates
+    ax.set_aspect("equal")
 
-        gt_im1 = (data['agentview_image'][[0], :bl].squeeze().to(device)/255.).detach().cpu().numpy()
-        gt_im2 = (data['robot0_eye_in_hand_image'][[0], :bl].squeeze().to(device)/255.).detach().cpu().numpy()
-            
-        pred_failures_int = (torch.tensor(pred_failures) < 0.5).to(torch.int32)
-              
-        gt_imgs = np.concatenate([gt_im1, gt_im2], axis=-3)
-        pred_imgs = np.concatenate([im1s, im2s], axis=-3)
-        pred_imgs2 = np.concatenate([im1s, im2s], axis=-3)
-        for i in range(len(pred_failures)):
-            if pred_brts[i] < threshold:
-                pred_imgs2[H+i, :, :,1] *= 1.2
-            if pred_failures_int[i] == 1:
-                pred_imgs[H+i, :,:,0] *= 1.2
-            if all_fails[0,H+i] == 1 or all_fails[0,H+i] == 2:
-                gt_imgs[H+i, :,:,0] *= 1.2
+for i in range(nb_classes):
+    label_y = i % (len(y_class_boundaries) - 1)
+    label_x = i // (len(y_class_boundaries) - 1)
+    for ax in axes[:, i]:
+        rect = Rectangle(
+            (x_class_boundaries[label_x], y_class_boundaries[label_y]),
+            x_class_boundaries[label_x + 1] - x_class_boundaries[label_x],
+            y_class_boundaries[label_y + 1] - y_class_boundaries[label_y],
+            linewidth=1,
+            edgecolor="r",
+            facecolor="none",
+        )
+        ax.add_patch(rect)
 
-            if pred_failures_int[i] == 0 and all_fails[0,H+i] == 0:
-                tn_cl += 1
-            if pred_failures_int[i] == 0 and all_fails[0,H+i] != 0:
-                fp_cl += 1
-            if pred_failures_int[i] == 1 and all_fails[0,H+i] == 0:
-                fn_cl += 1
-            if pred_failures_int[i] == 1 and all_fails[0,H+i] != 0:
-                tp_cl += 1   
-        
-        print('pred brts', pred_brts)
-        print('doomed f', (torch.tensor(pred_brts)<threshold).to(torch.int32))
-        print('failures', pred_failures_int)
+    axes[0, i].set_title(rf"Safety Margin Function $l(z,p_{i})$")
+    axes[1, i].set_title(rf"Value Function $V(z,p_{i})$")
 
-        print('closed loop: tn, fp fn tp', tn_cl, fp_cl, fn_cl, tp_cl)  
-        vid = np.concatenate([gt_imgs, pred_imgs2, pred_imgs], axis=-2)
+tot = len(train_data) // BS
+for i, data in tqdm(enumerate(train_loader), total=tot):
+    __, __, __, __, latent = transition(
+        data["cam_zed_embd"][:, :-1].to(device),
+        select_xyyaw_from_state(data["state"][:, :-1]).to(device),
+        normalize_acs(data["action"][:, :-1].to(device)),
+        return_latent=True,
+    )
+    # V: [B] value of last frame
+    for _class in range(nb_classes):
+        constraint = transition.proxies[_class].detach()
+        V = evaluate_V(
+            policy=policy,
+            latent=latent,
+            constraint=constraint,
+            action=data["action"][:, -1],
+            device=device,
+        )
+        semantic_features = transition.semantic_embed(
+            inp1=data["cam_zed_embd"].to(device),
+            state=select_xyyaw_from_state(data["state"]).to(device),
+        ).detach()
+        lz = np.tanh(
+            2
+            * F.cosine_similarity(
+                semantic_features[:, -1],
+                einops.repeat(
+                    constraint,
+                    "c -> b c",
+                    b=semantic_features.shape[0],
+                ),
+            )
+            .cpu()
+            .numpy()
+        )
 
-        vid = (vid * 255).clip(0, 255).astype(np.uint8)
-        fps = 20  # Frames per second
-        iio.imwrite(f'output_video_dino_cl_{num}.gif', vid, duration=1/fps, loop=0)
-        print('end loop')
-        num += 1
-        if num > 10:
-            exit()
-    
+        center = data["failure"][:, -1]
+
+        sc = axes[1, _class].scatter(
+            center[:, 0].cpu().numpy(),
+            center[:, 1].cpu().numpy(),
+            c=V,
+            cmap="viridis",
+            s=50,
+        )
+
+        sc = axes[0, _class].scatter(
+            center[:, 0].cpu().numpy(),
+            center[:, 1].cpu().numpy(),
+            c=lz,
+            cmap="viridis",
+            s=50,
+        )
+
+# Save the figure
+plt.savefig(
+    "brt_sweeper.png",
+    bbox_inches="tight",
+    pad_inches=0.1,
+    dpi=300,
+)
+plt.close(fig)

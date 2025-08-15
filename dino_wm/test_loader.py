@@ -135,10 +135,10 @@ class SplitTrajectoryDataset(Dataset):
                     np.array(trajectory["labels"][start_idx:end_idx]),
                     dtype=torch.float32,
                 )
-            # elif "labels" not in trajectory.keys() and self.provide_labels:
-            #     segment_obs_tensor["failure"] = (  # Dummy labels if not present
-            #         torch.ones_like(segment_obs_tensor["action"][:, 0]) * -2.0
-            #     )
+            elif "labels" not in trajectory.keys() and self.provide_labels:
+                segment_obs_tensor["failure"] = (  # Dummy labels if not present
+                    torch.ones_like(segment_obs_tensor["action"][:, :2]) * -1.0
+                )
             segment_obs_tensor["is_first"] = torch.zeros(self.segment_length)
             segment_obs_tensor["is_last"] = torch.zeros(self.segment_length)
             segment_obs_tensor["is_first"][0] = 1.0

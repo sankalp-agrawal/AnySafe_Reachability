@@ -337,6 +337,13 @@ class VideoTransformer(nn.Module):
             nn.Linear(total_dim, state_dim),
         )
 
+        self.xy_state_head = nn.Sequential(
+            LayerNorm(total_dim),
+            nn.Linear(total_dim, total_dim),
+            nn.ReLU(),
+            nn.Linear(total_dim, 2),
+        )
+
         semantic_dim = dim + state_dim
         self.semantic_encoder = nn.Sequential(
             LayerNorm(semantic_dim),
@@ -345,16 +352,14 @@ class VideoTransformer(nn.Module):
             nn.Linear(semantic_dim, 512),
         )
 
-        self.split_classifier = nn.Sequential(
+        self.margin_head = nn.Sequential(
             LayerNorm(total_dim),
-            nn.Linear(total_dim, total_dim),
-            nn.ReLU(),
             nn.Linear(total_dim, total_dim),
             nn.ReLU(),
             nn.Linear(total_dim, 1),
         )
 
-        # self.split_classifier = nn.Sequential(
+        # self.margin_head = nn.Sequential(
         #     # CNN layers
         #     # Input: [(N, T), D, H, W]
         #     nn.Conv2d(total_dim, 256, kernel_size=5, padding=1),  # [(N, T), 256, H, W]
@@ -371,8 +376,8 @@ class VideoTransformer(nn.Module):
         #     nn.Linear(256, 1),  # [(N, T), 1]
         # )
 
-        self.proxies = nn.Parameter(torch.randn(3, 512).cuda())
-        self.thresholds = nn.Parameter(torch.zeros(3), requires_grad=False)
+        self.proxies = nn.Parameter(torch.randn(nb_classes, 512).cuda())
+        self.thresholds = nn.Parameter(torch.zeros(nb_classes), requires_grad=False)
 
     def forward(
         self,
@@ -403,7 +408,7 @@ class VideoTransformer(nn.Module):
         # Generate predictions
         pred1 = self.front_head(x)  # [B (T-1) N P]
         state_preds = self.state_pred(x)  # [B (T-1) S]
-        split_preds = self.split_pred(x)  # [B (T-1) 1]
+        fail_preds = self.fail_pred(x)  # [B (T-1) 1]
 
         semantic_features = (  # [ B (T-1) E ] E - embedding dimension
             self.semantic_embed(inp1=video1, state=states)
@@ -413,12 +418,12 @@ class VideoTransformer(nn.Module):
             return (
                 pred1,
                 state_preds,
-                split_preds,
+                fail_preds,
                 semantic_features,
                 x,  # Return latent features
             )
         else:
-            return pred1, state_preds, split_preds, semantic_features
+            return pred1, state_preds, fail_preds, semantic_features
 
     def forward_features(
         self,
@@ -455,11 +460,11 @@ class VideoTransformer(nn.Module):
         x = rearrange(x, "b (s n) d -> b s n d", s=num_frames)
         return x
 
-    def split_pred(self, features):
+    def fail_pred(self, features):
         features = torch.mean(features, dim=-2)
-        split_preds = self.split_classifier(features)
-        # split_preds = torch.mean(split_preds, dim=2)  # Average over patches
-        return split_preds
+        fail_preds = self.margin_head(features)
+        # fail_preds = torch.mean(fail_preds, dim=2)  # Average over patches
+        return fail_preds
 
     def semantic_embed(self, inp1, state):
         """
@@ -478,16 +483,23 @@ class VideoTransformer(nn.Module):
             dim=-1,
         )
         # semantic_features: [B T N E]
+        features = torch.mean(features, dim=-2)  # Average over patches
         semantic_features = self.semantic_encoder(features)
         # Average over patches
         # semantic_features: [B T E]
-        semantic_features = torch.mean(semantic_features, dim=2)
+        # semantic_features = torch.mean(semantic_features, dim=2)
         return semantic_features
 
     def state_pred(self, features):
         state_preds = self.state_head(features)
         state_preds = torch.mean(state_preds, dim=2)  # Average over patches
         return state_preds
+
+    def xy_pred(self, features):
+        features = torch.mean(features, dim=-2)
+        xy_preds = self.xy_state_head(features)
+        # xy_preds = torch.mean(xy_preds, dim=2)  # Average over patches
+        return xy_preds
 
     @torch.no_grad()
     def get_dino_features(self, video: torch.Tensor) -> torch.Tensor:

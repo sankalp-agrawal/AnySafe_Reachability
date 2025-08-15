@@ -1,4 +1,5 @@
 import random
+import sys
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -46,6 +47,50 @@ norm_transform = transforms.Normalize(
 )
 
 
+# labels is a tensor of shape (B, 2)
+x_class_boundaries = [0, 224 // 3, 224 * 2 // 3, 224]  # x boundaries for 3 classes
+y_class_boundaries = [224 // 3, 224 * 2 // 3, 224]  # y boundaries for 3 classes
+# 3 * 2 = 6 classes in total
+nb_classes = (len(x_class_boundaries) - 1) * (len(y_class_boundaries) - 1)
+label_to_str = {
+    0: "Left Top",
+    1: "Left Bottom",
+    2: "Middle Top",
+    3: "Middle Bottom",
+    4: "Right Top",
+    5: "Right Bottom",
+}
+cmap = plt.cm.rainbow
+class_to_colors = {i: cmap(i / nb_classes) for i in range(nb_classes)}
+
+
+def get_class_from_xy(labels):
+    assert labels.shape[-1] == 2, "Labels should have shape (B, 2)"
+    x_labels = torch.bucketize(
+        labels[..., 0], torch.tensor(x_class_boundaries, device=device)
+    )
+    y_labels = torch.bucketize(
+        labels[..., 1], torch.tensor(y_class_boundaries, device=device)
+    )
+
+    class_labels = (x_labels - 1) * (len(y_class_boundaries) - 1) + (y_labels - 1)
+    class_labels[torch.logical_or(x_labels <= 0, y_labels <= 0)] = -1
+    class_labels[
+        torch.logical_or(
+            labels[..., 0] < x_class_boundaries[0],
+            labels[..., 0] >= x_class_boundaries[-1],
+        )
+    ] = -1
+    class_labels[
+        torch.logical_or(
+            labels[..., 1] < y_class_boundaries[0],
+            labels[..., 1] >= y_class_boundaries[-1],
+        )
+    ] = -1
+
+    return class_labels
+
+
 def fail_loss(pred, fail_data):
     safe_data = torch.where(fail_data != 1.0)
     unsafe_data = torch.where(fail_data == 1.0)
@@ -69,7 +114,15 @@ def fail_loss(pred, fail_data):
 
 
 if __name__ == "__main__":
-    wandb.init(project="dino-WM", name="Classifier")
+    assert len(sys.argv) == 2, "Please provide the class number as an argument."
+    _class = sys.argv[1]
+    assert _class.isdigit(), "Class number must be an integer."
+    _class = int(_class)
+    assert 0 <= _class < nb_classes, (
+        f"Class number must be between 0 and {nb_classes - 1}."
+    )
+    print(f"Training for class: {_class}")
+    wandb.init(project="Latent Safe", name=f"Classifier Class {_class}")
 
     use_amp = True
     scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
@@ -84,7 +137,7 @@ if __name__ == "__main__":
     EVAL_H = 16
     H = 3
 
-    hdf5_file = "/home/sunny/data/sweeper/train/optimal/consolidated.h5"
+    hdf5_file = "/home/sunny/data/sweeper/train/consolidated.h5"
     hdf5_file_test = "/home/sunny/data/sweeper/test/consolidated.h5"
 
     expert_data = SplitTrajectoryDataset(
@@ -123,7 +176,7 @@ if __name__ == "__main__":
     transition.load_state_dict(torch.load("checkpoints/best_testing.pth"), strict=False)
 
     for name, param in transition.named_parameters():
-        param.requires_grad = name.startswith("split_classifier")
+        param.requires_grad = name.startswith("margin_head")
 
     data = next(expert_loader)
 
@@ -146,7 +199,7 @@ if __name__ == "__main__":
     # Forward pass
     optimizer = AdamW(
         [
-            {"params": transition.split_classifier.parameters(), "lr": 5e-5},
+            {"params": transition.margin_head.parameters(), "lr": 5e-5},
         ]
     )
 
@@ -186,12 +239,18 @@ if __name__ == "__main__":
             pred1, pred_state, __, __, latent = transition(
                 inputs1, states, acs, return_latent=True
             )
-            pred_split = transition.split_pred(latent)
-            split_loss = fail_loss(pred_split, data["failure"][:, 1:])
-            loss = split_loss
+            pred_fail = transition.fail_pred(latent)
+            # gt_labels: [BS T]
+            gt_labels = get_class_from_xy(data["failure"][:, 1:].to(device))
+            # mask: [BS]
+            mask = (gt_labels[:, -1] != -1.0).squeeze()
+            gt_labels = (gt_labels[mask] == _class).float()  # [BS]
+            pred_fail = pred_fail[mask]
+            # Unsafe = 1.0, Safe = 0.0
+            loss = fail_loss(pred_fail.squeeze(), gt_labels)
 
-        pred_labels = (pred_split > 0).float()
-        true_labels = 1 - data["failure"][:, 1:].unsqueeze(-1).float()
+        pred_labels = (pred_fail < 0).float()
+        true_labels = gt_labels
         # correct = (pred_labels.to(true_labels.device) == true_labels).float().sum()
         # accuracy = correct / (true_labels.shape[0] * true_labels.shape[1])
         balanced_accuracy = balanced_accuracy_score(
@@ -206,7 +265,7 @@ if __name__ == "__main__":
         train_loss = loss.item()
         wandb.log({"train_loss": train_loss})
         print(
-            f"\rIter {i}, Train Loss: {train_loss:.4f}, failure Loss: {split_loss.item():.4f}",
+            f"\rIter {i}, Train Loss: {train_loss:.4f}, failure Loss: {loss.item():.4f}",
             end="",
             flush=True,
         )
@@ -234,7 +293,7 @@ if __name__ == "__main__":
                 #     / 255.0
                 # )
                 for k in range(EVAL_H - H):
-                    pred1, pred_state, pred_split, __ = transition(inputs1, states, acs)
+                    pred1, pred_state, pred_fail, __ = transition(inputs1, states, acs)
                     pred_latent = pred1[:, [-1]]  # .squeeze()
                     pred_ims, _ = decoder(pred_latent)
 
@@ -242,9 +301,9 @@ if __name__ == "__main__":
                     pred_im1 = pred_ims
 
                     pred_im1 = pred_im1[0].permute(0, 2, 3, 1).detach()
-                    pred_split = pred_split[:, -1]
+                    pred_fail = pred_fail[:, -1]
 
-                    # if pred_split < 0:
+                    # if pred_fail < 0:
                     #     pred_im1[:, :, :, 0] *= 2
 
                     im1s = torch.cat([im1s, pred_im1], dim=0)
@@ -262,8 +321,6 @@ if __name__ == "__main__":
                     )
 
                 gt_im1 = eval_data["agentview_image"][[0], :EVAL_H].squeeze().to(device)
-                gt_fail = eval_data["failure"][[0], :EVAL_H].squeeze().to(device)
-
                 # for j in range(EVAL_H):
                 #     if gt_fail[j] > 0:
                 #         gt_im1[j, :, :, 0] *= 2
@@ -297,15 +354,19 @@ if __name__ == "__main__":
                 acs = data_acs[:, :-1]
                 acs = normalize_acs(acs, device)
 
-                pred1, pred_state, pred_split, __ = transition(inputs1, states, acs)
+                pred1, pred_state, pred_fail, __ = transition(inputs1, states, acs)
 
-                # gt_labels = (eval_data["failure"][:, 1:] != -1.0).float()
+                gt_labels = get_class_from_xy(eval_data["failure"][:, 1:].to(device))
+                mask = (gt_labels[:, -1] != -1.0).squeeze()
 
-                split_loss = fail_loss(pred_split, eval_data["failure"][:, 1:])
-                loss = split_loss
+                gt_labels = (gt_labels[mask] == _class).float()  # [BS]
+                pred_fail = pred_fail[mask]
 
-            pred_labels = (pred_split > 0).float()
-            true_labels = (1 - eval_data["failure"][:, 1:]).unsqueeze(-1).float()
+                # 1 for unsafe, 0 for safe
+                loss = fail_loss(pred_fail, gt_labels)
+
+            pred_labels = (pred_fail < 0).float()
+            true_labels = gt_labels
             # correct = (pred_labels.to(true_labels.device) == true_labels).float().sum()
             # accuracy = correct / (true_labels.shape[0] * true_labels.shape[1])
             balanced_accuracy = balanced_accuracy_score(
@@ -316,15 +377,21 @@ if __name__ == "__main__":
 
             print(f"\rIter {i}, Eval Loss: {loss.item():.4f},")
 
-            torch.save(transition.state_dict(), "checkpoints/classifier.pth")
+            torch.save(
+                transition.state_dict(),
+                f"checkpoints_latent_safe/class_{_class}_classifier.pth",
+            )
 
             if loss < best_eval:
                 best_eval = loss
                 print(f"New best at iter {i}, saving model.")
-                torch.save(transition.state_dict(), "checkpoints/best_classifier.pth")
+                torch.save(
+                    transition.state_dict(),
+                    f"checkpoints_latent_safe/class_{_class}_best_classifier.pth",
+                )
 
             transition.train()
-            wandb.log({"eval_loss": loss.item(), "failure_loss": split_loss.item()})
+            wandb.log({"eval_loss": loss.item(), "failure_loss": loss.item()})
 
     plt.legend()
     plt.savefig("training curve.png")

@@ -1,70 +1,85 @@
-import torch
 import random
-import numpy as np
-import wandb
-from torchvision import transforms
-from torch.optim import AdamW
+
 import matplotlib.pyplot as plt
-from tqdm import tqdm
-from torch.utils.data import DataLoader
-from einops import rearrange
+import numpy as np
+import torch
+import wandb
 from dino_decoder import VQVAE
-from test_loader import SplitTrajectoryDataset
 from dino_models import VideoTransformer, normalize_acs
-dino = torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14_reg')
+from einops import rearrange
+from test_loader import SplitTrajectoryDataset
+from torch.optim import AdamW
+from torch.utils.data import DataLoader
+from torchvision import transforms
+from tqdm import tqdm
 
-transform = transforms.Compose([           
-                                transforms.Resize(256),                    
-                                transforms.CenterCrop(224),               
-                                transforms.ToTensor(),                    
-                                transforms.Normalize(                      
-                                mean=[0.485, 0.456, 0.406],                
-                                std=[0.229, 0.224, 0.225]              
-                                )])
+dino = torch.hub.load("facebookresearch/dinov2", "dinov2_vits14_reg")
 
-
-transform1 = transforms.Compose([           
-                                transforms.Resize(520),
-                                transforms.CenterCrop(518), #should be multiple of model patch_size                 
-                                transforms.ToTensor(),                    
-                                transforms.Normalize(mean=0.5, std=0.2)
-                                ])
-
+transform = transforms.Compose(
+    [
+        transforms.Resize(256),
+        transforms.CenterCrop(224),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ]
+)
 
 
-DINO_transform = transforms.Compose([           
-                            transforms.Resize(224),
-                            #transforms.CenterCrop(224), #should be multiple of model patch_size                 
-                            
-                            transforms.ToTensor(),])
-norm_transform = transforms.Normalize(                      
-                                mean=[0.485, 0.456, 0.406],                
-                                std=[0.229, 0.224, 0.225]              
-                                )
+transform1 = transforms.Compose(
+    [
+        transforms.Resize(520),
+        transforms.CenterCrop(518),  # should be multiple of model patch_size
+        transforms.ToTensor(),
+        transforms.Normalize(mean=0.5, std=0.2),
+    ]
+)
 
+
+DINO_transform = transforms.Compose(
+    [
+        transforms.Resize(224),
+        # transforms.CenterCrop(224), #should be multiple of model patch_size
+        transforms.ToTensor(),
+    ]
+)
+norm_transform = transforms.Normalize(
+    mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
+)
 
 
 def fail_loss(pred, fail_data):
-    
-    safe_data = torch.where(fail_data == 0.)
-    unsafe_data = torch.where(fail_data == 1.)
-    unsafe_data_weak = torch.where(fail_data == 2.)
-    
+    safe_data = torch.where(fail_data == 0.0)
+    unsafe_data = torch.where(fail_data == 1.0)
+    unsafe_data_weak = torch.where(fail_data == 2.0)
+
     pos = pred[safe_data]
     neg = pred[unsafe_data]
     neg_weak = pred[unsafe_data_weak]
     print(neg.shape, pos.shape, neg.mean(), pos.mean())
 
     gamma = 0.75
-    lx_loss = (1/pos.size(0))*torch.sum(torch.relu(gamma - pos)) if pos.size(0) > 0 else 0. #penalizes safe for being negative
-    lx_loss +=  (1/neg.size(0))*torch.sum(torch.relu(gamma + neg)) if neg.size(0) > 0 else 0. # penalizes unsafe for being positive
-    lx_loss +=  (1/neg_weak.size(0))*torch.sum(torch.relu(neg_weak)) if neg_weak.size(0) > 0 else 0. # penalizes unsafe for being positive
+    lx_loss = (
+        (1 / pos.size(0)) * torch.sum(torch.relu(gamma - pos))
+        if pos.size(0) > 0
+        else 0.0
+    )  # penalizes safe for being negative
+    lx_loss += (
+        (1 / neg.size(0)) * torch.sum(torch.relu(gamma + neg))
+        if neg.size(0) > 0
+        else 0.0
+    )  # penalizes unsafe for being positive
+    lx_loss += (
+        (1 / neg_weak.size(0)) * torch.sum(torch.relu(neg_weak))
+        if neg_weak.size(0) > 0
+        else 0.0
+    )  # penalizes unsafe for being positive
 
     return lx_loss
 
+
 def fail_loss_gp(transition, feat, fail_data):
-    safe_data = torch.where(fail_data == 0.)
-    unsafe_data = torch.where(fail_data == 1.)
+    safe_data = torch.where(fail_data == 0.0)
+    unsafe_data = torch.where(fail_data == 1.0)
     unsafe_data_weak = torch.where(fail_data != 0)
 
     pred = transition.failure_pred(feat)
@@ -72,23 +87,34 @@ def fail_loss_gp(transition, feat, fail_data):
     neg = pred[unsafe_data]
     neg_weak = pred[unsafe_data_weak]
 
-
     safe_dataset = feat[safe_data]
     unsafe_dataset = feat[unsafe_data]
     N = max(safe_dataset.shape[0], unsafe_dataset.shape[0])
     if min(safe_dataset.shape[0], unsafe_dataset.shape[0]) != 0:
         if N > safe_dataset.shape[0]:
-            repeat_times = (N + safe_dataset.shape[0] - 1) // safe_dataset.shape[0]  # Ceiling division
-            safe_repeated = safe_dataset.repeat((repeat_times,) + (1,) * (safe_dataset.dim() - 1))  # Repeat along batch dim
-            indices = torch.randperm(safe_repeated.shape[0], device=safe_dataset.device)[:N]
-            pos_data =  safe_repeated[indices]
+            repeat_times = (N + safe_dataset.shape[0] - 1) // safe_dataset.shape[
+                0
+            ]  # Ceiling division
+            safe_repeated = safe_dataset.repeat(
+                (repeat_times,) + (1,) * (safe_dataset.dim() - 1)
+            )  # Repeat along batch dim
+            indices = torch.randperm(
+                safe_repeated.shape[0], device=safe_dataset.device
+            )[:N]
+            pos_data = safe_repeated[indices]
         else:
             pos_data = safe_dataset
         if N > unsafe_dataset.shape[0]:
-            repeat_times = (N + unsafe_dataset.shape[0] - 1) // unsafe_dataset.shape[0]  # Ceiling division
-            unsafe_repeated = unsafe_dataset.repeat((repeat_times,) + (1,) * (unsafe_dataset.dim() - 1))  # Repeat along batch dim
-            indices = torch.randperm(unsafe_repeated.shape[0], device=unsafe_dataset.device)[:N]
-            neg_data =  unsafe_repeated[indices]
+            repeat_times = (N + unsafe_dataset.shape[0] - 1) // unsafe_dataset.shape[
+                0
+            ]  # Ceiling division
+            unsafe_repeated = unsafe_dataset.repeat(
+                (repeat_times,) + (1,) * (unsafe_dataset.dim() - 1)
+            )  # Repeat along batch dim
+            indices = torch.randperm(
+                unsafe_repeated.shape[0], device=unsafe_dataset.device
+            )[:N]
+            neg_data = unsafe_repeated[indices]
         else:
             neg_data = unsafe_dataset
 
@@ -109,25 +135,39 @@ def fail_loss_gp(transition, feat, fail_data):
         )[0]
         gradients = gradients.view(pos_data.shape[0], -1)
         gradients_norm = torch.sqrt(torch.sum(gradients**2, dim=1) + 1e-12)
-        #print(f"Gradients Norm: {gradients_norm.mean().item():.4f}, Std: {gradients_norm.std().item():.4f}")
-        #exit()
+        # print(f"Gradients Norm: {gradients_norm.mean().item():.4f}, Std: {gradients_norm.std().item():.4f}")
+        # exit()
         gp_loss = ((gradients_norm - 2.1) ** 2).mean()
     else:
         gp_loss = torch.tensor(0.0, device=feat.device)
     gamma = 0.75
     zero_sum_loss = neg_weak.mean() + -pos.mean()
-    relu_loss = (1/pos.size(0))*torch.sum(torch.relu(gamma - pos)) if pos.size(0) > 0 else 0. #penalizes safe for being negative
-    relu_loss +=  (1/neg.size(0))*torch.sum(torch.relu(gamma + neg)) if neg.size(0) > 0 else 0. # penalizes unsafe for being positive
-    relu_loss +=  (1/neg_weak.size(0))*torch.sum(torch.relu(neg_weak)) if neg_weak.size(0) > 0 else 0. # penalizes unsafe for being positive
+    relu_loss = (
+        (1 / pos.size(0)) * torch.sum(torch.relu(gamma - pos))
+        if pos.size(0) > 0
+        else 0.0
+    )  # penalizes safe for being negative
+    relu_loss += (
+        (1 / neg.size(0)) * torch.sum(torch.relu(gamma + neg))
+        if neg.size(0) > 0
+        else 0.0
+    )  # penalizes unsafe for being positive
+    relu_loss += (
+        (1 / neg_weak.size(0)) * torch.sum(torch.relu(neg_weak))
+        if neg_weak.size(0) > 0
+        else 0.0
+    )  # penalizes unsafe for being positive
 
-    lx_loss = zero_sum_loss + 10 * gp_loss + 100*relu_loss
-    
-    print(f"GP Loss: {gp_loss.item():.4f}, Zero Sum Loss: {zero_sum_loss.item():.4f}, ReLU Loss: {relu_loss.item():.4f}")
+    lx_loss = zero_sum_loss + 10 * gp_loss + 100 * relu_loss
+
+    print(
+        f"GP Loss: {gp_loss.item():.4f}, Zero Sum Loss: {zero_sum_loss.item():.4f}, ReLU Loss: {relu_loss.item():.4f}"
+    )
     return lx_loss
 
+
 if __name__ == "__main__":
-    wandb.init(project="dino-WM",
-               name="Classifier")
+    wandb.init(project="dino-WM", name="Classifier")
 
     use_amp = True
     scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
@@ -138,25 +178,31 @@ if __name__ == "__main__":
     np.random.seed(0)
 
     BS = 16
-    BL= 4
+    BL = 4
     EVAL_H = 16
     H = 3
 
-    hdf5_file = '/data/vlog-labeled/consolidated.h5'
-    hdf5_file_test = '/data/vlog-test-labeled/consolidated.h5'
+    hdf5_file = "/data/vlog-labeled/consolidated.h5"
+    hdf5_file_test = "/data/vlog-test-labeled/consolidated.h5"
 
-    expert_data = SplitTrajectoryDataset(hdf5_file, BL, split='train', num_test=0)
-    expert_data_eval = SplitTrajectoryDataset(hdf5_file_test, BL, split='test', num_test=5)
-    expert_data_imagine = SplitTrajectoryDataset(hdf5_file_test, 32, split='test', num_test=5)
+    expert_data = SplitTrajectoryDataset(hdf5_file, BL, split="train", num_test=0)
+    expert_data_eval = SplitTrajectoryDataset(
+        hdf5_file_test, BL, split="test", num_test=5
+    )
+    expert_data_imagine = SplitTrajectoryDataset(
+        hdf5_file_test, 32, split="test", num_test=5
+    )
 
     expert_loader = iter(DataLoader(expert_data, batch_size=BS, shuffle=True))
     expert_loader_eval = iter(DataLoader(expert_data_eval, batch_size=BS, shuffle=True))
-    expert_loader_imagine = iter(DataLoader(expert_data_imagine, batch_size=1, shuffle=True))
+    expert_loader_imagine = iter(
+        DataLoader(expert_data_imagine, batch_size=1, shuffle=True)
+    )
 
-    device = 'cuda:0'
-   
+    device = "cuda:0"
+
     decoder = VQVAE().to(device)
-    decoder.load_state_dict(torch.load('checkpoints/testing_decoder.pth'))
+    decoder.load_state_dict(torch.load("checkpoints/testing_decoder.pth"))
     decoder.eval()
 
     transition = VideoTransformer(
@@ -167,71 +213,74 @@ if __name__ == "__main__":
         depth=6,
         heads=16,
         mlp_dim=2048,
-        num_frames=BL-1,
-        dropout=0.1
+        num_frames=BL - 1,
+        dropout=0.1,
     ).to(device)
-    transition.load_state_dict(torch.load('checkpoints/best_testing.pth'))
+    transition.load_state_dict(torch.load("checkpoints/best_testing.pth"))
 
     for name, param in transition.named_parameters():
         param.requires_grad = name.startswith("failure_head")
 
     data = next(expert_loader)
-    
 
-    data1 = data['cam_zed_embd'].to(device)
-    data2 =  data['cam_rs_embd'].to(device)
+    data1 = data["cam_zed_embd"].to(device)
+    data2 = data["cam_rs_embd"].to(device)
     inputs1 = data1[:, :-1]
     output1 = data1[:, 1:]
 
     inputs2 = data2[:, :-1]
     output2 = data2[:, 1:]
 
-    data_state = data['state'].to(device)
+    data_state = data["state"].to(device)
     states = data_state[:, :-1]
     output_state = data_state[:, 1:]
 
-    data_acs = data['action'].to(device)
+    data_acs = data["action"].to(device)
     acs = data_acs[:, :-1]
     acs = normalize_acs(acs, device)
 
-
     # Forward pass
-    optimizer = AdamW([
-        {'params': transition.failure_head.parameters(), 'lr': 1e-4}, 
-    ])
+    optimizer = AdamW(
+        [
+            {"params": transition.failure_head.parameters(), "lr": 1e-4},
+        ]
+    )
 
-    best_eval = float('inf')
-    best_fail= float('inf')
+    best_eval = float("inf")
+    best_fail = float("inf")
     iters = []
     train_iter = 10000
 
     for i in tqdm(range(train_iter), desc="Training", unit="iter"):
         if i % len(expert_loader) == 0:
             expert_loader = iter(DataLoader(expert_data, batch_size=BS, shuffle=True))
-        if i %len(expert_loader_eval) == 0:
-            expert_loader_eval = iter(DataLoader(expert_data_eval, batch_size=BS, shuffle=True))
+        if i % len(expert_loader_eval) == 0:
+            expert_loader_eval = iter(
+                DataLoader(expert_data_eval, batch_size=BS, shuffle=True)
+            )
         if i % len(expert_loader_imagine) == 0:
-            expert_loader_imagine = iter(DataLoader(expert_data_imagine, batch_size=1, shuffle=True))
-
+            expert_loader_imagine = iter(
+                DataLoader(expert_data_imagine, batch_size=1, shuffle=True)
+            )
 
         data = next(expert_loader)
 
-        data1 = data['cam_zed_embd'].to(device)
-        data2 =  data['cam_rs_embd'].to(device)
+        data1 = data["cam_zed_embd"].to(device)
+        data2 = data["cam_rs_embd"].to(device)
         inputs1 = data1[:, :-1]
         output1 = data1[:, 1:]
 
         inputs2 = data2[:, :-1]
         output2 = data2[:, 1:]
 
-        data_state = data['state'].to(device)
+        data_state = data["state"].to(device)
         states = data_state[:, :-1]
         output_state = data_state[:, 1:]
 
-        data_acs = data['action'].to(device)
+        data_acs = data["action"].to(device)
         acs = data_acs[:, :-1]
         acs = normalize_acs(acs, device)
-        
+
         optimizer.zero_grad()
 
         with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=use_amp):
@@ -243,74 +292,97 @@ if __name__ == "__main__":
             pred_state = transition.state_pred(latent)
             pred_fail = transition.failure_pred(latent)
 
-            failure_loss = fail_loss_gp(transition, latent, data['failure'][:, 1:])
+            failure_loss = fail_loss_gp(transition, latent, data["failure"][:, 1:])
             loss = failure_loss
-        
+
         scaler.scale(loss).backward()
         scaler.step(optimizer)
         scaler.update()
         train_loss = loss.item()
-        wandb.log({'train_loss': train_loss})
-        print(f"\rIter {i}, Train Loss: {train_loss:.4f}, failure Loss: {failure_loss.item():.4f}", end='', flush=True)
-        
+        wandb.log({"train_loss": train_loss})
+        print(
+            f"\rIter {i}, Train Loss: {train_loss:.4f}, failure Loss: {failure_loss.item():.4f}",
+            end="",
+            flush=True,
+        )
+
         if (i) % 500 == 0:
             iters.append(i)
             eval_data = next(expert_loader_imagine)
             transition.eval()
             with torch.no_grad():
-                eval_data1 = eval_data['cam_zed_embd'].to(device)
-                eval_data2 =  eval_data['cam_rs_embd'].to(device)
+                eval_data1 = eval_data["cam_zed_embd"].to(device)
+                eval_data2 = eval_data["cam_rs_embd"].to(device)
 
                 inputs1 = eval_data1[[0], :H].to(device)
                 inputs2 = eval_data2[[0], :H].to(device)
-                all_acs = eval_data['action'][[0]].to(device)
+                all_acs = eval_data["action"][[0]].to(device)
                 all_acs = normalize_acs(all_acs, device)
-                acs = eval_data['action'][[0],:H].to(device)
+                acs = eval_data["action"][[0], :H].to(device)
                 acs = normalize_acs(acs, device)
-                states = eval_data['state'][[0],:H].to(device)
-                im1s = eval_data['agentview_image'][[0], :H].squeeze().to(device)/255.
-                im2s = eval_data['robot0_eye_in_hand_image'][[0], :H].squeeze().to(device)/255.
-                for k in range(EVAL_H-H):
-                    
-                    
-                    pred1, pred2, pred_state, pred_fail = transition(inputs1, inputs2, states, acs)
-                    pred_latent = torch.cat([pred1[:,[-1]], pred2[:,[-1]]], dim=0)#.squeeze()
+                states = eval_data["state"][[0], :H].to(device)
+                im1s = (
+                    eval_data["agentview_image"][[0], :H].squeeze().to(device) / 255.0
+                )
+                im2s = (
+                    eval_data["robot0_eye_in_hand_image"][[0], :H].squeeze().to(device)
+                    / 255.0
+                )
+                for k in range(EVAL_H - H):
+                    pred1, pred2, pred_state, pred_fail = transition(
+                        inputs1, inputs2, states, acs
+                    )
+                    pred_latent = torch.cat(
+                        [pred1[:, [-1]], pred2[:, [-1]]], dim=0
+                    )  # .squeeze()
                     pred_ims, _ = decoder(pred_latent)
 
                     pred_ims = rearrange(pred_ims, "(b t) c h w -> b t c h w", t=1)
-                    pred_im1, pred_im2 = torch.split(pred_ims, [inputs1.shape[0], inputs2.shape[0]], dim=0)
+                    pred_im1, pred_im2 = torch.split(
+                        pred_ims, [inputs1.shape[0], inputs2.shape[0]], dim=0
+                    )
 
-                    pred_im1 = pred_im1[0].permute(0,2,3,1).detach()
-                    pred_im2 = pred_im2[0].permute(0,2,3,1).detach()
-                    pred_fail = pred_fail[:,-1]
+                    pred_im1 = pred_im1[0].permute(0, 2, 3, 1).detach()
+                    pred_im2 = pred_im2[0].permute(0, 2, 3, 1).detach()
+                    pred_fail = pred_fail[:, -1]
 
                     if pred_fail < 0:
-                        pred_im1[:,:,:,0] *= 2
-                        pred_im2[:,:,:,0] *= 2
-                    
+                        pred_im1[:, :, :, 0] *= 2
+                        pred_im2[:, :, :, 0] *= 2
+
                     im1s = torch.cat([im1s, pred_im1], dim=0)
                     im2s = torch.cat([im2s, pred_im2], dim=0)
-                    
-                    # getting next inputs
-                    acs = torch.cat([acs[[0], 1:], all_acs[0,H+k].unsqueeze(0).unsqueeze(0)], dim=1)
-                    inputs1 = torch.cat([inputs1[[0], 1:], pred1[:, -1].unsqueeze(1)], dim=1)
-                    inputs2 = torch.cat([inputs2[[0], 1:], pred2[:, -1].unsqueeze(1)], dim=1)
-                    states = torch.cat([states[[0], 1:], pred_state[:,-1].unsqueeze(1)], dim=1)
 
-                    
-                gt_im1 = eval_data['agentview_image'][[0], :EVAL_H].squeeze().to(device)
-                gt_im2 = eval_data['robot0_eye_in_hand_image'][[0], :EVAL_H].squeeze().to(device)
-                gt_fail = eval_data['failure'][[0], :EVAL_H].squeeze().to(device)
-                
+                    # getting next inputs
+                    acs = torch.cat(
+                        [acs[[0], 1:], all_acs[0, H + k].unsqueeze(0).unsqueeze(0)],
+                        dim=1,
+                    )
+                    inputs1 = torch.cat(
+                        [inputs1[[0], 1:], pred1[:, -1].unsqueeze(1)], dim=1
+                    )
+                    inputs2 = torch.cat(
+                        [inputs2[[0], 1:], pred2[:, -1].unsqueeze(1)], dim=1
+                    )
+                    states = torch.cat(
+                        [states[[0], 1:], pred_state[:, -1].unsqueeze(1)], dim=1
+                    )
+
+                gt_im1 = eval_data["agentview_image"][[0], :EVAL_H].squeeze().to(device)
+                gt_im2 = (
+                    eval_data["robot0_eye_in_hand_image"][[0], :EVAL_H]
+                    .squeeze()
+                    .to(device)
+                )
+                gt_fail = eval_data["failure"][[0], :EVAL_H].squeeze().to(device)
+
                 for j in range(EVAL_H):
                     if gt_fail[j] > 0:
-                        gt_im1[j,:,:,0] *= 2
-                        gt_im2[j,:,:,0] *= 2
-               
+                        gt_im1[j, :, :, 0] *= 2
+                        gt_im2[j, :, :, 0] *= 2
 
-                gt_imgs = torch.cat([gt_im1, gt_im2], dim=-3)/255.
+                gt_imgs = torch.cat([gt_im1, gt_im2], dim=-3) / 255.0
                 pred_imgs = torch.cat([im1s, im2s], dim=-3)
-
 
                 vid = torch.cat([gt_imgs, pred_imgs], dim=-2)
                 vid = vid[H:]
@@ -320,14 +392,13 @@ if __name__ == "__main__":
                 vid = (vid * 255).clip(0, 255).astype(np.uint8)
 
                 wandb.log({"video": wandb.Video(vid, fps=20)})
-                
+
                 # done logging video
 
-    
                 eval_data = next(expert_loader_eval)
 
-                data1 = eval_data['cam_zed_embd'].to(device)
-                data2 =  eval_data['cam_rs_embd'].to(device)
+                data1 = eval_data["cam_zed_embd"].to(device)
+                data2 = eval_data["cam_rs_embd"].to(device)
 
                 inputs1 = data1[:, :-1]
                 output1 = data1[:, 1:]
@@ -335,34 +406,33 @@ if __name__ == "__main__":
                 inputs2 = data2[:, :-1]
                 output2 = data2[:, 1:]
 
-                data_state = eval_data['state'].to(device)
+                data_state = eval_data["state"].to(device)
                 states = data_state[:, :-1]
                 output_state = data_state[:, 1:]
 
-                data_acs = eval_data['action'].to(device)
+                data_acs = eval_data["action"].to(device)
                 acs = data_acs[:, :-1]
                 acs = normalize_acs(acs, device)
 
-                pred1, pred2, pred_state, pred_fail = transition(inputs1, inputs2, states, acs)
-                
-                failure_loss = fail_loss(pred_fail, eval_data['failure'][:, 1:])
+                pred1, pred2, pred_state, pred_fail = transition(
+                    inputs1, inputs2, states, acs
+                )
+
+                failure_loss = fail_loss(pred_fail, eval_data["failure"][:, 1:])
                 loss = failure_loss
             print(f"\rIter {i}, Eval Loss: {loss.item():.4f},")
 
-            torch.save(transition.state_dict(), f'checkpoints/classifier_gp.pth')
+            torch.save(transition.state_dict(), "checkpoints/classifier_gp.pth")
 
             if loss < best_eval:
                 best_eval = loss
                 print(f"New best at iter {i}, saving model.")
-                torch.save(transition.state_dict(), 'checkpoints/best_classifier_gp.pth')
+                torch.save(
+                    transition.state_dict(), "checkpoints/best_classifier_gp.pth"
+                )
 
-            
             transition.train()
-            wandb.log({'eval_loss': loss.item(), 'failure_loss':failure_loss.item()})
-
+            wandb.log({"eval_loss": loss.item(), "failure_loss": failure_loss.item()})
 
     plt.legend()
-    plt.savefig('training curve.png')    
-      
-
-
+    plt.savefig("training curve.png")

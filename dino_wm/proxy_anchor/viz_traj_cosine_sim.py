@@ -13,9 +13,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn.functional as F
-from dino_wm.test_loader import SplitTrajectoryDataset
 from matplotlib.patches import Rectangle
 from torch.utils.data import DataLoader
+
+from dino_wm.test_loader import SplitTrajectoryDataset
 
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(parent_dir)
@@ -24,17 +25,18 @@ sys.path.append(parent_dir)
 import os
 import sys
 
-from dino_wm.dino_decoder import VQVAE
-from dino_wm.dino_models import VideoTransformer, normalize_acs, select_xyyaw_from_state
 from gymnasium import spaces
 from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
-from PyHJ.exploration import GaussianNoise
-from PyHJ.utils.net.common import Net
-from PyHJ.utils.net.continuous import Actor, Critic
 from torchvision import transforms
 from tqdm import *
 from tqdm import tqdm
 from utils import load_state_dict_flexible
+
+from dino_wm.dino_decoder import VQVAE
+from dino_wm.dino_models import VideoTransformer, normalize_acs, select_xyyaw_from_state
+from PyHJ.exploration import GaussianNoise
+from PyHJ.utils.net.common import Net
+from PyHJ.utils.net.continuous import Actor, Critic
 
 # Add directories to system path
 base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -200,10 +202,14 @@ def make_comparison_video(
     def init_img(ax, title, color=None):
         img_obj = ax.imshow(np.zeros((224, 224, 3), dtype=np.uint8))
         # add vertical lines at each third
-        for i in range(1, 3):
-            ax.axvline(
-                x=i * (224 / 3), color="black", linestyle="--", linewidth=1, alpha=0.5
-            )
+        for x in x_class_boundaries:
+            if x <= 0 or x >= 224:
+                continue
+            ax.axvline(x=x, color="black", linestyle="--", linewidth=1, alpha=0.5)
+        for y in y_class_boundaries:
+            if y <= 0 or y >= 224:
+                continue
+            ax.axhline(y=y, color="black", linestyle="--", linewidth=1, alpha=0.5)
         ax.set_title(title)
 
         if color is not None:
@@ -245,8 +251,8 @@ def make_comparison_video(
         if "const2_cos_sim" in keys_to_plot
         else None
     )
-
-    gt_front_img = init_img(fig.add_subplot(gs[0, 3]), "Front View")
+    gt_front_img_ax = fig.add_subplot(gs[0, 3])
+    gt_front_img = init_img(gt_front_img_ax, "Front View")
     gt_const1_img = init_img(
         fig.add_subplot(gs[0, 4]), "Constraint 1", color=const1_color
     )
@@ -261,6 +267,16 @@ def make_comparison_video(
     im_const2_img = init_img(
         fig.add_subplot(gs[1, 5]), "Constraint 2", color=const2_color
     )
+
+    gt_label_rect = Rectangle(
+        (0, 224),  # bottom-left corner
+        224 // 3,  # width
+        224 // 3,  # height
+        linewidth=3,
+        edgecolor=const1_color,
+        facecolor="none",
+    )
+    gt_front_img_ax.add_patch(gt_label_rect)
 
     # Create legend handles
     legend_handles = []
@@ -355,6 +371,27 @@ def make_comparison_video(
         im_const1_img.set_data(prepare_img(output["imagination"]["img_constraint1"][0]))
         im_const2_img.set_data(prepare_img(output["imagination"]["img_constraint2"][0]))
 
+        label = int(output["ground_truth"]["gt_fail_label"][t] * nb_classes)
+        if label != -1:
+            label_y = label % (len(y_class_boundaries) - 1)
+            label_x = label // (len(y_class_boundaries) - 1)
+
+            gt_label_rect.set_xy(
+                (x_class_boundaries[label_x], y_class_boundaries[label_y])
+            )
+            gt_label_rect.set_width(
+                x_class_boundaries[label_x + 1] - x_class_boundaries[label_x] + 1
+            )
+            gt_label_rect.set_height(
+                y_class_boundaries[label_y + 1] - y_class_boundaries[label_y] + 1
+            )
+            gt_label_rect.set_edgecolor(
+                colors[keys_to_plot.index(f"class_{label}_prox")]
+            )
+            gt_label_rect.set_visible(True)
+        else:
+            gt_label_rect.set_visible(False)
+
         # Render
         canvas.draw()
         renderer = canvas.get_renderer()
@@ -397,6 +434,60 @@ norm_transform = transforms.Normalize(
     mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
 )
 
+# labels is a tensor of shape (B, 2)
+x_class_boundaries = np.array(
+    [0, 224 // 3, 224 * 2 // 3, 224]
+)  # x boundaries for 3 classes
+y_class_boundaries = np.array(
+    [224 // 3, 224 * 2 // 3, 224]
+)  # y boundaries for 3 classes
+# 3 * 2 = 6 classes in total
+nb_classes = (len(x_class_boundaries) - 1) * (len(y_class_boundaries) - 1)
+label_to_str = {
+    0: "Left Top",
+    1: "Left Bottom",
+    2: "Middle Top",
+    3: "Middle Bottom",
+    4: "Right Top",
+    5: "Right Bottom",
+}
+cmap = plt.cm.rainbow
+class_to_colors = {i: cmap(i / nb_classes) for i in range(nb_classes)}
+
+
+def get_class_from_xy(labels):
+    assert labels.shape[-1] == 2, (
+        "Labels should have shape (B, 2), got shape {}".format(labels.shape)
+    )
+    if labels.ndim == 1:
+        labels = labels.unsqueeze(0)  # Convert to (1, 2) if single label
+    assert labels.ndim == 2, "Labels should be a 2D tensor"
+    labels = labels.to(device)
+    x_labels = torch.bucketize(
+        labels[..., 0], torch.tensor(x_class_boundaries, device=device)
+    ).unsqueeze(1)
+    y_labels = torch.bucketize(
+        labels[..., 1], torch.tensor(y_class_boundaries, device=device)
+    ).unsqueeze(1)
+
+    class_labels = (x_labels - 1) * (len(y_class_boundaries) - 1) + (y_labels - 1)
+    class_labels[torch.logical_or(x_labels <= 0, y_labels <= 0)] = -1
+    class_labels[
+        torch.logical_or(
+            labels[..., 0] < x_class_boundaries[0],
+            labels[..., 0] >= x_class_boundaries[-1],
+        )
+    ] = -1
+    class_labels[
+        torch.logical_or(
+            labels[..., 1] < y_class_boundaries[0],
+            labels[..., 1] >= y_class_boundaries[-1],
+        )
+    ] = -1
+
+    return class_labels
+
+
 if __name__ == "__main__":
     use_amp = True
     scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
@@ -409,7 +500,7 @@ if __name__ == "__main__":
     device = "cuda:0"
 
     hdf5_file = "/home/sunny/data/sweeper/test/consolidated.h5"
-    # hdf5_file = "/home/sunny/data/sweeper/train/consolidated.h5"
+    # hdf5_file = "/home/sunny/data/sweeper/proxy_anchor/consolidated.h5"
     database = {}
     with h5py.File(hdf5_file, "r") as hf:
         trajectory_ids = list(hf.keys())
@@ -445,10 +536,12 @@ if __name__ == "__main__":
         mlp_dim=2048,
         num_frames=BL - 1,
         dropout=0.1,
+        nb_classes=nb_classes,
     ).to(device)
     load_state_dict_flexible(
-        transition, "../checkpoints_pa/encoder_mrg_0.5_alpha_32_num_ex_all_ul_F.pth"
+        transition, "../checkpoints_pa/encoder_mrg_0.1_alpha_32_num_ex_all_ul_F.pth"
     )
+    # nb_classes = transition.proxies.shape[0]
     # load_state_dict_flexible(transition, "../checkpoints/best_testing.pth")
 
     # transition.load_state_dict(torch.load("../checkpoints/best_classifier.pth"))
@@ -531,7 +624,7 @@ if __name__ == "__main__":
             )
             data = next(const_data_loader)
 
-        if data["failure"][0, -1] != class_id:
+        if get_class_from_xy(data["failure"][0, -1]) != class_id:
             return randomly_select_constraint(const_data_loader, class_id)
 
         return data
@@ -540,10 +633,10 @@ if __name__ == "__main__":
     data_const_1 = randomly_select_constraint(const_data_loader, 3)  # 3, 103
     data_const_2 = randomly_select_constraint(const_data_loader, 3)  # 1, 285
 
-    data_const_1 = {k: v[20:23].unsqueeze(0).to(device) for k, v in database[2].items()}
-    data_const_2 = {
-        k: v[270:273].unsqueeze(0).to(device) for k, v in database[6].items()
-    }
+    # data_const_1 = {k: v[20:23].unsqueeze(0).to(device) for k, v in database[2].items()}
+    # data_const_2 = {
+    #     k: v[270:273].unsqueeze(0).to(device) for k, v in database[6].items()
+    # }
 
     constraint1, constraint2 = {}, {}
     for data_const, constraint in [
@@ -574,7 +667,6 @@ if __name__ == "__main__":
 
     scale = 1.0
 
-    nb_classes = 3
     num_traj = min(10, len(database))
     for traj_id in tqdm(range(num_traj), desc="Processing Trajectories", position=0):
         data = database[traj_id]
@@ -593,7 +685,8 @@ if __name__ == "__main__":
             "const1_value_fn": copy.deepcopy(none_list),
             "const2_value_fn": copy.deepcopy(none_list),
             "pred_split": copy.deepcopy(none_list),
-            "gt_fail_label": np.clip(data["failure"][:], a_min=0, a_max=4) / 4,
+            "gt_fail_label": get_class_from_xy(data["failure"][:]).cpu().numpy()
+            / nb_classes,
             "split_value_fn": copy.deepcopy(none_list),
         }
         for class_id in range(nb_classes):
@@ -698,7 +791,7 @@ if __name__ == "__main__":
                 evaluate_V(
                     policy=split_policy,
                     latent=latent,
-                    constraint=transition.proxies[0] * 0.0,
+                    constraint=transition.proxies[0],
                     action=data["action"][t + BL - 1, :],
                     device=device,
                 )
@@ -709,6 +802,7 @@ if __name__ == "__main__":
                 # )
                 output["imagination"][f"class_{class_id}_prox"].append(
                     -cos_sim_matrix[-1, class_id].item()
+                    # + transition.thresholds[class_id].item()
                 )
 
             if t + BL >= len(data["action"]):  # Last step
@@ -840,6 +934,7 @@ if __name__ == "__main__":
                 # )
                 output["ground_truth"][f"class_{class_id}_prox"].append(
                     -cos_sim_matrix[-1, class_id].item()
+                    # + transition.thresholds[class_id].item()
                 )
 
             if t + BL >= len(data["action"]):  # Last step
