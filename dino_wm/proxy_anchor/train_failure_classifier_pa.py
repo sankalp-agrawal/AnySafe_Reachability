@@ -190,7 +190,7 @@ wandb.define_metric("*", step_metric="num_updates")
 BS = args.sz_batch  # batch size
 BL = 1
 
-hdf5_file = "/home/sunny/data/sweeper/train/consolidated.h5"
+hdf5_file = "/home/sunny/data/sweeper/proxy_anchor/consolidated.h5"
 hdf5_file_test = "/home/sunny/data/sweeper/test/consolidated.h5"
 
 train_data_labeled = SplitTrajectoryDataset(
@@ -235,6 +235,7 @@ device = "cuda:0"
 # labels is a tensor of shape (B, 2)
 x_class_boundaries = [0, 224 // 3, 224 * 2 // 3, 224]  # x boundaries for 3 classes
 y_class_boundaries = [224 // 3, 224 * 2 // 3, 224]  # y boundaries for 3 classes
+
 # 3 * 2 = 6 classes in total
 nb_classes = (len(x_class_boundaries) - 1) * (len(y_class_boundaries) - 1)
 label_to_str = {
@@ -276,10 +277,6 @@ def get_class_from_xy(labels):
     return class_labels
 
 
-# Backbone Model
-LOG_DIR = "logs_pa"
-
-
 model = VideoTransformer(
     image_size=(224, 224),
     dim=384,  # DINO feature dimension
@@ -293,7 +290,9 @@ model = VideoTransformer(
     nb_classes=nb_classes,
 ).to(device)
 # model.load_state_dict(torch.load("../checkpoints/best_classifier.pth"), strict=False)
-load_state_dict_flexible(model, "../checkpoints/best_classifier.pth")
+# load_state_dict_flexible(model, "../checkpoints/best_classifier.pth")
+# load_state_dict_flexible(model, "../checkpoints/best_testing.pth")
+load_state_dict_flexible(model, "../checkpoints/best_testing.pth")
 # model.load_state_dict(torch.load("../checkpoints_pa/encoder_0.1.pth"))
 
 for name, param in model.named_parameters():
@@ -435,7 +434,6 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
         data1 = data["cam_zed_embd"].to(device)  # [B 1, 256, 384]
         # data2 = data["cam_rs_embd"].to(device)  # [B 1, 256, 384]
         inputs1 = data1[:, -1:]  # [B 1, 256, 384]
-        # inputs2 = data2[:, -1:]  # [B 1, 256, 384]
 
         data_state = select_xyyaw_from_state(data["state"]).to(device)
         states = data_state[:, -1:]  # [B 1, 3]
@@ -655,6 +653,7 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
     scheduler.step()
 
     if epoch >= 0:
+        model.eval()
         metrics = {}
         X = []
         y = []
@@ -863,7 +862,7 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
                     color = colors[idx]
                     label = f"{label_to_str[i]}-rest"
                 else:
-                    color = "black"
+                    color = "black" if ovr else colors[idx]
                     label = f"{label_to_str[i]}-{label_to_str[j]}"
                 ax.plot(x_cs, y_pdf_normalized, label=label, color=color)
 
@@ -1245,17 +1244,19 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
 
         if args.save_model:
             model_name = wandb_name
+            save_name = f"../checkpoints_pa/encoder_{model_name}_pa.pth"
+            best_save_name = f"../checkpoints_pa/best_encoder_{model_name}_pa.pth"
 
             torch.save(
                 model.state_dict(),
-                f"../checkpoints_pa/encoder_{model_name}.pth",
+                save_name,
             )
-            tqdm.write(f"Model saved to /checkpoints_pa/encoder_{model_name}.pth")
+            tqdm.write(f"Model saved to {save_name}")
 
             if balanced_accuracy > best_eval:
                 best_eval = balanced_accuracy
-                print(f"New best at iter {i}, saving model.")
+                print(f"New best at iter {i}, saving model to {best_save_name}.")
                 torch.save(
                     model.state_dict(),
-                    f"../checkpoints_pa/best_encoder_{model_name}.pth",
+                    best_save_name,
                 )

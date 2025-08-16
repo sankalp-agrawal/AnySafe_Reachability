@@ -17,31 +17,41 @@ from dino_wm.dino_models import normalize_acs, select_xyyaw_from_state
 
 class Franka_DINOWM_Env(gym.Env):
     # TODO: 1. baseline over approximation; 2. our critic loss drop faster
-    def __init__(self, params, device="cuda:0"):
+    def __init__(self, params, pass_constraint=True, device="cuda:0"):
         self.device = device
         self.set_wm(*params)
+        self.pass_constraint = pass_constraint
 
-        self.observation_space = spaces.Dict(
-            {
-                "state": spaces.Box(
-                    low=-np.inf,
-                    high=np.inf,
-                    shape=(397,),
-                    dtype=np.float32,
-                ),
-                "constraints": spaces.Box(
-                    low=-np.inf,
-                    high=np.inf,
-                    shape=(512 + 1,),
-                    dtype=np.float32,
-                ),
-            }
-        )
+        if self.pass_constraint:
+            self.observation_space = spaces.Dict(
+                {
+                    "state": spaces.Box(
+                        low=-np.inf,
+                        high=np.inf,
+                        shape=(397,),
+                        dtype=np.float32,
+                    ),
+                    "constraints": spaces.Box(
+                        low=-np.inf,
+                        high=np.inf,
+                        shape=(512 + 1,),
+                        dtype=np.float32,
+                    ),
+                }
+            )
+        else:
+            self.observation_space = spaces.Box(
+                low=-np.inf,
+                high=np.inf,
+                shape=(397,),
+                dtype=np.float32,
+            )
         self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(3,), dtype=np.float32)
         self.front_hist = None
         self.state_hist = None
-        self.constraint_type = "database"  # "prox" - proxies, "database"
-        self.select_constraint()
+        if self.pass_constraint:
+            self.constraint_type = "prox"  # "prox" - proxies, "database"
+            self.select_constraint()
 
     def _reset_loader(self):
         self.data = iter(DataLoader(self.dataset, batch_size=1, shuffle=True))
@@ -75,22 +85,34 @@ class Franka_DINOWM_Env(gym.Env):
         self.front_hist = torch.cat([self.front_hist[:, 1:], inp1[:, [-1]]], dim=1)
         self.state_hist = torch.cat([self.state_hist[:, 1:], state[:, [-1]]], dim=1)
 
-        rew = self.safety_margin_pa(latent)  # rew is negative if unsafe
-        # rew = self.safety_margin_classifier(latent)  # rew is negative if unsafe
+        if self.pass_constraint:
+            rew = self.safety_margin_pa(latent)  # rew is negative if unsafe
+        else:
+            rew = self.safety_margin_classifier(latent)  # rew is negative if unsafe
+
         self.latent = latent[:, [-1]].mean(dim=2).detach().cpu().numpy()
         terminated = False
         truncated = False
         info = {"is_first": False, "is_terminal": terminated}
-        obs = {
-            "state": np.copy(self.latent).flatten(),
-            "constraints": self.constraint["semantic_feat"].cpu().numpy(),
-        }
-        assert obs["state"].shape == self.observation_space["state"].shape, (
-            "State shape mismatch with observation space, got {}."
-        ).format(obs["state"].shape)
-        assert (
-            obs["constraints"].shape == self.observation_space["constraints"].shape
-        ), "Constraint shape mismatch with observation space."
+        state = np.copy(self.latent).flatten()
+
+        # Pass constraint info if required
+        if self.pass_constraint:  # AnySafe
+            obs = {
+                "state": state,
+                "constraints": self.constraint["semantic_feat"].cpu().numpy(),
+            }
+            assert state.shape == self.observation_space["state"].shape, (
+                "State shape mismatch with observation space, got {}."
+            ).format(state.shape)
+            assert (
+                obs["constraints"].shape == self.observation_space["constraints"].shape
+            ), "Constraint shape mismatch with observation space."
+        else:  # Latent Safe
+            obs = state
+            assert state.shape == self.observation_space.shape, (
+                "State shape mismatch with observation space, got {}."
+            ).format(state.shape)
         return obs, rew, terminated, truncated, info
 
     def reset(
@@ -126,20 +148,29 @@ class Franka_DINOWM_Env(gym.Env):
         self.state_hist = torch.cat([states[:, 1:], state[:, [-1]]], dim=1)
         self.ac_hist = acs
 
-        self.select_constraint()
+        if self.pass_constraint:
+            self.select_constraint()
 
-        obs = {
-            "state": np.copy(
-                self.latent[:, [-1]].mean(dim=2).flatten().detach().cpu().numpy()
-            ),
-            "constraints": self.constraint["semantic_feat"].cpu().numpy(),
-        }
-        assert obs["state"].shape == self.observation_space["state"].shape, (
-            "State shape mismatch with observation space, got {}."
-        ).format(obs["state"].shape)
-        assert (
-            obs["constraints"].shape == self.observation_space["constraints"].shape
-        ), "Constraint shape mismatch with observation space."
+        state = np.copy(
+            self.latent[:, [-1]].mean(dim=2).flatten().detach().cpu().numpy()
+        )
+
+        if self.pass_constraint:
+            obs = {
+                "state": state,
+                "constraints": self.constraint["semantic_feat"].cpu().numpy(),
+            }
+            assert (
+                obs["constraints"].shape == self.observation_space["constraints"].shape
+            ), "Constraint shape mismatch with observation space."
+            assert state.shape == self.observation_space["state"].shape, (
+                "State shape mismatch with observation space, got {}."
+            ).format(state.shape)
+        else:
+            obs = state
+            assert state.shape == self.observation_space.shape, (
+                "State shape mismatch with observation space, got {}."
+            ).format(state.shape)
 
         return obs, {
             "is_first": True,
@@ -150,7 +181,7 @@ class Franka_DINOWM_Env(gym.Env):
         g_xList = []
 
         with torch.no_grad():  # Disable gradient calculation
-            outputs = torch.tanh(2 * self.wm.split_pred(latent)[0, -1])
+            outputs = torch.tanh(2 * self.wm.fail_pred(latent)[0, -1])
             g_xList.append(outputs.detach().cpu().numpy())
 
         safety_margin = np.array(g_xList).squeeze()
@@ -205,7 +236,7 @@ class Franka_DINOWM_Env(gym.Env):
                 # Reset the DataLoader and reshuffle
                 self._reset_loader()
                 data = next(self.data_const)
-            if data["failure"][0, -1] == -1:
+            if data["failure"][0, -1, -1] == -1:
                 self.select_constraint()
 
             # cam_zed_embd: [1 1 N P], state: [1 1 3]

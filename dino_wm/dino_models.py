@@ -287,7 +287,7 @@ class VideoTransformer(nn.Module):
         dropout: float = 0.0,
         emb_dropout: float = 0.0,
         device: str = "cuda",
-        nb_classes: int = 3,
+        nb_classes: int = 6,
     ):
         super().__init__()
 
@@ -461,9 +461,9 @@ class VideoTransformer(nn.Module):
         return x
 
     def fail_pred(self, features):
-        features = torch.mean(features, dim=-2)
+        # features = torch.mean(features, dim=-2)
         fail_preds = self.margin_head(features)
-        # fail_preds = torch.mean(fail_preds, dim=2)  # Average over patches
+        fail_preds = torch.mean(fail_preds, dim=2)  # Average over patches
         return fail_preds
 
     def semantic_embed(self, inp1, state):
@@ -483,11 +483,13 @@ class VideoTransformer(nn.Module):
             dim=-1,
         )
         # semantic_features: [B T N E]
-        features = torch.mean(features, dim=-2)  # Average over patches
+        # features = torch.norm(features, dim=-2)  # Average over patches
+        # features = torch.mean(features, dim=-2)  # Average over patches
         semantic_features = self.semantic_encoder(features)
         # Average over patches
         # semantic_features: [B T E]
-        # semantic_features = torch.mean(semantic_features, dim=2)
+        semantic_features = torch.mean(semantic_features, dim=2)
+        # semantic_features = F.normalize(semantic_features, p=2, dim=-1)
         return semantic_features
 
     def state_pred(self, features):
@@ -496,9 +498,9 @@ class VideoTransformer(nn.Module):
         return state_preds
 
     def xy_pred(self, features):
-        features = torch.mean(features, dim=-2)
+        # features = torch.mean(features, dim=-2)
         xy_preds = self.xy_state_head(features)
-        # xy_preds = torch.mean(xy_preds, dim=2)  # Average over patches
+        xy_preds = torch.mean(xy_preds, dim=2)  # Average over patches
         return xy_preds
 
     @torch.no_grad()

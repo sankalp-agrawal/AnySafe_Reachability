@@ -211,6 +211,34 @@ label_to_str = {
     5: "Right Bottom",
 }
 
+
+def get_class_from_xy(labels):
+    assert labels.shape[-1] == 2, "Labels should have shape (B, 2)"
+    x_labels = torch.bucketize(
+        labels[..., 0], torch.tensor(x_class_boundaries, device=device)
+    ).unsqueeze(1)
+    y_labels = torch.bucketize(
+        labels[..., 1], torch.tensor(y_class_boundaries, device=device)
+    ).unsqueeze(1)
+
+    class_labels = (x_labels - 1) * (len(y_class_boundaries) - 1) + (y_labels - 1)
+    class_labels[torch.logical_or(x_labels <= 0, y_labels <= 0)] = -1
+    class_labels[
+        torch.logical_or(
+            labels[..., 0] < x_class_boundaries[0],
+            labels[..., 0] >= x_class_boundaries[-1],
+        )
+    ] = -1
+    class_labels[
+        torch.logical_or(
+            labels[..., 1] < y_class_boundaries[0],
+            labels[..., 1] >= y_class_boundaries[-1],
+        )
+    ] = -1
+
+    return class_labels
+
+
 BL = 4
 BS = 16
 open_loop = True
@@ -287,11 +315,12 @@ policy = DDPGPolicy(
 )
 policy.load_state_dict(
     torch.load(
-        "/home/sunny/AnySafe_Reachability/scripts/logs/dinowm/epoch_id_16/rotvec_policy.pth"
+        "/home/sunny/AnySafe_Reachability/scripts/logs/dinowm/epoch_id_16/rotvec_policy_prox.pth"
     )
 )
 
 hdf5_file = "/home/sunny/data/sweeper/test/consolidated.h5"
+hdf5_file_const = "/home/sunny/data/sweeper/proxy_anchor/consolidated.h5"
 train_data = SplitTrajectoryDataset(
     hdf5_file,
     BL,
@@ -300,7 +329,11 @@ train_data = SplitTrajectoryDataset(
     provide_labels=True,
     only_pass_labeled_examples=True,
 )
+constraint_data = SplitTrajectoryDataset(
+    hdf5_file_const, 3, split="train", num_test=0, only_pass_labeled_examples=True
+)
 train_loader = DataLoader(train_data, batch_size=BS, shuffle=True, num_workers=4)
+const_loader = iter(DataLoader(constraint_data, batch_size=1, shuffle=True))
 
 coverage_total = torch.zeros((224, 224), dtype=torch.float32, device="cuda")  # if GPU
 
@@ -332,6 +365,35 @@ for i in range(nb_classes):
     axes[0, i].set_title(rf"Safety Margin Function $l(z,p_{i})$")
     axes[1, i].set_title(rf"Value Function $V(z,p_{i})$")
 
+# Generate constraint set
+constraints = []
+next(const_loader)
+for i in range(nb_classes):
+    failure_class = -1
+    while failure_class == -1:
+        data_const = next(const_loader)
+        failure_class = (
+            get_class_from_xy(data_const["failure"][:, -1, :2].to(device))
+            .squeeze()
+            .item()
+        )
+
+        constraint = transition.semantic_embed(
+            inp1=data_const["cam_zed_embd"].to(device),
+            state=select_xyyaw_from_state(data_const["state"]).to(device),
+        ).detach()[0, -1]
+
+    constraints.append(constraint)
+    for j in range(2):
+        axes[j, i].scatter(
+            data_const["failure"][:, -1, 0].cpu().numpy(),
+            data_const["failure"][:, -1, 1].cpu().numpy(),
+            marker="x",
+            color="red",
+            label=f"Constraint {i}",
+            zorder=999,
+        )
+
 tot = len(train_data) // BS
 for i, data in tqdm(enumerate(train_loader), total=tot):
     __, __, __, __, latent = transition(
@@ -343,6 +405,8 @@ for i, data in tqdm(enumerate(train_loader), total=tot):
     # V: [B] value of last frame
     for _class in range(nb_classes):
         constraint = transition.proxies[_class].detach()
+        # constraint = constraints[_class].to(device)
+
         V = evaluate_V(
             policy=policy,
             latent=latent,
@@ -354,7 +418,7 @@ for i, data in tqdm(enumerate(train_loader), total=tot):
             inp1=data["cam_zed_embd"].to(device),
             state=select_xyyaw_from_state(data["state"]).to(device),
         ).detach()
-        lz = np.tanh(
+        lz = -np.tanh(
             2
             * F.cosine_similarity(
                 semantic_features[:, -1],
@@ -370,21 +434,46 @@ for i, data in tqdm(enumerate(train_loader), total=tot):
 
         center = data["failure"][:, -1]
 
-        sc = axes[1, _class].scatter(
+        sc_v = axes[1, _class].scatter(
             center[:, 0].cpu().numpy(),
             center[:, 1].cpu().numpy(),
             c=V,
             cmap="viridis",
             s=50,
+            vmin=-1,
+            vmax=1,
         )
 
-        sc = axes[0, _class].scatter(
+        sc_lz = axes[0, _class].scatter(
             center[:, 0].cpu().numpy(),
             center[:, 1].cpu().numpy(),
             c=lz,
             cmap="viridis",
             s=50,
+            vmin=-1,
+            vmax=1,
         )
+
+# After your plotting loop, before saving
+# Add colorbar for the first row (Safety Margin Function)
+cbar0 = fig.colorbar(
+    sc_lz,  # use the last scatter from axes[0, _class]
+    ax=axes[0, :],  # span across all top-row axes
+    orientation="vertical",
+    fraction=0.02,
+    pad=0.04,
+)
+cbar0.set_label("Safety Margin Value")
+
+# Add colorbar for the second row (Value Function)
+cbar1 = fig.colorbar(
+    sc_v,  # use the last scatter from axes[1, _class]
+    ax=axes[1, :],  # span across all bottom-row axes
+    orientation="vertical",
+    fraction=0.02,
+    pad=0.04,
+)
+cbar1.set_label("Value Function")
 
 # Save the figure
 plt.savefig(

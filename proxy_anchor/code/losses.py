@@ -55,6 +55,9 @@ class Proxy_Anchor(torch.nn.Module):
             torch.Tensor: Computed Proxy Anchor loss.
         """
         use_unlabeled_data = U is not None
+        assert use_unlabeled_data is False, (
+            "Unlabeled data is not supported in this implementation."
+        )
         P = self.proxies  # [N, Z]
         if X.ndim != 2:  # [(B, T) Z]
             X = einops.rearrange(
