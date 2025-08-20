@@ -72,4 +72,31 @@ Finally, we recommend always setting the action space to range from -1 to 1 in t
 
 In addition, we remark that the convergence of critic loss implies that the neural network value function approximates well the value function induced by the current learned policy. However, it does not mean the learning is done because we cannot tell the quality of policies by just looking at the critic loss. In minimax DDPG, it improves the learned policy by minimizing the control actor loss, and refines the disturbance policy by maximizing the disturbance actor loss. However, we observe that a small critic loss stabilizes the multi-agent reinforcement learning training, and therefore helps policy learning. 
 
+## WM training
+For DINO with Franka Arm
+> cd AnySafe_Reachability/dino_wm/
+> python train_dino_wm.py
 
+Saves model to: ../AnySafe_Reachability/dino_wm/checkpoints/best_testing.pth
+
+## Proxy Anchor training
+> cd AnySafe_Reachability/dino_wm/proxy_anchor/
+> python train_failure_classifier_pa.py
+
+Saves model to: ../AnySafe_Reachability/dino_wm/checkpoints_pa/best_encoder_{params}.pth
+
+## Classifier Training (Latent Safe)
+> cd AnySafe_Reachability/dino_wm/
+> python train_dino_classifier.py CLASS_ID
+
+Replace CLASS_ID with [0, 1, 2, ..., nb_classes]
+Saves model to: ../AnySafe_Reachability/dino_wm/checkpoints_latent_safe/class_{CLASS_ID}_best_classifier.pth
+
+## Run Reachability
+Running with AnySafe (make sure to check which WM + safety margin is being used)
+> ../AnySafe_Reachability/scripts/
+> python run_training_ddpg-dinowm.py
+
+Running with Latent Safe
+> ../AnySafe_Reachability/scripts/
+> python run_training_ddpg-dinowm.py --latent-safe --class-id {CLASS_ID}

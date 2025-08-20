@@ -1,5 +1,4 @@
 import random
-import sys
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -116,15 +115,7 @@ def fail_loss(pred, fail_data):
 
 
 if __name__ == "__main__":
-    assert len(sys.argv) == 2, "Please provide the class number as an argument."
-    _class = sys.argv[1]
-    assert _class.isdigit(), "Class number must be an integer."
-    _class = int(_class)
-    assert 0 <= _class < nb_classes, (
-        f"Class number must be between 0 and {nb_classes - 1}."
-    )
-    print(f"Training for class: {_class}")
-    wandb.init(project="Latent Safe", name=f"Classifier Class {_class} DINO")
+    wandb.init(project="Latent Safe", name="Multi Class Classifier")
 
     use_amp = True
     scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
@@ -183,7 +174,7 @@ if __name__ == "__main__":
     # transition.load_state_dict(torch.load("checkpoints/best_testing.pth"), strict=False)
 
     for name, param in transition.named_parameters():
-        param.requires_grad = name.startswith("margin_head")
+        param.requires_grad = name.startswith("multi_class_classifier")
 
     data = next(expert_loader)
 
@@ -206,14 +197,16 @@ if __name__ == "__main__":
     # Forward pass
     optimizer = AdamW(
         [
-            {"params": transition.margin_head.parameters(), "lr": 5e-5},
+            {"params": transition.multi_class_classifier.parameters(), "lr": 5e-5},
         ]
     )
 
     best_eval = float("inf")
     best_fail = float("inf")
     iters = []
-    train_iter = 10000
+    train_iter = 20_000
+
+    criterion = torch.nn.CrossEntropyLoss()
 
     for i in tqdm(range(train_iter), desc="Training", unit="iter"):
         if i % len(expert_loader) == 0:
@@ -243,20 +236,23 @@ if __name__ == "__main__":
         optimizer.zero_grad()
 
         with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=use_amp):
-            pred1, pred_state, __, __, latent = transition(
-                inputs1, states, acs, return_latent=True
-            )
-            pred_fail = transition.fail_pred(inp1=output1, state=output_state)
+            # pred1, pred_state, __, __, latent = transition(
+            #     inputs1, states, acs, return_latent=True
+            # )
+            pred_fail = transition.multi_class_pred(inp1=output1, state=output_state)
             # gt_labels: [BS T]
             gt_labels = get_class_from_xy(data["failure"][:, 1:].to(device))
             # mask: [BS]
-            mask = (gt_labels[:, -1] != -1.0).squeeze()
-            gt_labels = (gt_labels[mask] == _class).float()  # [BS]
+            mask = ~(gt_labels[:, :] == -1.0).any(dim=1).squeeze()
+            gt_labels = (gt_labels[mask]).float()  # [BS]
             pred_fail = pred_fail[mask]
             # Unsafe = 1.0, Safe = 0.0
-            loss = fail_loss(pred_fail.squeeze(), gt_labels)
+            loss = criterion(
+                pred_fail.reshape(-1, nb_classes), gt_labels.long().reshape(-1)
+            )
+            # loss = fail_loss(pred_fail.squeeze(), gt_labels)
 
-        pred_labels = (pred_fail < 0).float()
+        pred_labels = torch.argmax(pred_fail, dim=-1).float()
         true_labels = gt_labels
         # correct = (pred_labels.to(true_labels.device) == true_labels).float().sum()
         # accuracy = correct / (true_labels.shape[0] * true_labels.shape[1])
@@ -362,19 +358,29 @@ if __name__ == "__main__":
                 acs = data_acs[:, :-1]
                 acs = normalize_acs(acs, device)
 
-                pred1, pred_state, __, __ = transition(inputs1, states, acs)
-                pred_fail = transition.fail_pred(inp1=output1, state=output_state)
+                # pred1, pred_state, __, __ = transition(inputs1, states, acs)
+                pred_fail = transition.multi_class_pred(
+                    inp1=output1, state=output_state
+                )
 
                 gt_labels = get_class_from_xy(eval_data["failure"][:, 1:].to(device))
                 mask = (gt_labels[:, -1] != -1.0).squeeze()
 
-                gt_labels = (gt_labels[mask] == _class).float()  # [BS]
+                gt_labels = (gt_labels[mask]).float()  # [BS]
                 pred_fail = pred_fail[mask]
 
                 # 1 for unsafe, 0 for safe
-                loss = fail_loss(pred_fail, gt_labels)
+                try:
+                    loss = criterion(
+                        pred_fail.reshape(-1, nb_classes), gt_labels.long().reshape(-1)
+                    )
+                    # loss = fail_loss(pred_fail, gt_labels)
+                except:
+                    import ipdb
 
-            pred_labels = (pred_fail < 0).float()
+                    ipdb.set_trace()
+
+            pred_labels = (torch.argmax(pred_fail, dim=-1)).float()
             true_labels = gt_labels
             # correct = (pred_labels.to(true_labels.device) == true_labels).float().sum()
             # accuracy = correct / (true_labels.shape[0] * true_labels.shape[1])
@@ -388,7 +394,7 @@ if __name__ == "__main__":
 
             torch.save(
                 transition.state_dict(),
-                f"checkpoints_latent_safe/class_{_class}_classifier_dino.pth",
+                "checkpoints/multi_class_classifier_dino.pth",
             )
 
             if loss < best_eval:
@@ -396,7 +402,7 @@ if __name__ == "__main__":
                 print(f"New best at iter {i}, saving model.")
                 torch.save(
                     transition.state_dict(),
-                    f"checkpoints_latent_safe/class_{_class}_best_classifier_dino.pth",
+                    "checkpoints/best_multi_class_classifier_dino.pth",
                 )
 
             transition.train()
