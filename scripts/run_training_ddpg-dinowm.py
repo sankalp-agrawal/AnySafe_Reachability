@@ -13,13 +13,12 @@ import argparse
 import os
 import sys
 
-import wandb
-
 # from dreamer import make_dataset
 # NOTE: all the reach-avoid gym environments are in reach_rl_gym, the constraint information is output as an element of the info dictionary in gym.step() function
 from torch.utils.data import DataLoader
 from tqdm import *
 
+import wandb
 from dino_wm.dino_models import VideoTransformer
 from dino_wm.test_loader import SplitTrajectoryDataset
 from PyHJ.data import Collector, VectorReplayBuffer
@@ -75,7 +74,7 @@ if args.latent_safe:
 else:
     wm.load_state_dict(
         torch.load(
-            "/home/sunny/AnySafe_Reachability/dino_wm/checkpoints_pa/encoder_mrg_0.1_alpha_32_num_ex_all_ul_F.pth"
+            "/home/sunny/AnySafe_Reachability/dino_wm/checkpoints_pa/encoder_mrg_0.1_alpha_32_bound_2x3.pth"
         ),
         strict=False,
     )
@@ -220,6 +219,11 @@ epoch = 0
 
 
 def save_best_fn(policy, epoch=epoch):
+    if not os.path.exists(log_path + "/epoch_id_{}".format(epoch)):
+        print("Just created the log directory!")
+        # print("log_path: ", log_path+"/epoch_id_{}".format(epoch))
+        os.makedirs(log_path + "/epoch_id_{}".format(epoch))
+
     if args.latent_safe:
         torch.save(
             policy.state_dict(),
@@ -239,12 +243,6 @@ def save_best_fn(policy, epoch=epoch):
 
 def stop_fn(mean_rewards):
     return False
-
-
-if not os.path.exists(log_path + "/epoch_id_{}".format(epoch)):
-    print("Just created the log directory!")
-    # print("log_path: ", log_path+"/epoch_id_{}".format(epoch))
-    os.makedirs(log_path + "/epoch_id_{}".format(epoch))
 
 
 warmup = 1

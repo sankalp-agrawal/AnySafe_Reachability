@@ -15,6 +15,8 @@ from torch.utils.data import DataLoader
 from torchvision import transforms
 from tqdm import tqdm
 
+from proxy_anchor.utils import load_state_dict_flexible
+
 dino = torch.hub.load("facebookresearch/dinov2", "dinov2_vits14_reg")
 
 transform = transforms.Compose(
@@ -172,8 +174,13 @@ if __name__ == "__main__":
         mlp_dim=2048,
         num_frames=BL - 1,
         dropout=0.1,
+        nb_classes=nb_classes,
     ).to(device)
-    transition.load_state_dict(torch.load("checkpoints/best_testing.pth"), strict=False)
+    load_state_dict_flexible(
+        transition,
+        "/home/sunny/AnySafe_Reachability/dino_wm/checkpoints/best_testing.pth",
+    )
+    # transition.load_state_dict(torch.load("checkpoints/best_testing.pth"), strict=False)
 
     for name, param in transition.named_parameters():
         param.requires_grad = name.startswith("margin_head")

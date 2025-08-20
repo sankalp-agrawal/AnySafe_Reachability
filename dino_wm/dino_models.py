@@ -352,6 +352,13 @@ class VideoTransformer(nn.Module):
             nn.Linear(semantic_dim, 512),
         )
 
+        # self.semantic_encoder = nn.Sequential(
+        #     nn.LayerNorm(semantic_dim),
+        #     nn.Linear(semantic_dim, semantic_dim, bias=False),
+        #     nn.ReLU(inplace=True),
+        #     nn.Linear(semantic_dim, 512, bias=False),
+        # )
+
         self.margin_head = nn.Sequential(
             LayerNorm(total_dim),
             nn.Linear(total_dim, total_dim),
@@ -482,6 +489,7 @@ class VideoTransformer(nn.Module):
             ),
             dim=-1,
         )
+        # features = inp1
         # semantic_features: [B T N E]
         # features = torch.norm(features, dim=-2)  # Average over patches
         # features = torch.mean(features, dim=-2)  # Average over patches

@@ -12,13 +12,6 @@ import torch.nn.functional as F
 import umap.umap_ as umap
 import wandb
 from scipy.stats import gaussian_kde
-from sklearn.metrics import (
-    accuracy_score,
-    f1_score,
-    precision_score,
-    recall_score,
-    roc_auc_score,
-)
 from torch.utils.data import DataLoader, Subset
 from tqdm import *
 from utils import compare_kdes, load_state_dict_flexible
@@ -147,14 +140,6 @@ def make_parser():
         choices=["const", "lin", "exp"],
         help="Schedule for the ratio of unlabeled data to labeled data",
     )
-
-    parser.add_argument(
-        "--boundary-type",
-        type=str,
-        default="2x3",
-        choices=["2x3", "1x3", "3x1", "2x2", "1x4"],
-        help="Type of boundary for classification",
-    )
     return parser
 
 
@@ -163,31 +148,6 @@ args = parser.parse_args()
 
 if args.gpu_id != -1:
     torch.cuda.set_device(args.gpu_id)
-
-# Wandb Initialization
-wandb_name_kwargs = {
-    "mrg": args.mrg,
-    "alpha": int(args.alpha),
-    "bound": args.boundary_type,
-}
-if args.use_unlabeled_data:
-    wandb_name_kwargs["ul"] = "T"
-    wandb_name_kwargs["ul_ratio"] = (
-        args.unlabeled_ratio
-        if args.unlabeled_ratio != -1.0
-        else f"all_{args.ratio_schedule}"
-    )
-    wandb_name_kwargs["beta"] = args.beta
-    wandb_name_kwargs["temp"] = args.temp
-
-wandb_name = "".join(
-    f"{key}_{value}_" for key, value in wandb_name_kwargs.items() if value is not None
-).rstrip("_")
-wandb.init(name=wandb_name, project="ProxyAnchor")
-wandb.config.update(args)
-
-wandb.define_metric("num_updates", step_metric="num_updates")
-wandb.define_metric("*", step_metric="num_updates")
 
 # Dataset Loader and Sampler
 BS = args.sz_batch  # batch size
@@ -235,74 +195,20 @@ test_loader = DataLoader(
 
 device = "cuda:0"
 
-if args.boundary_type == "2x3":
-    x_class_boundaries = [0, 224 // 3, 224 * 2 // 3, 224]  # x boundaries for 3 classes
-    y_class_boundaries = [224 // 3, 224 * 2 // 3, 224]  # y boundaries for 3 classes
-
-    label_to_str = {
-        0: "Left Top",
-        1: "Left Bottom",
-        2: "Middle Top",
-        3: "Middle Bottom",
-        4: "Right Top",
-        5: "Right Bottom",
-    }
-elif args.boundary_type == "1x3":
-    x_class_boundaries = [0, 224 // 3, 224 * 2 // 3, 224]  # x boundaries for 3 classes
-    y_class_boundaries = [0, 224]
-
-    label_to_str = {
-        0: "Left",
-        1: "Middle",
-        2: "Right",
-    }
-
-elif args.boundary_type == "3x1":
-    y_class_boundaries = [
-        224 // 3,
-        5 * 224 // 9,
-        7 * 224 // 9,
-        224,
-    ]  # y boundaries for 3 classes
-    x_class_boundaries = [0, 224]
-
-    label_to_str = {
-        0: "Top",
-        1: "Middle",
-        2: "Bottom",
-    }
-
-elif args.boundary_type == "2x2":
-    x_class_boundaries = [0, 224 // 2, 224]  # x boundaries for 2 classes
-    y_class_boundaries = [224 // 3, 2 * 224 // 3, 224]  # y boundaries for 2 classes
-    label_to_str = {
-        0: "Left Top",
-        1: "Left Bottom",
-        2: "Right Top",
-        3: "Right Bottom",
-    }
-elif args.boundary_type == "1x4":
-    x_class_boundaries = [
-        0,
-        224 // 4,
-        224 * 2 // 4,
-        224 * 3 // 4,
-        224,
-    ]  # x boundaries for 4 classes
-    y_class_boundaries = [0, 224]
-    label_to_str = {
-        0: "Left",
-        1: "Middle Left",
-        2: "Middle Right",
-        3: "Right",
-    }
-
-else:
-    raise ValueError("Invalid boundary type: {}".format(args.boundary_type))
+# labels is a tensor of shape (B, 2)
+x_class_boundaries = [0, 224 // 3, 224 * 2 // 3, 224]  # x boundaries for 3 classes
+y_class_boundaries = [224 // 3, 224 * 2 // 3, 224]  # y boundaries for 3 classes
 
 # 3 * 2 = 6 classes in total
 nb_classes = (len(x_class_boundaries) - 1) * (len(y_class_boundaries) - 1)
-
+label_to_str = {
+    0: "Left Top",
+    1: "Left Bottom",
+    2: "Middle Top",
+    3: "Middle Bottom",
+    4: "Right Top",
+    5: "Right Bottom",
+}
 cmap = plt.cm.rainbow
 class_to_colors = {i: cmap(i / nb_classes) for i in range(nb_classes)}
 
@@ -348,20 +254,50 @@ model = VideoTransformer(
 ).to(device)
 # model.load_state_dict(torch.load("../checkpoints/best_classifier.pth"), strict=False)
 # load_state_dict_flexible(model, "../checkpoints/best_classifier.pth")
+# load_state_dict_flexible(model, "../checkpoints/best_testing.pth")
 load_state_dict_flexible(model, "../checkpoints/best_testing.pth")
-# load_state_dict_flexible(model, "../checkpoints/best_testing_xy.pth")
 # model.load_state_dict(torch.load("../checkpoints_pa/encoder_0.1.pth"))
 
 for name, param in model.named_parameters():
     param.requires_grad = name.startswith("semantic_encoder")
 
 # DML Losses
-criterion = losses.Proxy_Anchor(
-    nb_classes=nb_classes,
-    sz_embed=args.sz_embedding,
-    mrg=args.mrg,
-    alpha=args.alpha,
-).cuda()
+if args.loss == "triplet":
+    params = {"margin": args.mrg}
+    criterion = losses.TripletLoss(**params).cuda()
+elif args.loss == "contrastive":
+    params = {"margin": args.mrg}
+    criterion = losses.ContrastiveLoss(**params).cuda()
+
+elif args.loss == "npair":
+    params = {}
+    criterion = losses.NPairLoss().cuda()
+
+elif args.loss == "multisimilarity":
+    params = {}
+    criterion = losses.MultiSimilarityLoss().cuda()
+
+elif args.loss == "priv":
+    params = {}
+
+    def mapping_fn(X):
+        # Maps a distance to a cosine similarity
+        # Distance of 1.0 -> cosine sim of -1.0
+        # Distance of 0.0 -> cosine sim of 1.0
+        return -2 * (X / 250) + 1
+
+    criterion = losses.PrivilegedTeacherForcingLoss(mapping_fn=mapping_fn)
+
+# Wandb Initialization
+wandb_name_kwargs = params
+wandb_name = f"{args.loss}_" + "".join(
+    f"{key}_{value}_" for key, value in wandb_name_kwargs.items() if value is not None
+).rstrip("_")
+wandb.init(name=wandb_name, project="ProxyAnchor")
+wandb.config.update(args)
+
+wandb.define_metric("num_updates", step_metric="num_updates")
+wandb.define_metric("*", step_metric="num_updates")
 
 # Train Parameters
 param_groups = [
@@ -369,7 +305,6 @@ param_groups = [
         "params": model.semantic_encoder.parameters(),  # Semantic encoder parameters
         "lr": float(args.lr) * 1,
     },
-    {"params": criterion.parameters(), "lr": float(args.lr) * 100},  # Just proxies
 ]
 # Optimizer Setting
 opt = torch.optim.AdamW(param_groups, lr=float(args.lr), weight_decay=args.weight_decay)
@@ -391,12 +326,6 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
 
     losses_per_epoch = []
     auc_per_epoch = []
-    metrics = {
-        "Accuracy": [],
-        "Precision": [],
-        "Recall": [],
-        "F1-score": [],
-    }
     y_pred_tot = []
     y_true_tot = []
 
@@ -486,9 +415,7 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
     for batch_idx, data in pbar:
         # labels_gt: [150 2]
         labels_gt = data["failure"][:].to(device, dtype=torch.float32).squeeze()
-        # Gaussian noise to labels for robustness
-        # labels_gt = labels_gt + torch.randn_like(labels_gt) * 3.0
-        labels_gt = get_class_from_xy(labels_gt)
+        labels_gt_xy = get_class_from_xy(labels_gt)
 
         data1 = data["cam_zed_embd"].to(device)  # [B 1, 256, 384]
         # data2 = data["cam_rs_embd"].to(device)  # [B 1, 256, 384]
@@ -539,9 +466,9 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
                         semantic_features_unlabeled_tensor[combined_indices]
                     )
 
-        labels_gt_masked = copy.deepcopy(labels_gt)
-        mask = (labels_gt_masked != -1.0).squeeze()
-        labels_gt_masked = labels_gt_masked[mask]
+        labels_gt_xy_masked = copy.deepcopy(labels_gt_xy)
+        mask = (labels_gt_xy_masked != -1.0).squeeze()
+        labels_gt_xy_masked = labels_gt_xy_masked[mask]
         semantic_features = semantic_features[mask]  # Remove -1 labels
 
         ax_coverage.scatter(
@@ -549,14 +476,24 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
             data["failure"][:, -1][mask.cpu(), 1],
             color=[
                 class_to_colors[label.item()]
-                for label in labels_gt_masked.cpu().numpy()
+                for label in labels_gt_xy[mask.cpu()].cpu().numpy()
             ],
         )
 
-        loss, __, __ = criterion(
-            X=semantic_features.float(),
-            T=labels_gt_masked.squeeze().cuda(),
-        )
+        if args.loss in ["priv"]:
+            loss = criterion(
+                X=einops.rearrange(
+                    semantic_features.float(), "B T Z -> (B T) Z"
+                ).cuda(),
+                T=labels_gt[mask],
+            )
+        else:
+            loss = criterion(
+                X=einops.rearrange(
+                    semantic_features.float(), "B T Z -> (B T) Z"
+                ).cuda(),
+                T=labels_gt_xy_masked.squeeze().cuda(),
+            )
 
         if args.use_unlabeled_data:
             wandb.log(
@@ -567,107 +504,13 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
                 step=num_updates,
             )
 
-        P = criterion.proxies.detach()  # Ensure P is in the same dtype as X
-        assert criterion.proxies.requires_grad
-        semantic_features = einops.rearrange(
-            semantic_features.float(), "B T Z -> (B T) Z"
-        )  # Ensure X is in the correct shape
-
-        cos_sim = F.linear(losses.l2_norm(semantic_features), losses.l2_norm(P))
-        cos_sim_logits = F.softmax(cos_sim, dim=-1)  # Softmax over classes
-
-        if nb_classes == 2:
-            auc = roc_auc_score(
-                y_true=einops.rearrange(labels_gt_masked, "B T -> (B T)").cpu().numpy(),
-                y_score=cos_sim_fail.detach().cpu().numpy(),
-            )
-            cos_sim_proxies = (
-                torch.gather(  # Cos sim for data point to corresponding proxy
-                    F.linear(losses.l2_norm(semantic_features), losses.l2_norm(P)),
-                    dim=1,
-                    index=labels_gt_masked.to(torch.int64),
-                )
-            )
-            cos_sim_proxies_incorrect = (
-                torch.gather(  # Cos sim for data point to corresponding proxy
-                    F.linear(losses.l2_norm(semantic_features), losses.l2_norm(P)),
-                    dim=1,
-                    index=1 - labels_gt_masked.to(torch.int64),
-                )
-            )
-            wandb.log(
-                {
-                    "train/cos_sim_to_correct_proxies": cos_sim_proxies.mean().item(),
-                    "train/cos_sim_to_incorrect_proxies": cos_sim_proxies_incorrect.mean().item(),
-                },
-                step=num_updates,
-            )
-
-        else:
-            auc = roc_auc_score(
-                y_true=labels_gt_masked.cpu().numpy().squeeze(),
-                y_score=cos_sim_logits.detach().cpu().numpy(),
-                multi_class="ovo",
-                average="macro",
-                labels=np.arange(nb_classes),
-            )
-
-        y_pred = cos_sim_logits.argmax(dim=-1)  # Predicted labels
-
-        if batch_idx % 50 == 0:
-            # Show train images
-            fig, ax = plt.subplots(figsize=(8, 8))
-
-            ax.imshow(data["agentview_image"][mask.cpu()][-1, -1].cpu().numpy())
-
-            ax.scatter(
-                data["failure"][mask.cpu()][-1, -1, 0].cpu().numpy(),
-                data["failure"][mask.cpu()][-1, -1, 1].cpu().numpy(),
-                marker="x",
-                color="blue",
-            )
-            wandb.log({"train/front_image": wandb.Image(fig)})
-            plt.close(fig)
-
-        metrics["Accuracy"].append(
-            (y_pred == labels_gt_masked.squeeze()).float().mean().item()
-        )
-        metrics["Precision"].append(
-            precision_score(
-                labels_gt_masked.squeeze().cpu().numpy(),
-                y_pred.cpu().numpy(),
-                average="macro",
-                zero_division=0,
-            )
-        )
-        metrics["Recall"].append(
-            recall_score(
-                labels_gt_masked.squeeze().cpu().numpy(),
-                y_pred.cpu().numpy(),
-                average="macro",
-                zero_division=0,
-            )
-        )
-        metrics["F1-score"].append(
-            f1_score(
-                labels_gt_masked.squeeze().cpu().numpy(),
-                y_pred.cpu().numpy(),
-                average="macro",
-                zero_division=0,
-            )
-        )
-        y_pred_tot.append(y_pred.cpu().numpy())
-        y_true_tot.append(labels_gt_masked.cpu().numpy())
-
         opt.zero_grad()
         loss.backward()
         num_updates += 1
 
         torch.nn.utils.clip_grad_value_(model.semantic_encoder.parameters(), 10)
-        torch.nn.utils.clip_grad_value_(criterion.parameters(), 10)
 
         losses_per_epoch.append(loss.data.cpu().numpy())
-        auc_per_epoch.append(auc)
         opt.step()
 
         pbar.set_description(
@@ -694,40 +537,20 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
     )
     wandb.log({"train/coverage": wandb.Image(fig_coverage)}, step=num_updates)
 
-    wandb.log(
-        {
-            "train/Confusion Matrix": wandb.plot.confusion_matrix(
-                preds=np.concatenate(y_pred_tot),
-                y_true=np.concatenate(y_true_tot).squeeze(),
-                class_names=list(label_to_str.values()),
-            )
-        },
-        step=num_updates,
-    )
-
     losses_list.append(np.mean(losses_per_epoch))
     wandb.log(
-        {"train/Proxy Anchor Loss": losses_list[-1], "num_updates": num_updates},
+        {"train/Loss": losses_list[-1], "num_updates": num_updates},
         step=num_updates,
     )
-    wandb.log(
-        {"train/AUC": np.mean(auc_per_epoch), "num_updates": num_updates},
-        step=num_updates,
-    )
-    for metric, values in metrics.items():
-        wandb.log(
-            {f"train/{metric}": np.mean(values), "num_updates": num_updates},
-            step=num_updates,
-        )
 
     scheduler.step()
 
     if epoch >= 0:
         model.eval()
-        metrics = {}
+        loses_per_epoch = []
         X = []
         y = []
-        y_pred = []
+        y_priv = []
         with torch.no_grad():
             pbar = tqdm(
                 enumerate(test_loader),
@@ -739,16 +562,16 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
             for batch_idx, data in pbar:
                 labels_gt = data["failure"][:, -1:].to(
                     device, dtype=torch.float32
-                )  # [B, 1]
-                labels_gt = get_class_from_xy(labels_gt)
-                mask = (labels_gt != -1.0).squeeze()
+                )  # [B, 2]
+                labels_gt_xy = get_class_from_xy(labels_gt)
+                mask = (labels_gt_xy != -1.0).squeeze()
 
                 ax_coverage_eval.scatter(
                     data["failure"][:, -1][mask.cpu(), 0],
                     data["failure"][:, -1][mask.cpu(), 1],
                     color=[
                         class_to_colors[label.item()]
-                        for label in labels_gt[mask.cpu()].cpu().numpy()
+                        for label in labels_gt_xy[mask.cpu()].cpu().numpy()
                     ],
                 )
 
@@ -759,42 +582,50 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
                     mask
                 ]  # [B, 1, 3]
 
-                semantic_features = model.semantic_embed(  # [embedding_dim]
-                    inp1=inputs1, state=states
-                )
+                with torch.autocast(
+                    device_type="cuda", dtype=torch.float16, enabled=True
+                ):
+                    semantic_features = model.semantic_embed(  # [embedding_dim]
+                        inp1=inputs1, state=states
+                    )
 
-                labels_gt_masked = copy.deepcopy(labels_gt)[mask]
+                labels_gt_xy_masked = copy.deepcopy(labels_gt_xy)[mask]
 
                 # Normalize all vectors for cosine similarity
                 semantic_features_norm = F.normalize(
                     semantic_features, dim=-1
                 )  # (10, 1, 512)
-                proxies_norm = F.normalize(criterion.proxies, dim=-1)  # (2, 512)
 
                 # Broadcastable shapes: (10, 1, 1, 512) and (1, 1, 2, 512)
                 semantic_features_exp = einops.rearrange(
                     semantic_features_norm, "B T Z -> B T 1 Z"
                 )  # (BS, T, 1, 512)
-                proxies_exp = einops.rearrange(
-                    proxies_norm, "L Z -> 1 1 L Z"
-                )  # (1, 1, 2, 512)
 
-                # Compute cosine similarity
-                cos_sim = (semantic_features_exp * proxies_exp).sum(
-                    dim=-1
-                )  # (10, 1, 2)
+                if args.loss in ["priv"]:
+                    loss = criterion(
+                        X=einops.rearrange(
+                            semantic_features.float(), "B T Z -> (B T) Z"
+                        ).cuda(),
+                        T=labels_gt[mask].squeeze().cuda(),
+                    )
+                else:
+                    loss = criterion(
+                        X=einops.rearrange(
+                            torch.tensor(semantic_features, device=device),
+                            "B T Z -> (B T) Z",
+                        ),
+                        T=torch.tensor(labels_gt_xy_masked, device=device).squeeze(),
+                    )
 
-                # Choose the index (0 or 1) of the most similar vector
-                logits = F.softmax(cos_sim, dim=-1)  # (10, 1, 2)
-                pred_labels = logits.argmax(dim=-1)  # (10, 1)
+                losses_per_epoch.append(loss.detach().cpu().numpy())
 
                 X.append(semantic_features.cpu().numpy())
-                y.append(labels_gt_masked.cpu().numpy())
-                y_pred.append(pred_labels.cpu().numpy())
+                y.append(labels_gt_xy_masked.cpu().numpy())
+                y_priv.append(labels_gt[mask].cpu().numpy())
 
             X = einops.rearrange(np.concatenate(X, axis=0), "B T Z -> (B T) Z")
             y = np.concatenate(y, axis=0).squeeze()
-            y_pred = np.concatenate(y_pred, axis=0).squeeze()
+            y_priv = np.concatenate(y_priv, axis=0).squeeze()
             classes_eval = np.unique(y)
             num_classes_eval = len(np.unique(y))
 
@@ -819,24 +650,8 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
             wandb.log(
                 {"eval/coverage": wandb.Image(fig_coverage_eval)}, step=num_updates
             )
-            metrics["Accuracy"] = balanced_accuracy = accuracy_score(
-                y_gt_masked, y_pred
-            )
-            metrics["Precision"] = precision_score(
-                y_gt_masked, y_pred, average="macro", zero_division=0
-            )
-            metrics["Recall"] = recall_score(
-                y_gt_masked, y_pred, average="macro", zero_division=0
-            )
-            metrics["F1-score"] = f1_score(
-                y_gt_masked, y_pred, average="macro", zero_division=0
-            )
-            metrics["Balanced Accuracy"] = accuracy_score(y_gt_masked, y_pred)
-            loss, __, __ = criterion(
-                X=torch.tensor(X, device=device),
-                T=torch.tensor(y_gt_masked, device=device),
-            )
-            metrics["Proxy Anchor Loss"] = loss.detach().cpu().numpy()
+
+            wandb.log({"eval/Loss": np.mean(losses_per_epoch)}, step=num_updates)
             # metrics["Cross Entropy Loss"].append(
             #     F.cross_entropy(cos_sim, gt_labels, reduction="mean").item()
             # )
@@ -869,7 +684,7 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
 
             kde_dict = {}
 
-            if len(class_pairs) >= 7:  # If too many pairs, do one vs. rest
+            if len(class_pairs) > 10:  # If too many pairs, do one vs. rest
                 ovr = True
                 for i in classes_eval:
                     # Same to same comparison
@@ -1016,240 +831,46 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
 
         cosine_sim_plot_eval(X, y)
 
-        def const_conditioned_plots(X, y):
-            y_masked = copy.deepcopy(y)
+        def cos_sim_semantic(X, y_priv):
+            mask = random.sample(range(len(y_priv)), min(1000, len(y_priv)))
+            y_priv_masked = copy.deepcopy(y_priv[mask])
+            X_masked = X[mask]
 
-            P = criterion.proxies.detach()  # Ensure P is in the same dtype as X
+            X_masked_norm = F.normalize(torch.tensor(X_masked, device=device), dim=-1)
+            cos_sim = (X_masked_norm @ X_masked_norm.T).flatten().cpu().numpy()
 
-            cos_sim_proxies = -F.linear(
-                losses.l2_norm(torch.tensor(X, device=P.device).float()),
-                losses.l2_norm(P),
-            ).cpu()
+            diff = y_priv_masked[:, None] - y_priv_masked[None, :]
+            dist = np.linalg.norm(diff, axis=-1).flatten()
 
-            thresholds = np.linspace(-1, 1, 100)
-            proxy_data = {
-                k: {
-                    "cos_sim": cos_sim_proxies[:, k],
-                    "tp_rates": [],
-                    "tn_rates": [],
-                    "fp_rates": [],
-                    "fn_rates": [],
-                }
-                for k in classes_eval
-            }
-            for t in thresholds:
-                for prox, data in proxy_data.items():
-                    cos_sim = data["cos_sim"]
+            fig, ax = plt.subplots(figsize=(6, 6))
 
-                    tp = ((cos_sim > t) & (y_masked != prox)).sum()
-                    fp = ((cos_sim > t) & (y_masked == prox)).sum()
-                    tn = ((cos_sim <= t) & (y_masked == prox)).sum()
-                    fn = ((cos_sim <= t) & (y_masked != prox)).sum()
+            plt.title("XY Distance vs Cosine Similarity")
+            plt.xlabel("Cosine Similarity")
+            plt.ylabel("Distance")
+            plt.xlim(max(-1, cos_sim.min()), min(1, cos_sim.max()))
 
-                    data["tp_rates"].append(tp / (tp + fn) if (tp + fn) > 0 else 0)
-                    data["tn_rates"].append(tn / (tn + fp) if (tn + fp) > 0 else 0)
-                    data["fp_rates"].append(fp / (fp + tn) if (fp + tn) > 0 else 0)
-                    data["fn_rates"].append(fn / (fn + tp) if (fn + tp) > 0 else 0)
+            # Scatter plot
+            ax.scatter(cos_sim, dist, s=5, alpha=0.5)
 
-            intersect_thresholds = []
-            intersect_values = []
-            for prox, data in proxy_data.items():
-                data["tp_rates"] = np.array(data["tp_rates"])
-                data["tn_rates"] = np.array(data["tn_rates"])
-                thresholds = np.array(thresholds)
-                diff = np.abs(data["tp_rates"] - data["tn_rates"])
-                intersect_idx = np.argmin(diff)
-                intersect_threshold = thresholds[intersect_idx]
-                intersect_value = data["tp_rates"][
-                    intersect_idx
-                ]  # or tn_rates[intersect_idx]
-                data["intersect_threshold"] = intersect_threshold
-                intersect_thresholds.append(intersect_threshold)
-                data["intersect_value"] = intersect_value
-                intersect_values.append(intersect_value)
+            if args.loss in ["priv"]:
+                y = np.linspace(0, dist.max(), 1000)
+                x = mapping_fn(y)
 
-            # Plot all the metrics
-            fig, axes = plt.subplots(
-                1, num_classes_eval, figsize=(10 * 8, num_classes_eval)
-            )
-            for ax, (prox, data) in zip(axes, proxy_data.items()):
-                ax.set_aspect("equal")
-                thresholds = np.array(thresholds)
-
-                ax.set_title(f"Conditioned on {label_to_str[prox]} Proxy")
-
-                ax.plot(
-                    thresholds,
-                    data["tp_rates"],
-                    label="True Positive Rate",
-                    color="blue",
-                )
-                ax.plot(
-                    thresholds,
-                    data["tn_rates"],
-                    label="True Negative Rate",
-                    color="orange",
-                )
-
-                # Add vertical line and label at intersection
-                ax.axvline(
-                    data["intersect_threshold"],
-                    color="black",
-                    linestyle="--",
-                    linewidth=1,
-                )
-                ax.text(
-                    data["intersect_threshold"],
-                    0.05,  # slightly above bottom
-                    f"Threshold = {data['intersect_threshold']:.2f}, TPR = {data['intersect_value']:.2f}",
-                    rotation=90,
-                    verticalalignment="bottom",
-                    horizontalalignment="right",
-                    backgroundcolor="white",
-                    fontsize=9,
-                )
-
-                ax.set_xlabel("Cosine Similarity Threshold")
-                ax.set_ylabel("Rate")
-                ax.legend()
-
-                # save thresholds to wm
-                model.thresholds[prox] = data["intersect_threshold"]
-
+                # Plot the mapping function
+                ax.plot(x, y, color="red", linestyle="--", label="Mapping Function")
             plt.tight_layout()
-
-            wandb.log(
-                {"eval/metric_plot": wandb.Image(fig), "num_updates": num_updates},
-                step=num_updates,
-            )
             wandb.log(
                 {
-                    "eval/intersect_threshold_variance": np.var(intersect_thresholds),
-                    "eval/TPR_avg": np.mean(intersect_values),
+                    "eval/cosine_sim_vs_dist": wandb.Image(fig),
                     "num_updates": num_updates,
                 },
                 step=num_updates,
             )
             plt.close()
 
-            # Plot AUC curve
-            fig, axes = plt.subplots(
-                1, num_classes_eval, figsize=(10 * num_classes_eval, 8)
-            )
-            for ax, (prox, data) in zip(axes, proxy_data.items()):
-                ax.set_aspect("equal")
-                fp_rates = np.array(data["fp_rates"])
-                tp_rates = np.array(data["tp_rates"])
-                ax.plot(fp_rates, tp_rates, label="ROC Curve", color="blue")
-                ax.set_xlabel("False Positive Rate")
-                ax.set_ylabel("True Positive Rate")
-                ax.set_title(f"Conditioned on {label_to_str[prox]} Proxy")
-                ax.legend()
-            plt.tight_layout()
-            wandb.log(
-                {"eval/roc_curve": wandb.Image(fig), "num_updates": num_updates},
-                step=num_updates,
-            )
-            plt.close()
+        cos_sim_semantic(X, y_priv)
 
-            # Plot cosine similarity distribution
-            fig, axes = plt.subplots(
-                1, num_classes_eval, figsize=(10 * num_classes_eval, 8)
-            )
-
-            used_labels = set()
-            global_handles = []
-            global_labels = []
-
-            for ax, (prox, data) in zip(axes, proxy_data.items()):
-                # ax.set_aspect("equal")
-                cos_sim = -data[
-                    "cos_sim"
-                ]  # It's already negative cosine similarity, so we make it positive for plotting
-
-                for idx, label in enumerate(classes_eval):
-                    class_data = cos_sim[y == label]
-                    if len(class_data) < 2:
-                        continue
-                    kde = gaussian_kde(class_data)
-                    x_vals = np.linspace(-1, 1, 200)
-                    y_vals = kde(x_vals)
-                    color = class_to_colors[label]
-
-                    plot_label = f"{label_to_str[label]}"
-                    (line,) = ax.plot(
-                        x_vals, y_vals, label=plot_label, color=color, alpha=0.7
-                    )
-
-                    if plot_label not in used_labels:
-                        used_labels.add(plot_label)
-                        global_handles.append(line)
-                        global_labels.append(plot_label)
-
-                ax.set_title(f"Conditioned on {label_to_str[prox]} Proxy")
-                ax.set_xlabel("Cosine Similarity")
-                ax.set_ylabel("Density")
-
-            # Global legend above all subplots
-            fig.legend(
-                global_handles,
-                global_labels,
-                loc="upper center",
-                ncol=len(global_labels),
-                fontsize="x-large",
-            )
-            plt.tight_layout(rect=[0, 0, 1, 0.95])
-
-            wandb.log(
-                {
-                    "eval/const_conditioned_cosine_sim": wandb.Image(fig),
-                    "num_updates": num_updates,
-                },
-                step=num_updates,
-            )
-            plt.close()
-
-            return cos_sim_proxies
-
-        cos_sim_proxies = const_conditioned_plots(X, y)
-
-        if nb_classes == 2:
-            y_masked = copy.deepcopy(y)
-            auc = roc_auc_score(
-                y_true=y_masked,
-                y_score=-cos_sim_fail.cpu().numpy(),
-            )
-            wandb.log({"eval/AUC": auc, "num_updates": num_updates}, step=num_updates)
-
-        else:
-            auc = roc_auc_score(
-                y_true=losses.binarize(
-                    labels_gt_masked.flatten(),
-                    nb_classes=nb_classes,
-                )
-                .cpu()
-                .numpy(),
-                y_score=einops.rearrange(logits, "B T L -> (B T) L").cpu().numpy(),
-                multi_class="ovo",
-                average="macro",
-            )
-            wandb.log({"eval/AUC": auc, "num_updates": num_updates}, step=num_updates)
-
-        for key, value in metrics.items():
-            metrics[key] = np.mean(value)
-        wandb.log(
-            {
-                "eval/Confusion matrix": wandb.plot.confusion_matrix(
-                    preds=y_pred,
-                    y_true=y_gt_masked,
-                    class_names=list(label_to_str.values()),
-                )
-            },
-            step=num_updates,
-        )
-        wandb_log = {f"eval/{k}": v for k, v in metrics.items()}
-        wandb_log["num_updates"] = num_updates
-        wandb.log(wandb_log, step=num_updates)
+        wandb.log({"num_updates": num_updates}, step=num_updates)
 
         # ---- Flatten and Prepare Data ----
         if len(X) == 0 or len(y) == 0:
@@ -1259,15 +880,12 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
         # print("Visualizing embeddings with UMAP...")
 
         # ---- UMAP Setup ----
-        umap_input = np.concatenate(
-            [X, criterion.proxies.detach().cpu().numpy()], axis=0
-        )
+        umap_input = np.concatenate([X], axis=0)
 
         reducer = umap.UMAP(n_components=2, metric="cosine")
         umap_output = reducer.fit_transform(umap_input)
 
-        X_umap = umap_output[:-nb_classes]
-        proxies_umap = umap_output[-nb_classes:]
+        X_umap = umap_output
 
         # ---- Plot ----
         plt.figure(figsize=(8, 6))
@@ -1284,20 +902,6 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
                 alpha=0.7,
             )
 
-        # Plot proxies
-        for i, proxy in enumerate(proxies_umap):
-            plt.scatter(
-                proxy[0],
-                proxy[1],
-                color=class_to_colors[i],
-                marker="X",
-                s=100,
-                edgecolor="black",
-                linewidth=1.2,
-                label=f"Class {i} (proxy)",
-                alpha=1.0,
-            )
-
         # ---- Final Formatting ----
         plt.title("UMAP visualization of embeddings (cosine distance)")
         plt.xlabel("UMAP Dimension 1")
@@ -1311,9 +915,6 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
         )
         plt.close()
 
-        with torch.no_grad():
-            model.proxies.copy_(criterion.proxies)
-
         if args.save_model:
             model_name = wandb_name
             save_name = f"../checkpoints_pa/encoder_{model_name}.pth"
@@ -1325,10 +926,10 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
             )
             tqdm.write(f"Model saved to {save_name}")
 
-            if balanced_accuracy > best_eval:
-                best_eval = balanced_accuracy
-                print(f"New best at iter {i}, saving model to {best_save_name}.")
-                torch.save(
-                    model.state_dict(),
-                    best_save_name,
-                )
+            # if balanced_accuracy > best_eval:
+            #     best_eval = balanced_accuracy
+            #     print(f"New best at iter {i}, saving model to {best_save_name}.")
+            #     torch.save(
+            #         model.state_dict(),
+            #         best_save_name,
+            #     )

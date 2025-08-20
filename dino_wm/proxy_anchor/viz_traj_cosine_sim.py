@@ -323,6 +323,19 @@ def make_comparison_video(
     for x in range(BL - 1, T, EVAL_H):
         im_graph_ax.axvline(x, color="gray", linestyle="--", linewidth=0.5)
 
+    # Add horizontal lines for each class
+    for key in keys_to_plot:
+        if key in [f"class_{_class}_prox" for _class in range(nb_classes)]:
+            y = -np.tanh(
+                2 * transition.thresholds[keys_to_plot.index(key)].cpu().numpy()
+            )
+            gt_graph_ax.axhline(
+                y, color=colors[keys_to_plot.index(key)], linestyle="--", linewidth=0.5
+            )
+            im_graph_ax.axhline(
+                y, color=colors[keys_to_plot.index(key)], linestyle="--", linewidth=0.5
+            )
+
     # add vertical lines on ground truth graph every label transition
     transitions = (
         np.where(np.diff(output["ground_truth"]["gt_fail_label"], axis=0) != 0)[0] + 1
@@ -441,6 +454,7 @@ x_class_boundaries = np.array(
 y_class_boundaries = np.array(
     [224 // 3, 224 * 2 // 3, 224]
 )  # y boundaries for 3 classes
+# y_class_boundaries = np.array([0, 224])  # y boundaries for 3 classes
 # 3 * 2 = 6 classes in total
 nb_classes = (len(x_class_boundaries) - 1) * (len(y_class_boundaries) - 1)
 label_to_str = {
@@ -451,6 +465,11 @@ label_to_str = {
     4: "Right Top",
     5: "Right Bottom",
 }
+# label_to_str = {
+#     0: "Left",
+#     1: "Middle",
+#     2: "Right",
+# }
 cmap = plt.cm.rainbow
 class_to_colors = {i: cmap(i / nb_classes) for i in range(nb_classes)}
 
@@ -516,7 +535,7 @@ if __name__ == "__main__":
                 break
 
     constraint_data = SplitTrajectoryDataset(
-        "/home/sunny/data/sweeper/proxy_anchor/consolidated.h5",
+        "/home/sunny/data/sweeper/train/consolidated.h5",
         3,
         split="train",
         num_test=0,
@@ -538,10 +557,19 @@ if __name__ == "__main__":
         dropout=0.1,
         nb_classes=nb_classes,
     ).to(device)
+    # load_state_dict_flexible(
+    #     transition,
+    #     "../checkpoints_pa/encoder_mrg_0.1_alpha_32_num_ex_all_ul_F.pth",
+    # )
     load_state_dict_flexible(
         transition,
-        "../checkpoints_pa/encoder_mrg_0.1_alpha_32_num_ex_all_ul_F.pth",
+        "/home/sunny/AnySafe_Reachability/dino_wm/checkpoints_pa/encoder_mrg_0.1_alpha_32_bound_2x3.pth",
     )
+    # load_state_dict_flexible(
+    #     transition,
+    #     "../checkpoints_pa/encoder_npair_mrg_0.1.pth",
+    # )
+
     # nb_classes = transition.proxies.shape[0]
     # load_state_dict_flexible(transition, "../checkpoints/best_testing.pth")
 
@@ -602,7 +630,7 @@ if __name__ == "__main__":
     )
     policy.load_state_dict(
         torch.load(
-            "/home/sunny/AnySafe_Reachability/scripts/logs/dinowm/epoch_id_16/rotvec_policy_prox.pth"
+            "/home/sunny/AnySafe_Reachability/scripts/logs/dinowm/epoch_id_26/rotvec_policy_prox.pth"
         )
     )
     split_policy = copy.deepcopy(policy)
@@ -631,8 +659,8 @@ if __name__ == "__main__":
         return data
 
     # select a random index
-    data_const_1 = randomly_select_constraint(const_data_loader, 4)  # 3, 103
-    data_const_2 = randomly_select_constraint(const_data_loader, 4)  # 1, 285
+    data_const_1 = randomly_select_constraint(const_data_loader, 0)  # 3, 103
+    data_const_2 = randomly_select_constraint(const_data_loader, 0)  # 1, 285
 
     # data_const_1 = {k: v[20:23].unsqueeze(0).to(device) for k, v in database[2].items()}
     # data_const_2 = {
@@ -830,10 +858,11 @@ if __name__ == "__main__":
                         constraint["semantic_feat"],
                         dim=0,
                     ).item()
+                    # + 0.3
                 )
-                # What is cosine similarity with proxy and constraint?
+                # Debugging: What is cosine similarity with proxy and constraint?
                 F.cosine_similarity(
-                    transition.proxies[0].unsqueeze(0),
+                    transition.proxies[:],
                     constraint["semantic_feat"].unsqueeze(0),
                 )
 
@@ -966,6 +995,7 @@ if __name__ == "__main__":
                         constraint["semantic_feat"],
                         dim=0,
                     ).item()
+                    # + 0.3
                 )
 
                 # Sanity Check: What is cosine similarity with proxy and constraint?
@@ -1022,11 +1052,11 @@ if __name__ == "__main__":
         for _class in range(nb_classes):
             # line_keys.append(f"class_{_class}_logit")
             # line_keys.append(f"class_{_class}_prox")
-            # line_keys.append(f"class_{_class}_value_fn")
+            line_keys.append(f"class_{_class}_value_fn")
+
             1 + 1
 
-        line_keys.append(f"class_{4}_prox")
-        line_keys.append(f"class_{4}_value_fn")
+        # line_keys.append(f"class_{5}_prox")
 
         make_comparison_video(
             output_dict=output,

@@ -43,7 +43,7 @@ class Proxy_Anchor(torch.nn.Module):
         self.mrg = mrg
         self.alpha = alpha
 
-    def forward(self, X, T, args, U=None):
+    def forward(self, X, T):
         """
         Forward pass for Proxy Anchor loss calculation.
         Args:
@@ -54,10 +54,6 @@ class Proxy_Anchor(torch.nn.Module):
         Returns:
             torch.Tensor: Computed Proxy Anchor loss.
         """
-        use_unlabeled_data = U is not None
-        assert use_unlabeled_data is False, (
-            "Unlabeled data is not supported in this implementation."
-        )
         P = self.proxies  # [N, Z]
         if X.ndim != 2:  # [(B, T) Z]
             X = einops.rearrange(
@@ -65,80 +61,35 @@ class Proxy_Anchor(torch.nn.Module):
             )  # Ensure X is in the correct shape
         if T.ndim != 1:  # [(B, T)]
             T = einops.rearrange(T, "B T -> (B T)")  # Ensure T is in the correct shape
-        if use_unlabeled_data and U.ndim != 2:  # [(B, T) Z]
-            U = einops.rearrange(
-                U, "B T Z -> (B T) Z"
-            )  # Ensure U is in the correct shape
-
-        num_labeled = X.shape[0]  # Number of labeled samples
-        num_unlabeled = U.shape[0] if use_unlabeled_data else 0
-        num_combined = num_labeled + num_unlabeled
 
         cos_labeled = F.linear(  # Calculate cosine similarity [B, N]
             l2_norm(X), l2_norm(P)
         )
-        cos_unlabeled = (
-            F.linear(  # Calculate cosine similarity [B, N]
-                l2_norm(U), l2_norm(P)
-            )
-            if use_unlabeled_data
-            else None
-        )
-        soft_labels = (
-            F.softmax(cos_unlabeled / args.temp, dim=1) if use_unlabeled_data else None
-        )  # [B, N]
 
         P_one_hot = binarize(T=T, nb_classes=self.nb_classes)  # [B, N]
         N_one_hot = 1 - P_one_hot
 
-        cos_combined = (  # [B*, N]
-            torch.cat([cos_labeled, cos_unlabeled], dim=0)
-            if use_unlabeled_data
-            else cos_labeled
-        )  # [B*, N]
-        pos_exp = torch.exp(-self.alpha * (cos_combined - self.mrg))
-        neg_exp = torch.exp(self.alpha * (cos_combined + self.mrg))
+        pos_exp = torch.exp(-self.alpha * (cos_labeled - self.mrg))
+        neg_exp = torch.exp(self.alpha * (cos_labeled + self.mrg))
 
-        P_combined = (  # [B*, N]
-            torch.cat(
-                [
-                    P_one_hot,
-                    args.beta * num_labeled / num_combined * soft_labels,
-                ],
-                dim=0,
-            )
-            if use_unlabeled_data
-            else P_one_hot
-        )
-        N_combined = (
-            torch.cat(
-                [
-                    N_one_hot,
-                    args.beta * num_labeled / num_combined * (1 - soft_labels),
-                ],
-                dim=0,
-            )
-            if use_unlabeled_data
-            else N_one_hot
-        )
-        pos_exp_weighted = pos_exp * P_combined
-        neg_exp_weighted = neg_exp * N_combined
+        pos_exp_weighted = pos_exp * P_one_hot
+        neg_exp_weighted = neg_exp * N_one_hot
 
-        # with_pos_proxies = torch.nonzero(P_one_hot.sum(dim=0) != 0).squeeze(
-        #     dim=1
-        # )  # The set of positive proxies of data in the batch
+        with_pos_proxies = torch.nonzero(P_one_hot.sum(dim=0) != 0).squeeze(
+            dim=1
+        )  # The set of positive proxies of data in the batch
 
-        # num_valid_proxies = len(with_pos_proxies)  # The number of positive proxies
+        num_valid_proxies = len(with_pos_proxies)  # The number of positive proxies
 
         P_sim_sum = pos_exp_weighted.sum(dim=0)
         N_sim_sum = neg_exp_weighted.sum(dim=0)
 
-        # pos_term = (
-        #     torch.log(1 + P_sim_sum).sum() / num_valid_proxies
-        #     if num_valid_proxies > 0
-        #     else 0
-        # )
-        pos_term = torch.log(1 + P_sim_sum).sum() / self.nb_classes
+        pos_term = (
+            torch.log(1 + P_sim_sum).sum() / num_valid_proxies
+            if num_valid_proxies > 0
+            else 0
+        )
+        # pos_term = torch.log(1 + P_sim_sum).sum() / self.nb_classes
         neg_term = torch.log(1 + N_sim_sum).sum() / self.nb_classes
         neg_term *= 1.0
         loss = pos_term + neg_term
@@ -184,9 +135,9 @@ class MultiSimilarityLoss(torch.nn.Module):
             self.scale_pos, self.scale_neg, self.thresh
         )
 
-    def forward(self, embeddings, labels):
-        hard_pairs = self.miner(embeddings, labels)
-        loss = self.loss_func(embeddings, labels, hard_pairs)
+    def forward(self, X, T):
+        hard_pairs = self.miner(X, T)
+        loss = self.loss_func(X, T, hard_pairs)
         return loss
 
 
@@ -196,8 +147,8 @@ class ContrastiveLoss(nn.Module):
         self.margin = margin
         self.loss_func = losses.ContrastiveLoss(neg_margin=self.margin)
 
-    def forward(self, embeddings, labels):
-        loss = self.loss_func(embeddings, labels)
+    def forward(self, X, T):
+        loss = self.loss_func(X, T)
         return loss
 
 
@@ -208,9 +159,9 @@ class TripletLoss(nn.Module):
         self.miner = miners.TripletMarginMiner(margin, type_of_triplets="semihard")
         self.loss_func = losses.TripletMarginLoss(margin=self.margin)
 
-    def forward(self, embeddings, labels):
-        hard_pairs = self.miner(embeddings, labels)
-        loss = self.loss_func(embeddings, labels, hard_pairs)
+    def forward(self, X, T):
+        hard_pairs = self.miner(X, T)
+        loss = self.loss_func(X, T, hard_pairs)
         return loss
 
 
@@ -219,9 +170,30 @@ class NPairLoss(nn.Module):
         super(NPairLoss, self).__init__()
         self.l2_reg = l2_reg
         self.loss_func = losses.NPairsLoss(
-            l2_reg_weight=self.l2_reg, normalize_embeddings=False
+            # l2_reg_weight=self.l2_reg,
+            # normalize_embeddings=False
         )
 
-    def forward(self, embeddings, labels):
-        loss = self.loss_func(embeddings, labels)
+    def forward(self, X, T):
+        loss = self.loss_func(X, T)
+        return loss
+
+
+class PrivilegedTeacherForcingLoss(nn.Module):
+    def __init__(self, mapping_fn):
+        torch.nn.Module.__init__(self)
+        self.mapping_fn = mapping_fn
+
+    def forward(self, X, T):
+        # X: [B* T, Z]
+        # T: [B* T]
+        # mapping_fn: maps distance to cosine similarity
+        sem_norm = F.normalize(X, p=2, dim=1)  # [B* T, Z]
+        cos_sim = sem_norm @ sem_norm.T  # [B* T, B* T]
+
+        diff = T.unsqueeze(0) - T.unsqueeze(1)  # [B, B, 2]
+        dists = torch.norm(diff, dim=2)
+        labels = self.mapping_fn(dists)  # [B, B]
+
+        loss = F.mse_loss(cos_sim, labels)
         return loss

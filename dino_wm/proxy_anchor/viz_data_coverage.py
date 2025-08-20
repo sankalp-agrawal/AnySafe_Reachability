@@ -4,12 +4,12 @@ import sys
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from torch.utils.data import DataLoader
+from torchvision import transforms
 
 # Import custom modules
 from dino_wm.dino_models import VideoTransformer, normalize_acs
 from dino_wm.test_loader import SplitTrajectoryDataset
-from torch.utils.data import DataLoader
-from torchvision import transforms
 
 print(sys.path)
 dino = torch.hub.load("facebookresearch/dinov2", "dinov2_vits14_reg")
@@ -144,8 +144,6 @@ def get_avg_positions(mask):
     return torch.stack([avg_x, avg_y], dim=1)
 
 
-import einops
-
 use_amp = True
 scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
 
@@ -169,25 +167,24 @@ transition = VideoTransformer(
     mlp_dim=2048,
     num_frames=BL - 1,
     dropout=0.1,
+    nb_classes=3,
 ).to(device)
 # load_state_dict_flexible(transition, "../checkpoints_pa/encoder_0.1.pth")
 # load_state_dict_flexible(transition, "../checkpoints/best_testing.pth")
 
-transition.load_state_dict(
-    torch.load("../checkpoints/best_classifier.pth"), strict=False
-)
+transition.load_state_dict(torch.load("../checkpoints/best_testing.pth"), strict=False)
 transition.eval()
 
-hdf5_file = "/home/sunny/data/sweeper/train/optimal/consolidated.h5"
+hdf5_file = "/home/sunny/data/sweeper/test/consolidated.h5"
 train_data = SplitTrajectoryDataset(
     hdf5_file,
-    BL,
+    32,
     split="train",
     num_test=0,
     provide_labels=False,
     only_pass_labeled_examples=False,
 )
-train_loader = DataLoader(train_data, batch_size=BS, shuffle=True, num_workers=4)
+train_loader = DataLoader(train_data, batch_size=1, shuffle=True, num_workers=4)
 
 coverage_total = torch.zeros((224, 224), dtype=torch.float32, device="cuda")  # if GPU
 
@@ -195,17 +192,18 @@ tot = len(train_data) // BS
 for i, data in enumerate(train_loader):
     # [B, T, H, W, C] -> take last frame
     images = data["agentview_image"]  # [data['failure'][:, -1] == 1.0]
-    images = images[:, -1].to("cuda")  # keep on GPU
+    images = images.to("cuda")  # keep on GPU
+
+    import ipdb
+
+    ipdb.set_trace()
 
     # images: torch.Tensor of shape (B, H, W, 3), values in [0,1]
     # masks: (B, H, W)
-    print("images shape:", images.shape)
     masks = isolate_red_chocolates(images / 255.0)  # Normalize to [0, 1]
-    print("Mask shape:", masks.shape)
-    masks_image = einops.repeat(masks, "b h w -> b h w 3")
 
     # Convert bool to float and sum over batch
-    coverage_total += masks.float().sum(dim=0)
+    coverage_total += masks[:, -1].float().sum(dim=0)
     print(f"Processed {i + 1}/{tot} batches", end="\r")
 
     center = get_avg_positions(masks)
