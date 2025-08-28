@@ -4,12 +4,15 @@ from typing import Optional
 
 import einops
 import gymnasium as gym
+import matplotlib
 import numpy as np
 import torch
 from generate_data_traj_cont import get_frame
 from gymnasium import spaces
 from matplotlib import pyplot as plt
 from matplotlib.patches import Circle
+
+matplotlib.use("Agg")
 from skimage import measure
 
 from PyHJ.reach_rl_gym_envs.dubins import Dubins_Env
@@ -243,8 +246,8 @@ class Dubins_WM_Env(gym.Env):
             k = int(np.sqrt(N))
             assert k * k == N, "N must be a perfect square"
 
-            # Generate 1D coordinates (inclusive of edges)
-            coords = np.linspace(0, 1, k)
+            # Generate 1D coordinates (exclusive of edges)
+            coords = np.linspace(-1 + 2 / (k + 2), 1 - 2 / (k + 2), k)
 
             # Create 2D grid
             X, Y = np.meshgrid(coords, coords)
@@ -443,10 +446,20 @@ class Dubins_WM_Env(gym.Env):
                     np.random.uniform(low=0.0, high=2 * np.pi),  # theta
                 ]
             )
-            # gt_constraint = np.append(
-            #     constraint_state,
-            #     np.array([np.random.uniform(low=0.1, high=0.5), 1.0]),
-            # )
+            gt_constraint = np.append(
+                constraint_state[:2],
+                np.array([0.5, 1.0]),  # Default radius and active status,
+            )
+
+        elif env_dist_type == "uni_small":
+            # Eval and test set are the same here
+            constraint_state = np.array(
+                [
+                    np.random.uniform(low=-0.5, high=0.5),
+                    np.random.uniform(low=-0.5, high=0.5),
+                    np.random.uniform(low=0.0, high=2 * np.pi),  # theta
+                ]
+            )
             gt_constraint = np.append(
                 constraint_state[:2],
                 np.array([0.5, 1.0]),  # Default radius and active status,
@@ -524,12 +537,9 @@ class Dubins_WM_Env(gym.Env):
                     np.array([0.5, 0.5, 0.5, 1.0]),
                 ]
                 self.gt_constraint = centers[i].reshape(self.num_constraints, -1)
-                img = (
-                    get_frame(
-                        states=torch.tensor([*self.gt_constraint[0][:2], 0.0]),
-                        config=self.config,
-                    )
-                    * 0.0
+                img = get_frame(
+                    states=torch.tensor([*self.gt_constraint[0][:2], 0.0]),
+                    config=self.config,
                 )
                 self.constraint_img = img
             else:
@@ -600,6 +610,7 @@ class Dubins_WM_Env(gym.Env):
                     "is_first": firsts[i * bs : (i + 1) * bs],
                     "is_terminal": lasts[i * bs : (i + 1) * bs],
                 }
+
             data = wm.preprocess(data)
             embeds = wm.encoder(data)
             if i == 0:
@@ -841,7 +852,7 @@ class Dubins_WM_Env(gym.Env):
 
             for axes in [axes1, axes2, axes3]:
                 for j in range(3):
-                    label = rf"$\theta$={thetas[i]:.2f}, F1={metrics['F1']:.2f}, "
+                    label = rf"$\theta$={thetas[i]:.2f}, F1={metrics['F1']:.2f}, FPR={metrics['FPR']:.2f}"
                     if j == 1:
                         label = rf"Topo Map, $\theta$={thetas[i]:.2f}, AUC={metrics['AUC']:.2f}"
                     elif j == 2:
@@ -894,6 +905,67 @@ class Dubins_WM_Env(gym.Env):
             averaged_metrics,
         )
 
+    def get_eval_metrics(self, cache, thetas, policy, config, in_distribution=True):
+        nx, ny, nt = config.nx, config.ny, config.nt
+
+        # constraint = np.array([0.0, 0.0, 0.5, 1.0]).reshape(1, -1)
+        constraint = self.select_constraints(in_distribution=in_distribution)
+        gt_constraint = self.gt_constraint
+
+        gt_values = self.solver.solve(
+            constraints=gt_constraint,
+            constraints_shape=3,
+        )
+
+        all_metrics = []
+
+        for i in range(len(thetas)):
+            theta = thetas[i]
+            idxs, imgs_prev, thetas_prev = cache[theta]
+            with torch.no_grad():
+                feat, lz = self.get_latent(
+                    wm=self.wm,
+                    thetas=thetas_prev,
+                    imgs=imgs_prev,
+                )
+                obs = {
+                    "state": feat,
+                    "constraints": einops.repeat(
+                        self.constraint_sem
+                        if self.pass_semantic_constraint
+                        else self.constraint_feat,
+                        "C -> N C",
+                        N=feat.shape[0],
+                    ),
+                }
+                V = evaluate_V(obs=obs, policy=policy, critic=policy.critic)
+            V = np.minimum(V, lz)
+
+            nt_index = int(
+                np.round((thetas[i] / (2 * np.pi)) * (nt - 1))
+            )  # Convert theta to index in the grid
+
+            V = V.reshape((nx, ny)).T  # Reshape to match the grid
+            metrics = get_metrics(rl_values=V, gt_values=gt_values[:, :, nt_index].T)
+            # trivial solution
+            # metrics = get_metrics(
+            #     rl_values=lz.reshape((nx, ny)).T,
+            #     gt_values=gt_values[:, :, nt_index].T,
+            # )
+            # print(metrics)
+            # exit()
+            all_metrics.append(metrics)
+
+        aggregated = defaultdict(list)
+        for metrics in all_metrics:
+            for key, value in metrics.items():
+                aggregated[key].append(value)
+
+        # Compute averages
+        averaged_metrics = {key: np.mean(values) for key, values in aggregated.items()}
+
+        return averaged_metrics
+
     def nominal_policy(self):
         if self.nominal_policy_type == "turn_right":
             return np.array([-1.0], dtype=np.float32)
@@ -906,6 +978,14 @@ class Dubins_WM_Env(gym.Env):
         )
         obs, __ = self.reset()
         priv_state = self.privileged_state.squeeze()
+        while (
+            priv_state[0] < -1.0
+            or priv_state[0] > 1.0
+            or priv_state[1] < -1.0
+            or priv_state[1] > 1.0
+        ):
+            obs, __ = self.reset()
+            priv_state = self.privileged_state.squeeze()
         gt_state = torch.tensor(
             [priv_state[0], priv_state[1], np.sin(priv_state[2]), np.cos(priv_state[2])]
         )
@@ -914,16 +994,19 @@ class Dubins_WM_Env(gym.Env):
         gt_env.constraints = self.gt_constraint.copy()
         done_gt = False
         imgs_traj = []
+        # imgs_imagined = []
         t = 0
 
         while not done_gt:  # Rollout trajectory with safety filtering
             theta = np.arctan2(obs_gt["state"][2], obs_gt["state"][3])
             state = torch.tensor([obs_gt["state"][0], obs_gt["state"][1], theta])
-            frame = get_frame(states=state, config=self.config)
+            # frame = get_frame(states=state, config=self.config)
+            # imgs_imagined.append(frame)
             with torch.no_grad():
-                V, _ = self.safety_margin(
-                    torch.tensor(obs["state"], device=self.device).unsqueeze(0)
-                )
+                # V, _ = self.safety_margin(
+                #     torch.tensor(obs["state"], device=self.device).unsqueeze(0)
+                # )
+                V = evaluate_V(obs=obs, policy=policy, critic=policy.critic)
                 V = V.squeeze()
             if V < self.config.safety_filter_eps:
                 unsafe = True
@@ -947,5 +1030,20 @@ class Dubins_WM_Env(gym.Env):
             imgs_traj.append(img)
 
         imgs = np.array(imgs_traj)
+
+        # imgs_imagined = np.array(imgs_imagined)
+
+        # imgs_imagined = (
+        #     F.interpolate(
+        #         einops.rearrange(torch.tensor(imgs_imagined), "T H W C -> T C H W"),
+        #         size=(imgs.shape[1], imgs.shape[2]),
+        #         mode="bilinear",
+        #         align_corners=False,
+        #     )
+        #     .cpu()
+        #     .numpy()
+        # )
         imgs = einops.rearrange(imgs, "T H W C -> T C H W")
+        # imgs = np.concatenate([imgs, imgs_imagined], axis=3)
+        gt_env.close()
         return imgs

@@ -5,6 +5,13 @@ import torch
 from scipy.stats import entropy, wasserstein_distance
 
 
+def custom_formatwarning(msg, category, filename, lineno, line=None):
+    return f"\033[93m{category.__name__}: {msg}\033[0m\n"  # yellow text
+
+
+warnings.formatwarning = custom_formatwarning
+
+
 def load_state_dict_flexible(model, checkpoint_path):
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
 

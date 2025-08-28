@@ -158,7 +158,7 @@ def make_comparison_video(
     # Tanh activation on selected outputs
     for key in ["ground_truth", "imagination"]:
         for subkey in (
-            ["pred_fail", "const1_cos_sim", "const2_cos_sim"]
+            ["pred_fail"]  # , "const1_cos_sim", "const2_cos_sim"]
             + [f"class_{_class}_prox" for _class in range(nb_classes)]
             + [f"class_{_class}_logit" for _class in range(nb_classes)]
         ):
@@ -535,7 +535,7 @@ if __name__ == "__main__":
                 break
 
     constraint_data = SplitTrajectoryDataset(
-        "/home/sunny/data/sweeper/train/consolidated.h5",
+        "/home/sunny/data/sweeper/proxy_anchor/consolidated.h5",
         3,
         split="train",
         num_test=0,
@@ -563,7 +563,7 @@ if __name__ == "__main__":
     # )
     load_state_dict_flexible(
         transition,
-        "/home/sunny/AnySafe_Reachability/dino_wm/checkpoints_pa/encoder_mrg_0.1_alpha_32_bound_2x3.pth",
+        "/home/sunny/AnySafe_Reachability/dino_wm/checkpoints_pa/encoder_priv.pth",
     )
     # load_state_dict_flexible(
     #     transition,
@@ -630,7 +630,7 @@ if __name__ == "__main__":
     )
     policy.load_state_dict(
         torch.load(
-            "/home/sunny/AnySafe_Reachability/scripts/logs/dinowm/epoch_id_26/rotvec_policy_prox.pth"
+            "/home/sunny/AnySafe_Reachability/scripts/logs/dinowm/epoch_id_16/rotvec_policy_priv.pth"
         )
     )
     split_policy = copy.deepcopy(policy)
@@ -659,8 +659,8 @@ if __name__ == "__main__":
         return data
 
     # select a random index
-    data_const_1 = randomly_select_constraint(const_data_loader, 0)  # 3, 103
-    data_const_2 = randomly_select_constraint(const_data_loader, 0)  # 1, 285
+    data_const_1 = randomly_select_constraint(const_data_loader, 1)  # 3, 103
+    data_const_2 = randomly_select_constraint(const_data_loader, 3)  # 1, 285
 
     # data_const_1 = {k: v[20:23].unsqueeze(0).to(device) for k, v in database[2].items()}
     # data_const_2 = {
@@ -684,6 +684,7 @@ if __name__ == "__main__":
                     inp1=data_const["cam_zed_embd"].to(device),
                     state=select_xyyaw_from_state(data_const["state"]).to(device),
                 ).detach()[0, -1],
+                "failure": data_const["failure"][0, -1].to(device),
             }
         )  # random class 0 frame
 
@@ -707,6 +708,8 @@ if __name__ == "__main__":
             ],
             "img_constraint1": constraint1["front"].unsqueeze(0).cpu().numpy(),
             "img_constraint2": constraint2["front"].unsqueeze(0).cpu().numpy(),
+            "const1_gt_label": copy.deepcopy(none_list),
+            "const2_gt_label": copy.deepcopy(none_list),
             "const1_cos_sim": copy.deepcopy(none_list),
             "const2_cos_sim": copy.deepcopy(none_list),
             "const1_value_fn": copy.deepcopy(none_list),
@@ -876,6 +879,15 @@ if __name__ == "__main__":
                     )
                 )
 
+                dist_const = torch.norm(
+                    data["failure"][BL - 1 + t].cpu() - constraint["failure"].cpu(),
+                    dim=-1,
+                ).item()
+
+                dist_const = -2 * (dist_const / 250) + 1
+
+                output["imagination"][f"{const_key}_gt_label"].append(-dist_const)
+
         lengths = [
             len(output["imagination"][key]) for key in output["imagination"].keys()
         ]
@@ -917,7 +929,7 @@ if __name__ == "__main__":
                     )
 
                     # pred_fail: [1, (T-1), 1]
-                    pred_fail = transition.fail_pred(latent)
+                    pred_fail = transition.fail_pred(inp1=inputs1, state=states)
 
                     # pred_labels: [1, (T-1), num_classes]
                     # pred_labels = transition.multi_class_head(latent)
@@ -1013,6 +1025,15 @@ if __name__ == "__main__":
                         device=device,
                     )
                 )
+
+                dist_const = torch.norm(
+                    data["failure"][BL - 1 + t].cpu() - constraint["failure"].cpu(),
+                    dim=-1,
+                ).item()
+
+                dist_const = -2 * (dist_const / 250) + 1
+
+                output["ground_truth"][f"{const_key}_gt_label"].append(-dist_const)
             # output["ground_truth"]["cosine_sim_prox"].append(cos_sim_fail * scale)
             # output["ground_truth"]["value_fn"].append(
             #     policy.critic(
@@ -1041,18 +1062,20 @@ if __name__ == "__main__":
         line_keys = [
             # "pred_fail",
             # "cosine_sim_prox",
-            # "const1_cos_sim",
+            "const1_cos_sim",
             # "const2_cos_sim",
+            "const1_gt_label",
+            # "const2_gt_label",
             # "value_fn_ken",
-            "gt_fail_label",
+            # "gt_fail_label",
             # "split_value_fn",
-            # "const1_value_fn",
+            "const1_value_fn",
             # "const2_value_fn",
         ]
         for _class in range(nb_classes):
             # line_keys.append(f"class_{_class}_logit")
             # line_keys.append(f"class_{_class}_prox")
-            line_keys.append(f"class_{_class}_value_fn")
+            # line_keys.append(f"class_{_class}_value_fn")
 
             1 + 1
 

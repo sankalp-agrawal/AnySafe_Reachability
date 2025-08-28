@@ -3,11 +3,14 @@ from typing import Optional
 
 import einops
 import gymnasium as gym
+import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from gymnasium import spaces
 from matplotlib.patches import Circle
+
+matplotlib.use("Agg")
 
 from PyHJ.reach_rl_gym_envs.utils.dubins_gt_solver import DubinsHJSolver
 from PyHJ.reach_rl_gym_envs.utils.env_eval_utils import get_eval_plot
@@ -299,7 +302,16 @@ class Dubins_Env(gym.Env):
                 [
                     np.random.uniform(low=-0.5, high=0.5),
                     np.random.uniform(low=-0.5, high=0.5),
-                    np.random.uniform(low=0.1, high=0.5),
+                    np.random.uniform(low=0.5, high=0.5),
+                    1.0,
+                ]
+            )
+        elif self.distribution_type == "uni_small":
+            return np.array(
+                [
+                    np.random.uniform(low=-0.5, high=0.5),
+                    np.random.uniform(low=-0.5, high=0.5),
+                    np.random.uniform(low=0.5, high=0.5),
                     1.0,
                 ]
             )

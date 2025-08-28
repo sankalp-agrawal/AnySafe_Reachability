@@ -91,7 +91,7 @@ class WorldModel(nn.Module):
             nn.Linear(512, 512, bias=False),
         )
 
-        self.proxies = nn.Parameter(torch.randn(self.nb_classes, 512).cuda())
+        # self.proxies = nn.Parameter(torch.randn(self.nb_classes, 512).cuda())
         """self.heads["reward"] = networks.MLP(
             feat_size,
             (255,) if config.reward_head["dist"] == "symlog_disc" else (),

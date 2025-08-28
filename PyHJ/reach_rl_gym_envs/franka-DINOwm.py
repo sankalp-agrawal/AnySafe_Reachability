@@ -50,7 +50,7 @@ class Franka_DINOWM_Env(gym.Env):
         self.front_hist = None
         self.state_hist = None
         if self.pass_constraint:
-            self.constraint_type = "prox"  # "prox" - proxies, "database"
+            self.constraint_type = "database"  # "prox" - proxies, "database"
             self.select_constraint()
 
     def _reset_loader(self):
@@ -213,7 +213,8 @@ class Franka_DINOWM_Env(gym.Env):
 
             # Compute cosine similarity
             cos_sim_matrix = queries_norm @ const_norm.T  # [T, 1]
-            outputs = torch.tanh(2 * -cos_sim_matrix[-1])
+            # outputs = torch.tanh(2 * -cos_sim_matrix[-1])
+            outputs = -cos_sim_matrix[-1]
 
             g_xList.append(outputs.detach().cpu().numpy())
 

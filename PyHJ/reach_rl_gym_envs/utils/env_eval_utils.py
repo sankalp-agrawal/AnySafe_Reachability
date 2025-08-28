@@ -20,6 +20,7 @@ def get_metrics(rl_values, gt_values):
     tn = np.sum((rl_values_subzero == 0) & (gt_values_subzero == 0))
     fpr = fp / (fp + tn) if (fp + tn) > 0 else 0
     tpr = tp / (tp + fn) if (tp + fn) > 0 else 0
+    fnr = fn / (fn + tp) if (fn + tp) > 0 else 0
     # Calculate accuracy, precision, recall, and F1 score
     accuracy = (tp + tn) / (tp + fp + fn + tn)
 
@@ -39,6 +40,7 @@ def get_metrics(rl_values, gt_values):
     return {
         "FPR": fpr,
         "TPR": tpr,
+        "FNR": fnr,
         "Accuracy": accuracy,
         "Precision": prec,
         "Recall": rec,

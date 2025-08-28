@@ -68,7 +68,7 @@ def get_frame(states, config):
     # Load the buffer content as an RGB image
     img = Image.open(buf).convert("RGB")
     img_array = np.array(img)
-    plt.close(fig)
+    plt.close()
     return img_array
 
 

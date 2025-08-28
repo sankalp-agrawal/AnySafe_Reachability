@@ -10,7 +10,6 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import umap.umap_ as umap
-import wandb
 from scipy.stats import gaussian_kde
 from sklearn.metrics import (
     accuracy_score,
@@ -23,6 +22,7 @@ from torch.utils.data import DataLoader, Subset
 from tqdm import *
 from utils import compare_kdes, load_state_dict_flexible
 
+import wandb
 from dino_wm.dino_models import VideoTransformer, normalize_acs, select_xyyaw_from_state
 from dino_wm.test_loader import SplitTrajectoryDataset
 from proxy_anchor.code import losses
@@ -193,46 +193,6 @@ wandb.define_metric("*", step_metric="num_updates")
 BS = args.sz_batch  # batch size
 BL = 1
 
-hdf5_file = "/home/sunny/data/sweeper/train/consolidated.h5"
-hdf5_file_test = "/home/sunny/data/sweeper/test/consolidated.h5"
-
-train_data_labeled = SplitTrajectoryDataset(
-    hdf5_file,
-    BL,
-    split="train",
-    num_test=0,
-    provide_labels=True,  # Labeled data
-    num_examples_per_class=args.num_examples_per_class,
-    only_pass_labeled_examples=True,
-)
-
-if args.use_unlabeled_data:
-    train_data_unlabeled = SplitTrajectoryDataset(
-        hdf5_file,
-        BL,
-        split="train",
-        num_test=0,
-        provide_labels=False,  # Unlabeled data
-        num_examples_per_class=int(args.num_examples_per_class * args.unlabeled_ratio)
-        if args.unlabeled_ratio != -1.0
-        else None,
-    )
-test_data = SplitTrajectoryDataset(
-    hdf5_file_test,
-    BL,
-    split="train",
-    num_test=0,
-    provide_labels=True,
-    num_examples_per_class=None,  # Don't limit number of examples per class for evaluation
-)
-
-train_loader_labeled = DataLoader(
-    train_data_labeled, batch_size=BS, shuffle=True, num_workers=args.nb_workers
-)
-test_loader = DataLoader(
-    test_data, batch_size=BS, shuffle=True, num_workers=args.nb_workers
-)
-
 device = "cuda:0"
 
 if args.boundary_type == "2x3":
@@ -308,6 +268,7 @@ class_to_colors = {i: cmap(i / nb_classes) for i in range(nb_classes)}
 
 
 def get_class_from_xy(labels):
+    device = "cuda:0"
     assert labels.shape[-1] == 2, "Labels should have shape (B, 2)"
     x_labels = torch.bucketize(
         labels[..., 0], torch.tensor(x_class_boundaries, device=device)
@@ -383,6 +344,48 @@ print("Training for {} epochs.".format(args.nb_epochs))
 losses_list = []
 best_epoch = 0
 best_eval = -float("inf")
+
+# Datasets
+hdf5_file = "/home/sunny/data/sweeper/train/consolidated.h5"
+hdf5_file_test = "/home/sunny/data/sweeper/test/consolidated.h5"
+
+train_data_labeled = SplitTrajectoryDataset(
+    hdf5_file,
+    BL,
+    split="train",
+    num_test=0,
+    provide_labels=True,  # Labeled data
+    num_examples_per_class=-1,  # args.num_examples_per_class,
+    xy_to_class_label_fn=get_class_from_xy,
+    only_pass_labeled_examples=True,
+)
+
+if args.use_unlabeled_data:
+    train_data_unlabeled = SplitTrajectoryDataset(
+        hdf5_file,
+        BL,
+        split="train",
+        num_test=0,
+        provide_labels=False,  # Unlabeled data
+        num_examples_per_class=int(args.num_examples_per_class * args.unlabeled_ratio)
+        if args.unlabeled_ratio != -1.0
+        else None,
+    )
+test_data = SplitTrajectoryDataset(
+    hdf5_file_test,
+    BL,
+    split="train",
+    num_test=0,
+    provide_labels=True,
+    num_examples_per_class=None,  # Don't limit number of examples per class for evaluation
+)
+
+train_loader_labeled = DataLoader(
+    train_data_labeled, batch_size=BS, shuffle=True, num_workers=args.nb_workers
+)
+test_loader = DataLoader(
+    test_data, batch_size=BS, shuffle=True, num_workers=args.nb_workers
+)
 
 num_updates = 0
 
@@ -1316,8 +1319,8 @@ for epoch in tqdm(range(0, args.nb_epochs), desc="Training Epochs", position=0):
 
         if args.save_model:
             model_name = wandb_name
-            save_name = f"../checkpoints_pa/encoder_{model_name}.pth"
-            best_save_name = f"../checkpoints_pa/best_encoder_{model_name}.pth"
+            save_name = f"../checkpoints_pa/encoder_{model_name}_strat.pth"
+            best_save_name = f"../checkpoints_pa/best_encoder_{model_name}_strat.pth"
 
             torch.save(
                 model.state_dict(),

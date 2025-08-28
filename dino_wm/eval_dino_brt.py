@@ -36,6 +36,13 @@ print(sys.path)
 dino = torch.hub.load("facebookresearch/dinov2", "dinov2_vits14_reg")
 
 
+def mapping_fn(X):
+    # Maps a distance to a cosine similarity
+    # Distance of 1.0 -> cosine sim of -1.0
+    # Distance of 0.0 -> cosine sim of 1.0
+    return -2 * (X / 180) + 1
+
+
 def latent_safe_policy():
     actor_activation = torch.nn.ReLU
     critic_activation = torch.nn.ReLU
@@ -321,9 +328,13 @@ transition = VideoTransformer(
 #     transition,
 #     "checkpoints_pa/encoder_mrg_0.1_alpha_32_bound_1x3.pth",
 # )
+# load_state_dict_flexible(
+#     transition,
+#     "checkpoints_pa/encoder_mrg_0.1_alpha_32_bound_2x3.pth",
+# )
 load_state_dict_flexible(
     transition,
-    "checkpoints_pa/encoder_mrg_0.1_alpha_32_bound_2x3.pth",
+    "/home/sunny/AnySafe_Reachability/dino_wm/checkpoints_pa/encoder_priv.pth",
 )
 transition.eval()
 
@@ -332,9 +343,15 @@ latent_safe_classifiers = {k: copy.deepcopy(transition) for k in range(nb_classe
 for k in range(nb_classes):
     load_state_dict_flexible(
         latent_safe_classifiers[k],
-        f"/home/sunny/AnySafe_Reachability/dino_wm/checkpoints_latent_safe/class_{k}_best_classifier.pth",
+        f"/home/sunny/AnySafe_Reachability/dino_wm/checkpoints_latent_safe/class_{k}_best_classifier_dino.pth",
     )
     latent_safe_classifiers[k].eval()
+
+multi_class_classifier = copy.deepcopy(transition)
+load_state_dict_flexible(
+    multi_class_classifier,
+    "/home/sunny/AnySafe_Reachability/dino_wm/checkpoints/multi_class_classifier_dino.pth",
+)
 
 # Policy Setup
 actor_activation = torch.nn.ReLU
@@ -390,7 +407,7 @@ policy = DDPGPolicy(
 )
 policy.load_state_dict(
     torch.load(
-        "/home/sunny/AnySafe_Reachability/scripts/logs/dinowm/epoch_id_26/rotvec_policy_prox.pth"
+        "/home/sunny/AnySafe_Reachability/scripts/logs/dinowm/epoch_id_16/rotvec_policy_priv.pth"
     )
 )
 
@@ -404,7 +421,7 @@ for k in range(nb_classes):
     latent_safe_policies[k].eval()
 
 hdf5_file = "/home/sunny/data/sweeper/test/consolidated.h5"
-hdf5_file_const = "/home/sunny/data/sweeper/train/consolidated.h5"
+hdf5_file_const = "/home/sunny/data/sweeper/proxy_anchor/consolidated.h5"
 train_data = SplitTrajectoryDataset(
     hdf5_file,
     BL,
@@ -419,13 +436,24 @@ constraint_data = SplitTrajectoryDataset(
 train_loader = DataLoader(train_data, batch_size=BS, shuffle=True, num_workers=4)
 const_loader = iter(DataLoader(constraint_data, batch_size=1, shuffle=True))
 
+const_data = constraint_data[3337]
+constraint = transition.semantic_embed(
+    inp1=const_data["cam_zed_embd"].to(device).unsqueeze(0),
+    state=select_xyyaw_from_state(const_data["state"]).to(device).unsqueeze(0),
+).detach()[0, -1]
+
+import ipdb
+
+ipdb.set_trace()
+
 coverage_total = torch.zeros((224, 224), dtype=torch.float32, device="cuda")  # if GPU
 
 _class = 0
 label_y = _class % (len(y_class_boundaries) - 1)
 label_x = _class // (len(y_class_boundaries) - 1)
 
-fig, axes = plt.subplots(5, nb_classes, figsize=(6 * nb_classes, 30))
+num_rows = 3
+fig, axes = plt.subplots(num_rows, nb_classes, figsize=(6 * nb_classes, 6 * num_rows))
 for ax in axes.flat:
     ax.set_xlim(0, 224)
     ax.set_ylim(0, 224)
@@ -445,22 +473,24 @@ for i in range(nb_classes):
             facecolor="none",
             zorder=999,  # Ensure rectangle is on top
         )
-        ax.add_patch(rect)
+        # ax.add_patch(rect)
 
     axes[0, i].set_title(rf"Ground Truth $l(z,p_{i})$", fontsize=20)
     axes[1, i].set_title(rf"Safety Margin Function $l(z,p_{i})$", fontsize=20)
     axes[2, i].set_title(rf"Value Function $V(z,p_{i})$", fontsize=20)
-    axes[3, i].set_title(r"Latent Safe Classifier $l(z)$", fontsize=20)
-    axes[4, i].set_title(r"Latent Safe Value Fn $V(z)$", fontsize=20)
+    # axes[3, i].set_title(r"Latent Safe Classifier $l(z)$", fontsize=20)
+    # axes[4, i].set_title(r"Latent Safe Value Fn $V(z)$", fontsize=20)
+    # axes[5, i].set_title(r"Multi-Class Classifier $l(z)[i]$", fontsize=20)
 
 # Generate constraint set
 constraints = []
+constraints_gt = []
 next(const_loader)
 
 for i in range(nb_classes):
     failure_class = -1
-    # while failure_class == -1:
-    while failure_class != 5:
+    while failure_class == -1:
+        # while failure_class != 5:
         data_const = next(const_loader)
         failure_class = (
             get_class_from_xy(data_const["failure"][:, -1, :2].to(device))
@@ -470,19 +500,22 @@ for i in range(nb_classes):
 
         constraint = transition.semantic_embed(
             inp1=data_const["cam_zed_embd"].to(device),
-            state=select_xyyaw_from_state(data_const["state"]).to(device) * 0.0,
+            state=select_xyyaw_from_state(data_const["state"]).to(device),
         ).detach()[0, -1]
 
+        constraint_gt = data_const["failure"][:, -1, :2].to(device).squeeze()
+
     constraints.append(constraint)
-    # for j in range(2):
-    #     axes[j, i].scatter(
-    #         data_const["failure"][:, -1, 0].cpu().numpy(),
-    #         data_const["failure"][:, -1, 1].cpu().numpy(),
-    #         marker="x",
-    #         color="red",
-    #         label=f"Constraint {i}",
-    #         zorder=999,
-    #     )
+    constraints_gt.append(constraint_gt)
+    for j in range(3):
+        axes[j, i].scatter(
+            data_const["failure"][:, -1, 0].cpu().numpy(),
+            data_const["failure"][:, -1, 1].cpu().numpy(),
+            marker="x",
+            color="red",
+            label=f"Constraint {i}",
+            zorder=999,
+        )
 
 tot = len(train_data) // BS
 max_batches = 200
@@ -504,8 +537,9 @@ for i, data in tqdm(enumerate(train_loader), total=tot):
     )
     # V: [B] value of last frame
     for _class in range(nb_classes):
-        constraint = transition.proxies[_class].detach()
-        # constraint = constraints[_class].to(device)
+        # constraint = transition.proxies[_class].detach()
+        constraint = constraints[_class].to(device)
+        constraint_gt = constraints_gt[_class].to(device)
 
         # AnySafe
         V = evaluate_V(
@@ -519,9 +553,8 @@ for i, data in tqdm(enumerate(train_loader), total=tot):
             inp1=data["cam_zed_embd"].to(device),
             state=select_xyyaw_from_state(data["state"]).to(device),
         ).detach()
-        lz = -np.tanh(
-            2
-            * (
+        lz = -(
+            (
                 F.cosine_similarity(
                     semantic_features[:, -1],
                     einops.repeat(
@@ -543,10 +576,38 @@ for i, data in tqdm(enumerate(train_loader), total=tot):
             action=data["action"][:, -1],
             device=device,
         )
+        # lz_ls = np.tanh(
+        #     2
+        #     * (latent_safe_classifiers[_class].fail_pred(latent).detach().cpu().numpy())
+        # )[:, -1, 0]
+
         lz_ls = np.tanh(
             2
-            * (latent_safe_classifiers[_class].fail_pred(latent).detach().cpu().numpy())
+            * (
+                latent_safe_classifiers[_class]
+                .fail_pred(
+                    inp1=data["cam_zed_embd"].to(device),
+                    state=select_xyyaw_from_state(data["state"]).to(device),
+                )
+                .detach()
+                .cpu()
+                .numpy()
+            )
         )[:, -1, 0]
+
+        # Multi-Class Classifier
+        # lz_mc = np.tanh(
+        #     2
+        #     * (
+        #         multi_class_classifier.multi_class_pred(
+        #             inp1=data["cam_zed_embd"].to(device),
+        #             state=select_xyyaw_from_state(data["state"]).to(device),
+        #         )
+        #         .detach()
+        #         .cpu()
+        #         .numpy()
+        #     )
+        # )[:, -1, _class]
 
         center = data["failure"][:, -1]
 
@@ -570,37 +631,33 @@ for i, data in tqdm(enumerate(train_loader), total=tot):
             vmax=1,
         )
 
-        sc_lz_ls = axes[3, _class].scatter(
-            center[mask][:, 0].cpu().numpy(),
-            center[mask][:, 1].cpu().numpy(),
-            c=lz_ls[mask],
-            cmap="seismic",
-            s=50,
-            vmin=-1,
-            vmax=1,
-        )
+        # sc_lz_ls = axes[3, _class].scatter(
+        #     center[mask][:, 0].cpu().numpy(),
+        #     center[mask][:, 1].cpu().numpy(),
+        #     c=lz_ls[mask],
+        #     cmap="seismic",
+        #     s=50,
+        #     vmin=-1,
+        #     vmax=1,
+        # )
 
-        sc_v_ls = axes[4, _class].scatter(
-            center[mask][:, 0].cpu().numpy(),
-            center[mask][:, 1].cpu().numpy(),
-            c=V_ls[mask],
-            cmap="seismic",
-            s=50,
-            vmin=-1,
-            vmax=1,
-        )
+        # sc_v_ls = axes[4, _class].scatter(
+        #     center[mask][:, 0].cpu().numpy(),
+        #     center[mask][:, 1].cpu().numpy(),
+        #     c=V_ls[mask],
+        #     cmap="seismic",
+        #     s=50,
+        #     vmin=-1,
+        #     vmax=1,
+        # )
 
         # Ground Truth
         sc_gt = axes[0, _class].scatter(
             center[mask][:, 0].cpu().numpy(),
             center[mask][:, 1].cpu().numpy(),
-            c=-2
-            * (get_class_from_xy(center[mask]) == _class)
-            .squeeze()
-            .cpu()
-            .numpy()
-            .astype(float)
-            + 1,
+            c=-mapping_fn(
+                torch.norm(center[mask] - constraint_gt.cpu(), dim=1).cpu().numpy()
+            ),
             cmap="seismic",
             s=50,
             vmin=-1,
@@ -611,7 +668,7 @@ for i, data in tqdm(enumerate(train_loader), total=tot):
 # Add colorbar for the first row (Safety Margin Function)
 for i, (sc, label) in enumerate(
     zip(
-        [sc_gt, sc_lz, sc_v, sc_lz_ls, sc_v_ls],
+        [sc_gt, sc_lz, sc_v],  # , sc_lz_ls, sc_v_ls],
         [
             "Safety Margin",
             "Safety Margin",
@@ -630,28 +687,28 @@ for i, (sc, label) in enumerate(
     )
     cbar.set_label(label)
 
-# Add horizontal line between rows
-pos0 = axes[3, 0].get_position()  # bottom-left of row 3 (0-based indexing)
-pos1 = axes[2, 0].get_position()  # bottom-left of row 2
+# # Add horizontal line between rows
+# pos0 = axes[3, 0].get_position()  # bottom-left of row 3 (0-based indexing)
+# pos1 = axes[2, 0].get_position()  # bottom-left of row 2
 
-# y coordinate between row 2 and 3
-y_between = (pos0.y1 + pos1.y0) / 2
+# # y coordinate between row 2 and 3
+# y_between = (pos0.y1 + pos1.y0) / 2
 
-# x range from leftmost to rightmost subplot
-x_left = axes[0, 0].get_position().x0
-x_right = axes[0, -1].get_position().x1
+# # x range from leftmost to rightmost subplot
+# x_left = axes[0, 0].get_position().x0
+# x_right = axes[0, -1].get_position().x1
 
-# Draw line only across the grid
-fig.add_artist(
-    plt.Line2D(
-        [x_left, x_right],
-        [y_between, y_between],
-        transform=fig.transFigure,
-        color="black",
-        linestyle="--",
-        linewidth=2,
-    )
-)
+# # Draw line only across the grid
+# fig.add_artist(
+#     plt.Line2D(
+#         [x_left, x_right],
+#         [y_between, y_between],
+#         transform=fig.transFigure,
+#         color="black",
+#         linestyle="--",
+#         linewidth=2,
+#     )
+# )
 
 
 # Save the figure

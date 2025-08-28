@@ -10,12 +10,12 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import umap.umap_ as umap
-import wandb
 from scipy.stats import gaussian_kde
 from torch.utils.data import DataLoader, Subset
 from tqdm import *
 from utils import compare_kdes, load_state_dict_flexible
 
+import wandb
 from dino_wm.dino_models import VideoTransformer, normalize_acs, select_xyyaw_from_state
 from dino_wm.test_loader import SplitTrajectoryDataset
 from proxy_anchor.code import losses
@@ -284,15 +284,16 @@ elif args.loss == "priv":
         # Maps a distance to a cosine similarity
         # Distance of 1.0 -> cosine sim of -1.0
         # Distance of 0.0 -> cosine sim of 1.0
-        return -2 * (X / 250) + 1
+        return -2 * (X / 180) + 1
 
     criterion = losses.PrivilegedTeacherForcingLoss(mapping_fn=mapping_fn)
 
+
 # Wandb Initialization
 wandb_name_kwargs = params
-wandb_name = f"{args.loss}_" + "".join(
-    f"{key}_{value}_" for key, value in wandb_name_kwargs.items() if value is not None
-).rstrip("_")
+wandb_name = f"{args.loss}" + "".join(
+    f"_{key}_{value}" for key, value in wandb_name_kwargs.items() if value is not None
+)
 wandb.init(name=wandb_name, project="ProxyAnchor")
 wandb.config.update(args)
 

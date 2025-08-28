@@ -1,10 +1,15 @@
 import argparse
+import copy
 import os
 import pickle
 import sys
+from collections import defaultdict
 
 import gymnasium  # as gym
+import matplotlib
 import matplotlib.pyplot as plt
+
+matplotlib.use("Agg")
 import numpy as np
 import torch
 from torch.utils.tensorboard import SummaryWriter
@@ -27,12 +32,14 @@ from datetime import datetime
 import models
 import ruamel.yaml as yaml
 import tools
-import wandb
 
 # note: need to include the dreamerv3 repo for this
 from dreamer import make_dataset
 from generate_data_traj_cont import get_frame
 from PIL import Image
+from termcolor import cprint
+
+import wandb
 from PyHJ.data import Collector, VectorReplayBuffer
 from PyHJ.env import DummyVectorEnv
 from PyHJ.exploration import GaussianNoise
@@ -40,7 +47,6 @@ from PyHJ.trainer import offpolicy_trainer
 from PyHJ.utils import TensorboardLogger, WandbLogger
 from PyHJ.utils.net.common import Net
 from PyHJ.utils.net.continuous import Actor, Critic
-from termcolor import cprint
 
 # NOTE: all the reach-avoid gym environments are in reach_rl_gym, the constraint information is output as an element of the info dictionary in gym.step() function
 """
@@ -100,7 +106,7 @@ def get_args():
         parser.add_argument(f"--{key}", type=arg_type, default=arg_type(value))
     final_config = parser.parse_args(remaining)
 
-    final_config.logdir = f"{final_config.logdir + '/PyHJ'}/{config.expt_name}"
+    final_config.logdir = f"{final_config.logdir}"
     # final_config.time_limit = HORIZONS[final_config.task.split("_")[-1]]
 
     print("---------------------")
@@ -122,7 +128,7 @@ config.num_actions = (
 )
 wm = models.WorldModel(env.observation_space_full, env.action_space, 0, config)
 
-config = tools.set_wm_name(config)
+# config = tools.set_wm_name(config)
 
 # ckpt_path = config.rssm_ckpt_path
 # ckpt_path = "logs/dreamer_dubins/dubins_mlp_obs_state_cnn_image_lz_None_sc_F_arrow_0.15/rssm_ckpt.pt"
@@ -259,21 +265,7 @@ policy = DDPGPolicy(
 )
 
 log_path = os.path.join(
-    args.logdir + "/PyHJ",
-    args.task,
-    "wm_actor_activation_{}_critic_activation_{}_game_gd_steps_{}_tau_{}_training_num_{}_buffer_size_{}_c_net_{}_{}_a1_{}_{}_gamma_{}".format(
-        args.actor_activation,
-        args.critic_activation,
-        args.actor_gradient_steps,
-        args.tau,
-        args.training_num,
-        args.buffer_size,
-        args.critic_net[0],
-        len(args.critic_net),
-        args.control_net[0],
-        len(args.control_net),
-        args.gamma_pyhj,
-    ),
+    args.logdir + "/PyHJ", args.task, f"wm_dist_type_{args.env_dist_type}"
 )
 
 
@@ -293,18 +285,18 @@ if args.warm_start_path is not None:
 epoch = 0
 # writer = SummaryWriter(log_path, filename_suffix="_"+timestr+"epoch_id_{}".format(epoch))
 # logger = TensorboardLogger(writer)
-log_path = (
-    log_path
-    + "/noise_{}_actor_lr_{}_critic_lr_{}_batch_{}_step_per_epoch_{}_kwargs_{}_seed_{}".format(
-        args.exploration_noise,
-        args.actor_lr,
-        args.critic_lr,
-        args.batch_size_pyhj,
-        args.step_per_epoch,
-        args.kwargs,
-        args.seed,
-    )
-)
+# log_path = (
+#     log_path
+#     + "/noise_{}_actor_lr_{}_critic_lr_{}_batch_{}_step_per_epoch_{}_kwargs_{}_seed_{}".format(
+#         args.exploration_noise,
+#         args.actor_lr,
+#         args.critic_lr,
+#         args.batch_size_pyhj,
+#         args.step_per_epoch,
+#         args.kwargs,
+#         args.seed,
+#     )
+# )
 
 
 if args.continue_training_epoch is not None:
@@ -358,6 +350,8 @@ def make_cache(config, thetas):
         else:
             print("Cache file exists and has correct dimensions, using it.")
             return cache
+    else:
+        print(f"Didn't find cache at {cache_file}, creating it.")
 
     cache = {}
     for theta in thetas:
@@ -404,7 +398,7 @@ if args.debug:
     args.step_per_epoch = 10
 cache = make_cache(config, thetas)
 logger = None
-warmup = 1
+warmup = args.warmup
 # plot1, plot2, plot3, metrics = env.get_eval_plot(
 #     cache=cache, thetas=thetas, config=config, policy=policy
 # )
@@ -452,6 +446,8 @@ for iter in range(warmup + args.total_episodes):
             f"dist_type_{config.env_dist_type}",
             f"sim_{config.safety_margin_type}_{config.safety_margin_threshold}{'*' if config.safety_margin_hard_threshold else ''}",
             "proto" if config.pass_prototype else None,
+            f"critic_{config.critic_net}",
+            f"control_{config.control_net}",
             # f"{config.wm_name}",
         ]
         wandb_name = ""
@@ -461,6 +457,9 @@ for iter in range(warmup + args.total_episodes):
         wandb_name = wandb_name[:-1]  # Remove the last underscore
         logger = WandbLogger(name=wandb_name, project="Dubins", config=config)
         logger.load(writer)
+
+        wandb.define_metric("num_epochs", step_metric="num_epochs")
+        wandb.define_metric("*", step_metric="num_epochs")
     logger = TensorboardLogger(writer)
 
     # import pdb; pdb.set_trace()
@@ -481,42 +480,60 @@ for iter in range(warmup + args.total_episodes):
 
     save_best_fn(policy, epoch=epoch)
     for in_dist in [True, False]:
-        plot1, plot2, plot3, metrics = env.get_eval_plot(
+        plot1, plot2, plot3, __ = env.get_eval_plot(
             cache=cache,
             thetas=thetas,
             config=config,
             policy=policy,
             in_distribution=in_dist,
         )
+        all_metrics = []
+        for __ in range(5):
+            all_metrics.append(
+                copy.deepcopy(
+                    env.get_eval_metrics(
+                        cache=cache,
+                        thetas=thetas,
+                        config=config,
+                        policy=policy,
+                        in_distribution=in_dist,
+                    )
+                )
+            )
+
+        aggregated = defaultdict(list)
+
+        for metrics in all_metrics:
+            for key, value in metrics.items():
+                aggregated[key].append(value)
+
+        # Compute averages
+        averaged_metrics = {key: np.mean(values) for key, values in aggregated.items()}
+
+        {key: np.mean(values) for key, values in aggregated.items()}
         in_dist_label = "in_dist" if in_dist else "out_dist"
         wandb.log(
             {
                 f"{in_dist_label}/binary_reach_avoid_plot": wandb.Image(plot1),
                 f"{in_dist_label}/continuous_plot": wandb.Image(plot2),
                 f"{in_dist_label}/safety_margin_function": wandb.Image(plot3),
-                **{f"{in_dist_label}/metric/{k}": v for k, v in metrics.items()},
-            }
+                **{
+                    f"{in_dist_label}/metric/{k}": v
+                    for k, v in averaged_metrics.items()
+                },
+                "num_epochs": epoch - 1,
+            },
         )
 
-    traj_imgs = env.get_trajectory(policy=policy)
-    wandb.log(
-        {
-            "trajectory": wandb.Video(
-                np.array(traj_imgs),
-                fps=10,
-                format="mp4",
-            )
-        }
-    )
-
-    # imagined_traj = env.get_trajectory_imagined()
+    # traj_imgs = env.get_trajectory(policy=policy)
     # wandb.log(
     #     {
-    #         "imagined_trajectory": wandb.Video(
-    #             np.array(imagined_traj),
+    #         "trajectory": wandb.Video(
+    #             np.array(traj_imgs),
     #             fps=10,
     #             format="mp4",
-    #         )
+    #         ),
+    #         "num_epochs": epoch - 1,
     #     }
     # )
 

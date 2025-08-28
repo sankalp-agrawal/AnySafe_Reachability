@@ -5,6 +5,8 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
 
+device = "cuda:0"
+
 
 class SplitTrajectoryDataset(Dataset):
     def __init__(
@@ -16,6 +18,7 @@ class SplitTrajectoryDataset(Dataset):
         provide_labels=True,
         num_examples_per_class=None,
         only_pass_labeled_examples=False,
+        xy_to_class_label_fn=None,
     ):
         """
         Custom Dataset that can load either the first 1000 trajectories or the rest.
@@ -66,13 +69,26 @@ class SplitTrajectoryDataset(Dataset):
                     if "labels" not in trajectory.keys() and only_pass_labeled_examples:
                         continue
 
-                    for t, label in enumerate(trajectory["labels"][:]):
-                        if label not in data_base:
+                    for t, label in enumerate(
+                        xy_to_class_label_fn(
+                            torch.tensor(trajectory["labels"][:], device=device)
+                        )
+                    ):
+                        label = label.item()  # Convert tensor to scalar
+                        if label not in data_base and label != -1:
                             data_base[label] = []
 
                         if t + self.segment_length > len(trajectory["actions"]):
                             continue
-                        data_base[label].append((traj_id, t))
+                        if label != -1:
+                            data_base[label].append((traj_id, t))
+
+            if (
+                num_examples_per_class == -1
+            ):  # Provide lowest number of examples per class
+                num_examples_per_class = min(
+                    len(indices) for indices in data_base.values()
+                )
 
             for label, indices in data_base.items():
                 if len(indices) < num_examples_per_class:

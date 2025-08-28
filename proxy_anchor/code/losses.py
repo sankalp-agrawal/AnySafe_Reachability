@@ -195,5 +195,6 @@ class PrivilegedTeacherForcingLoss(nn.Module):
         dists = torch.norm(diff, dim=2)
         labels = self.mapping_fn(dists)  # [B, B]
 
-        loss = F.mse_loss(cos_sim, labels)
+        # loss = F.mse_loss(cos_sim, labels)
+        loss = torch.nn.SmoothL1Loss()(cos_sim, labels)
         return loss

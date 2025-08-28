@@ -66,6 +66,7 @@ class_to_colors = {i: cmap(i / nb_classes) for i in range(nb_classes)}
 
 
 def get_class_from_xy(labels):
+    device = "cuda:0"
     assert labels.shape[-1] == 2, "Labels should have shape (B, 2)"
     x_labels = torch.bucketize(
         labels[..., 0], torch.tensor(x_class_boundaries, device=device)
@@ -134,13 +135,19 @@ if __name__ == "__main__":
     hdf5_file_test = "/home/sunny/data/sweeper/test/consolidated.h5"
 
     expert_data = SplitTrajectoryDataset(
-        hdf5_file, BL, split="train", num_test=0, only_pass_labeled_examples=True
+        hdf5_file,
+        BL,
+        split="train",
+        num_test=0,
+        only_pass_labeled_examples=True,
+        num_examples_per_class=-1,
+        xy_to_class_label_fn=get_class_from_xy,
     )
     expert_data_eval = SplitTrajectoryDataset(
-        hdf5_file, BL, split="test", num_test=5, only_pass_labeled_examples=True
+        hdf5_file_test, BL, split="train", num_test=0, only_pass_labeled_examples=True
     )
     expert_data_imagine = SplitTrajectoryDataset(
-        hdf5_file_test, 32, split="test", num_test=5, only_pass_labeled_examples=True
+        hdf5_file_test, 32, split="train", num_test=0, only_pass_labeled_examples=True
     )
 
     expert_loader = iter(DataLoader(expert_data, batch_size=BS, shuffle=True))
@@ -243,9 +250,10 @@ if __name__ == "__main__":
             # gt_labels: [BS T]
             gt_labels = get_class_from_xy(data["failure"][:, 1:].to(device))
             # mask: [BS]
-            mask = ~(gt_labels[:, :] == -1.0).any(dim=1).squeeze()
+            mask = gt_labels != -1.0
+            # ~(gt_labels[:, :] == -1.0).any(dim=-1).squeeze() --- IGNORE ---
             gt_labels = (gt_labels[mask]).float()  # [BS]
-            pred_fail = pred_fail[mask]
+            pred_fail = pred_fail[mask, :]
             # Unsafe = 1.0, Safe = 0.0
             loss = criterion(
                 pred_fail.reshape(-1, nb_classes), gt_labels.long().reshape(-1)
@@ -261,6 +269,17 @@ if __name__ == "__main__":
             pred_labels.flatten().cpu().numpy().astype(int),
         )
         wandb.log({"train_balanced_accuracy": balanced_accuracy})
+
+        # Confusion matrix
+        # wandb.log(
+        #     {
+        #         "train/confusion_matrix": wandb.plot.confusion_matrix(
+        #             preds=pred_labels.flatten().cpu().numpy(),
+        #             y_true=true_labels.flatten().cpu().numpy(),
+        #             class_names=list(label_to_str.values()),
+        #         )
+        #     }
+        # )
 
         scaler.scale(loss).backward()
         scaler.step(optimizer)
@@ -364,21 +383,16 @@ if __name__ == "__main__":
                 )
 
                 gt_labels = get_class_from_xy(eval_data["failure"][:, 1:].to(device))
-                mask = (gt_labels[:, -1] != -1.0).squeeze()
+                mask = gt_labels != -1.0
 
                 gt_labels = (gt_labels[mask]).float()  # [BS]
-                pred_fail = pred_fail[mask]
+                pred_fail = pred_fail[mask, :]
 
                 # 1 for unsafe, 0 for safe
-                try:
-                    loss = criterion(
-                        pred_fail.reshape(-1, nb_classes), gt_labels.long().reshape(-1)
-                    )
-                    # loss = fail_loss(pred_fail, gt_labels)
-                except:
-                    import ipdb
-
-                    ipdb.set_trace()
+                loss = criterion(
+                    pred_fail.reshape(-1, nb_classes), gt_labels.long().reshape(-1)
+                )
+                # loss = fail_loss(pred_fail, gt_labels)
 
             pred_labels = (torch.argmax(pred_fail, dim=-1)).float()
             true_labels = gt_labels
@@ -389,6 +403,17 @@ if __name__ == "__main__":
                 pred_labels.flatten().cpu().numpy().astype(int),
             )
             wandb.log({"eval_balanced_accuracy": balanced_accuracy})
+
+            # Confusion matrix
+            wandb.log(
+                {
+                    "eval/confusion_matrix": wandb.plot.confusion_matrix(
+                        preds=pred_labels.flatten().cpu().numpy(),
+                        y_true=true_labels.flatten().cpu().numpy(),
+                        class_names=list(label_to_str.values()),
+                    )
+                }
+            )
 
             print(f"\rIter {i}, Eval Loss: {loss.item():.4f},")
 

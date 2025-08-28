@@ -17,7 +17,7 @@ defaults:
   num_trajs: 4000 # 2000 in paper
   num_train_trajs: 3800 #1900 in paper
   size: [128, 128]
-  dataset_path: 'wm_demos128.pkl' # '128' should be the same as the size above
+  dataset_path: 'wm_demos_dubins_sc_F_arrow_0.15_128.pkl' # '128' should be the same as the size above
   
   # offline dreamer parameters, these are from https://github.com/NM512/dreamerv3_torch
   wm_name: ''
@@ -140,16 +140,17 @@ defaults:
   tau: 0.005 # type=float, default=0.005)
   exploration-noise: 0.1 # type=float, default=0.1)
   epoch: 1 # type=int, default=10)
-  total-episodes: 15 # type=int, default=160)
+  warmup: 1 # number of epochs for warm up
+  total-episodes: 40 # type=int, default=160)
   step-per-epoch: 40000 # type=int, default=40000)
   step-per-collect: 8 # type=int, default=8)
   update-per-step: 0.125 # type=float, default=0.125)
   batch_size-pyhj: 512 # type=int, default=512)
-  control-net: [128, 128, 128] # type=int, nargs='*', default=None) # for control policy
-  critic-net: [128, 128, 128]  # type=int, nargs='*', default=None) # for critic net
+  control-net: [512, 512, 512] # type=int, nargs='*', default=None) # for control policy
+  critic-net: [512, 512, 512]  # type=int, nargs='*', default=None) # for critic net
   constraint-embedding-dim: 544
   pass-semantic-constraint: True
-  control-net-const: [128, 128] # type=int, nargs='*', default=(128, 128)
+  control-net-const: [512, 512] # type=int, nargs='*', default=(128, 128)
   training-num: 1 # type=int, default=8)
   test-num: 1 # type=int, default=100)
   render: 0. # type=float, default=0.)
@@ -165,7 +166,7 @@ defaults:
   alpha: 0.2 
   weight-decay-pyhj: 0.001
 
-  env-dist-type: v # 'v' - vanilla, 'fc' - four corners, 'fcfe' - four corners four edges, 'rh' - right half, 'br' - big radii, 'uni' - uniform, 'rhfe' - right half four edges, 'rhbr' - right half big radii
+  env-dist-type: uni # 'v' - vanilla, 'fc' - four corners, 'fcfe' - four corners four edges, 'rh' - right half, 'br' - big radii, 'uni' - uniform, 'rhfe' - right half four edges, 'rhbr' - right half big radii
   safety-margin-type: "cos_sim" # cos_sim, learned
   safety-margin-threshold: -0.64 # type=float, default=0.5)
   safety-margin-hard-threshold: False # type=bool, default=False)
