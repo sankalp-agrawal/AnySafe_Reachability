@@ -177,6 +177,7 @@ class Dubins_WM_Env(gym.Env):
         for k, v in self.latent.items():
             self.latent[k] = v[:, [-1]]
         self.feat = self.wm.dynamics.get_feat(self.latent).detach().cpu().numpy()
+
         self.select_constraints()
         if self.pass_constraint:
             self.obs = {
@@ -460,6 +461,13 @@ class Dubins_WM_Env(gym.Env):
                 constraint_state[:2],
                 np.array([0.5, 1.0]),
             )
+        elif env_dist_type == "v*":
+            # Eval and test set are the same here
+            constraint_state = np.array([0.5, 0.5, 0.0])
+            gt_constraint = np.append(
+                constraint_state[:2],
+                np.array([0.5, 1.0]),
+            )
         elif env_dist_type == "uni":
             # Eval and test set are the same here
             constraint_state = np.array(
@@ -489,18 +497,30 @@ class Dubins_WM_Env(gym.Env):
             )
 
         elif env_dist_type == "ds":  # Distribution from dataset
-            constraint_state = np.array(next(self.data)["privileged_state"])[0, 0]
+            data = next(self.data)
+            constraint_state = np.array(data["privileged_state"])[0, -1]
             while (
                 constraint_state[0] < -1.0
                 or constraint_state[0] > 1.0
                 or constraint_state[1] < -1.0
                 or constraint_state[1] > 1.0
             ):
-                constraint_state = np.array(next(self.data)["privileged_state"])[0, 0]
+                data = next(self.data)
+                constraint_state = np.array(data["privileged_state"])[0, -1]
             gt_constraint = np.append(
                 constraint_state[:2],
                 np.array([0.5, 1.0]),  # Default radius and active status,
             )
+            data = self.wm.preprocess(data)
+            embed = self.encoder(data)
+            latent, _ = self.wm.dynamics.observe(
+                embed, data["action"], data["is_first"]
+            )
+
+            for k, v in latent.items():
+                latent[k] = v[:, [-1]]
+            feat = self.wm.dynamics.get_feat(latent).detach().cpu().numpy().squeeze()
+            return feat, constraint_state, gt_constraint
         else:
             raise ValueError(
                 "Unknown distribution type: {}".format(self.distribution_type)
@@ -519,19 +539,27 @@ class Dubins_WM_Env(gym.Env):
         # constraint_state is the state of the agent to produce the constraint image
         # constraint is the grouund truth constraint as (x,y,radius,u)
         if self.config.env_dist_type not in ["prox"]:
-            constraint_state, gt_constraint = self.select_one_constraint(
+            constraints_info = self.select_one_constraint(
                 in_distribution=in_distribution
             )
-            constraint_state = torch.tensor(constraint_state, dtype=torch.float32)
-            # constraint_state[..., -1] = 0  # Set theta to 0 for the constraint image
-            img = get_frame(states=constraint_state, config=self.config)
-            self.constraint_img = img
-            feat_c = self.get_latent(
-                wm=self.wm,
-                thetas=constraint_state[-1].reshape(-1),
-                imgs=[img],
-                compute_lz=False,
-            )
+            if len(constraints_info) == 2:
+                constraint_state, gt_constraint = constraints_info
+                constraint_state = torch.tensor(constraint_state, dtype=torch.float32)
+                # constraint_state[..., -1] = 0  # Set theta to 0 for the constraint image
+                img = get_frame(states=constraint_state, config=self.config)
+                self.constraint_img = img
+
+                feat_c = self.get_latent(
+                    wm=self.wm,
+                    thetas=constraint_state[-1].reshape(-1),
+                    imgs=[img],
+                    compute_lz=False,
+                )
+            elif len(constraints_info) == 3:  # feat_c is passed
+                feat_c, constraint_state, gt_constraint = constraints_info
+                constraint_state = torch.tensor(constraint_state, dtype=torch.float32)
+                img = get_frame(states=constraint_state, config=self.config)
+                self.constraint_img = img
             self.constraint_feat = np.array(np.append(feat_c, 1.0))  # .reshape(
             #     self.num_constraints, -1
             # )
