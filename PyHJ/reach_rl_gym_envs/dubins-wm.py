@@ -7,10 +7,12 @@ import gymnasium as gym
 import matplotlib
 import numpy as np
 import torch
+import torch.nn.functional as F
 from generate_data_traj_cont import get_frame
 from gymnasium import spaces
 from matplotlib import pyplot as plt
 from matplotlib.patches import Circle
+from tqdm import tqdm
 
 matplotlib.use("Agg")
 from skimage import measure
@@ -47,28 +49,37 @@ class Dubins_WM_Env(gym.Env):
         self.device = "cuda:0"
         self.num_constraints = 1
         self.pass_semantic_constraint = config.pass_semantic_constraint
+        self.pass_constraint = config.safety_margin_type == "cos_sim"
 
         self.constraint_shape = (
             config.pa["sz_embedding"]
             if self.pass_semantic_constraint
             else config.constraint_embedding_dim
         )
-        self.observation_space = spaces.Dict(
-            {
-                "state": spaces.Box(
-                    low=-np.inf,
-                    high=np.inf,
-                    shape=(544,),
-                    dtype=np.float32,
-                ),
-                "constraints": spaces.Box(
-                    low=-np.inf,
-                    high=np.inf,
-                    shape=(self.constraint_shape + 1,),
-                    dtype=np.float32,
-                ),
-            }
-        )
+        if self.pass_constraint:
+            self.observation_space = spaces.Dict(
+                {
+                    "state": spaces.Box(
+                        low=-np.inf,
+                        high=np.inf,
+                        shape=(544,),
+                        dtype=np.float32,
+                    ),
+                    "constraints": spaces.Box(
+                        low=-np.inf,
+                        high=np.inf,
+                        shape=(self.constraint_shape + 1,),
+                        dtype=np.float32,
+                    ),
+                }
+            )
+        else:
+            self.observation_space = spaces.Box(
+                low=-np.inf,
+                high=np.inf,
+                shape=(544,),
+                dtype=np.float32,
+            )
 
         image_size = config.size[0]  # 128
         img_obs_space = gym.spaces.Box(
@@ -129,12 +140,15 @@ class Dubins_WM_Env(gym.Env):
         else:
             terminated = False
         truncated = False
-        self.obs = {
-            "state": np.copy(self.feat).flatten(),
-            "constraints": self.constraint_sem
-            if self.pass_semantic_constraint
-            else self.constraint_feat,  # Semantic embedding of the constraints
-        }
+        if self.pass_constraint:
+            self.obs = {
+                "state": np.copy(self.feat).flatten(),
+                "constraints": self.constraint_sem
+                if self.pass_semantic_constraint
+                else self.constraint_feat,  # Semantic embedding of the constraints
+            }
+        else:
+            self.obs = np.copy(self.feat).flatten()
         info = {"is_first": False, "is_terminal": terminated}
         return self.obs, rew, terminated, truncated, info
 
@@ -158,12 +172,15 @@ class Dubins_WM_Env(gym.Env):
             self.latent[k] = v[:, [-1]]
         self.feat = self.wm.dynamics.get_feat(self.latent).detach().cpu().numpy()
         self.select_constraints()
-        self.obs = {
-            "state": np.copy(self.feat).flatten(),
-            "constraints": self.constraint_sem
-            if self.pass_semantic_constraint
-            else self.constraint_feat,  # Semantic embedding of the constraints
-        }
+        if self.pass_constraint:
+            self.obs = {
+                "state": np.copy(self.feat).flatten(),
+                "constraints": self.constraint_sem
+                if self.pass_semantic_constraint
+                else self.constraint_feat,  # Semantic embedding of the constraints
+            }
+        else:
+            self.obs = np.copy(self.feat).flatten()
         return self.obs, {
             "is_first": True,
             "is_terminal": False,
@@ -466,13 +483,18 @@ class Dubins_WM_Env(gym.Env):
             )
 
         elif env_dist_type == "ds":  # Distribution from dataset
-            init_traj = np.array(next(self.data)["privileged_state"])[0, 0]
-            init_traj = np.append(
-                init_traj, 1.0
-            )  # Append 1.0 to indicate that this constraint is active
-            import ipdb
-
-            ipdb.set_trace()
+            constraint_state = np.array(next(self.data)["privileged_state"])[0, 0]
+            while (
+                constraint_state[0] < -1.0
+                or constraint_state[0] > 1.0
+                or constraint_state[1] < -1.0
+                or constraint_state[1] > 1.0
+            ):
+                constraint_state = np.array(next(self.data)["privileged_state"])[0, 0]
+            gt_constraint = np.append(
+                constraint_state[:2],
+                np.array([0.5, 1.0]),  # Default radius and active status,
+            )
         else:
             raise ValueError(
                 "Unknown distribution type: {}".format(self.distribution_type)
@@ -684,16 +706,19 @@ class Dubins_WM_Env(gym.Env):
                     thetas=thetas_prev,
                     imgs=imgs_prev,
                 )
-                obs = {
-                    "state": feat,
-                    "constraints": einops.repeat(
-                        self.constraint_sem
-                        if self.pass_semantic_constraint
-                        else self.constraint_feat,
-                        "C -> N C",
-                        N=feat.shape[0],
-                    ),
-                }
+                if self.pass_constraint:
+                    obs = {
+                        "state": feat,
+                        "constraints": einops.repeat(
+                            self.constraint_sem
+                            if self.pass_semantic_constraint
+                            else self.constraint_feat,
+                            "C -> N C",
+                            N=feat.shape[0],
+                        ),
+                    }
+                else:
+                    obs = feat
                 V = evaluate_V(obs=obs, policy=policy, critic=policy.critic)
             V = np.minimum(V, lz)
 
@@ -928,16 +953,19 @@ class Dubins_WM_Env(gym.Env):
                     thetas=thetas_prev,
                     imgs=imgs_prev,
                 )
-                obs = {
-                    "state": feat,
-                    "constraints": einops.repeat(
-                        self.constraint_sem
-                        if self.pass_semantic_constraint
-                        else self.constraint_feat,
-                        "C -> N C",
-                        N=feat.shape[0],
-                    ),
-                }
+                if self.pass_constraint:
+                    obs = {
+                        "state": feat,
+                        "constraints": einops.repeat(
+                            self.constraint_sem
+                            if self.pass_semantic_constraint
+                            else self.constraint_feat,
+                            "C -> N C",
+                            N=feat.shape[0],
+                        ),
+                    }
+                else:
+                    obs = feat
                 V = evaluate_V(obs=obs, policy=policy, critic=policy.critic)
             V = np.minimum(V, lz)
 
@@ -983,26 +1011,40 @@ class Dubins_WM_Env(gym.Env):
             or priv_state[0] > 1.0
             or priv_state[1] < -1.0
             or priv_state[1] > 1.0
+            # Check if already in constraint
+            or np.linalg.norm(priv_state[:2] - self.gt_constraint[:2])
+            < self.gt_constraint[2]
+            or evaluate_V(obs=obs, policy=policy, critic=policy.critic) < 0.0
         ):
             obs, __ = self.reset()
             priv_state = self.privileged_state.squeeze()
+
         gt_state = torch.tensor(
             [priv_state[0], priv_state[1], np.sin(priv_state[2]), np.cos(priv_state[2])]
         )
         obs_gt, _ = gt_env.reset(initial_state=gt_state.cpu().numpy())
-        # TODO: Set constraints of gt_env to the same as self.constraint
-        gt_env.constraints = self.gt_constraint.copy()
+        gt_env.constraint = self.gt_constraint.copy()
         done_gt = False
         imgs_traj = []
-        # imgs_imagined = []
+        imgs_imagined = []
         t = 0
 
         while not done_gt:  # Rollout trajectory with safety filtering
             theta = np.arctan2(obs_gt["state"][2], obs_gt["state"][3])
             state = torch.tensor([obs_gt["state"][0], obs_gt["state"][1], theta])
-            # frame = get_frame(states=state, config=self.config)
-            # imgs_imagined.append(frame)
+
             with torch.no_grad():
+                if isinstance(obs, dict):
+                    frame = self.wm.heads["decoder"](
+                        torch.tensor(obs["state"], device=self.device)
+                        .unsqueeze(0)
+                        .unsqueeze(0)
+                    )["image"].mode()[0, 0]
+                else:
+                    frame = self.wm.heads["decoder"](
+                        torch.tensor(obs, device=self.device).unsqueeze(0).unsqueeze(0)
+                    )["image"].mode()[0, 0]
+                imgs_imagined.append(frame.cpu().numpy())
                 # V, _ = self.safety_margin(
                 #     torch.tensor(obs["state"], device=self.device).unsqueeze(0)
                 # )
@@ -1016,34 +1058,123 @@ class Dubins_WM_Env(gym.Env):
                 action = self.nominal_policy()
 
             obs, rew, done, _, info = self.step(action)
-            obs_gt, _, done_gt, _, _ = gt_env.step(action)
+            obs_gt, rew_gt, done_gt, _, _ = gt_env.step(action)
+            if t == 0 and rew_gt < 0:
+                import ipdb
+
+                ipdb.set_trace()
             title_kwargs = {
                 "Nominal Policy": self.nominal_policy_type,
-                "Epsilon": self.config.safety_filter_eps,
-                "Time": t,
+                "Eps": self.config.safety_filter_eps,
+                # "Time": t,
                 "V": f"{V:.2f}",
+                "R": f"{rew_gt:.2f}",
+                "A": f"{action.squeeze().item():.2f}",
             }
             img = gt_env.render(unsafe=unsafe, title_kwargs=title_kwargs)
 
+            if t > 64:
+                done_gt = True
             t += 1
 
             imgs_traj.append(img)
 
         imgs = np.array(imgs_traj)
 
-        # imgs_imagined = np.array(imgs_imagined)
+        imgs_imagined = np.array(imgs_imagined) * 255.0
 
-        # imgs_imagined = (
-        #     F.interpolate(
-        #         einops.rearrange(torch.tensor(imgs_imagined), "T H W C -> T C H W"),
-        #         size=(imgs.shape[1], imgs.shape[2]),
-        #         mode="bilinear",
-        #         align_corners=False,
-        #     )
-        #     .cpu()
-        #     .numpy()
-        # )
+        imgs_imagined = (
+            F.interpolate(
+                einops.rearrange(torch.tensor(imgs_imagined), "T H W C -> T C H W"),
+                size=(imgs.shape[1], imgs.shape[2]),
+                mode="bilinear",
+                align_corners=False,
+            )
+            .cpu()
+            .numpy()
+        )
         imgs = einops.rearrange(imgs, "T H W C -> T C H W")
-        # imgs = np.concatenate([imgs, imgs_imagined], axis=3)
+        imgs = np.concatenate([imgs, imgs_imagined], axis=3)
         gt_env.close()
         return imgs
+
+    def get_success_rate(self, policy):
+        gt_env = Dubins_Env(
+            nominal_policy=self.nominal_policy_type, dist_type=self.config.env_dist_type
+        )
+        unsuccessful = 0
+        timeout = 0
+        out_of_bounds = 0
+
+        total = 250
+        fig, ax = plt.subplots(figsize=(5, 5))
+        avg_t = 0
+        for idx in tqdm(range(total)):
+            gt_env.reset()
+            trajectory = []
+            obs, __ = self.reset()
+            priv_state = self.privileged_state.squeeze()
+
+            while (
+                # Check if in bounding box
+                priv_state[0] < -1.0
+                or priv_state[0] > 1.0
+                or priv_state[1] < -1.0
+                or priv_state[1] > 1.0
+                # Check if already in constraint
+                or np.linalg.norm(priv_state[:2] - self.gt_constraint[:2])
+                < self.gt_constraint[2]
+                or evaluate_V(obs=obs, policy=policy, critic=policy.critic) < 0.3
+            ):
+                obs, __ = self.reset()
+                priv_state = self.privileged_state.squeeze()
+
+            gt_state = torch.tensor(
+                [
+                    priv_state[0],
+                    priv_state[1],
+                    np.sin(priv_state[2]),
+                    np.cos(priv_state[2]),
+                ]
+            )
+            obs_gt, _ = gt_env.reset(initial_state=gt_state.cpu().numpy())
+            # TODO: Set constraints of gt_env to the same as self.constraint
+            gt_env.constraint = self.gt_constraint.copy()
+            done_gt = False
+
+            t = 0
+
+            while not done_gt:  # Rollout trajectory with safety filtering
+                trajectory.append(gt_env.state[:2])
+                with torch.no_grad():
+                    V = evaluate_V(obs=obs, policy=policy, critic=policy.critic)
+                    V = V.squeeze()
+                # if V < self.config.safety_filter_eps:
+                #     action = find_a(obs=obs, policy=policy)
+                # else:
+                #     action = self.nominal_policy()
+
+                action = find_a(obs=obs, policy=policy)
+
+                obs, rew, done, _, info = self.step(action)
+                obs_gt, rew_gt, done_gt, _, _ = gt_env.step(action)
+                if done_gt:
+                    out_of_bounds += 1
+
+                if rew_gt < 0:
+                    unsuccessful += 1
+                    done_gt = True
+
+                if t > 64:
+                    done_gt = True
+                    timeout += 1
+                t += 1
+
+            avg_t += t
+
+        gt_env.close()
+        print("Average time: ", avg_t / total)
+        print(
+            f"Out of Bounds: {out_of_bounds / total}, Timeout: {timeout / total}, Unsuccessful: {unsuccessful / total}"
+        )
+        return 1 - unsuccessful / total

@@ -21,8 +21,11 @@ def get_metrics(rl_values, gt_values):
     fpr = fp / (fp + tn) if (fp + tn) > 0 else 0
     tpr = tp / (tp + fn) if (tp + fn) > 0 else 0
     fnr = fn / (fn + tp) if (fn + tp) > 0 else 0
+    tnr = tn / (tn + fp) if (tn + fp) > 0 else 0
     # Calculate accuracy, precision, recall, and F1 score
     accuracy = (tp + tn) / (tp + fp + fn + tn)
+
+    balanced_accuracy = 0.5 * (tpr + tnr)
 
     prec = tp / (tp + fp) if (tp + fp) > 0 else 0
     rec = tp / (tp + fn) if (tp + fn) > 0 else 0
@@ -42,6 +45,7 @@ def get_metrics(rl_values, gt_values):
         "TPR": tpr,
         "FNR": fnr,
         "Accuracy": accuracy,
+        "Balanced Accuracy": balanced_accuracy,
         "Precision": prec,
         "Recall": rec,
         "F1": f1,
