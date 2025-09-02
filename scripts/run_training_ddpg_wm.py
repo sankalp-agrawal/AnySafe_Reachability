@@ -253,7 +253,6 @@ actor = Actor(
 ).to(args.device)
 actor_optim = torch.optim.AdamW(actor.parameters(), lr=args.actor_lr)
 
-
 policy = DDPGPolicy(
     critic,
     critic_optim,
@@ -268,9 +267,12 @@ policy = DDPGPolicy(
     actor_gradient_steps=args.actor_gradient_steps,
 )
 
+state_type = "z_sem" if args.pass_semantic_state else "z"
+constraint_type = "z_c_sem" if args.pass_semantic_constraint else "z_c"
+
 log_path = os.path.join(
     args.logdir + "/PyHJ",
-    f"sim_{args.safety_margin_type}_dist_type_{args.env_dist_type}",
+    f"sim_{args.safety_margin_type}_dist_type_{args.env_dist_type}_V({state_type}, {constraint_type})_const_embd_{args.constraint_embedding_dim}",
 )
 
 
@@ -345,7 +347,7 @@ if not os.path.exists(log_path + "/epoch_id_{}".format(epoch)):
 def make_cache(config, thetas):
     nx, ny = config.nx, config.ny
 
-    cache_file = os.path.join(log_path, "cache.pkl")
+    cache_file = os.path.normpath(os.path.join(log_path, "..", "cache.pkl"))
     if os.path.exists(cache_file):
         with open(cache_file, "rb") as f:
             cache = pickle.load(f)
@@ -388,7 +390,6 @@ def make_cache(config, thetas):
         cache[theta] = [idxs, imgs_prev, theta_prev_lin]
 
     # pickle file
-    cache_file = os.path.join(log_path, "cache.pkl")
     with open(cache_file, "wb") as f:
         pickle.dump(cache, f)
     return cache
@@ -450,6 +451,7 @@ for iter in range(warmup + args.total_episodes):
         wb_name_args = [
             # f"{task_name}",
             # "DDPG",
+            f"V({state_type}, {constraint_type})",
             f"dist_type_{config.env_dist_type}",
             f"sim_{config.safety_margin_type}_{config.safety_margin_threshold}{'*' if config.safety_margin_hard_threshold else ''}",
             "proto" if config.pass_prototype else None,

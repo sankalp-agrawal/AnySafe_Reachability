@@ -7,7 +7,6 @@ from collections import defaultdict
 
 import gymnasium  # as gym
 import matplotlib
-import matplotlib.pyplot as plt
 
 matplotlib.use("Agg")
 import numpy as np
@@ -345,6 +344,8 @@ if args.debug:
     args.step_per_epoch = 10
 cache = make_cache(config, thetas)
 
+env.config.env_dist_type = "v"
+
 for in_dist in [True]:
     plot1, plot2, plot3, __ = env.get_eval_plot(
         cache=cache,
@@ -353,8 +354,10 @@ for in_dist in [True]:
         policy=policy,
         in_distribution=in_dist,
     )
+    for i, plot in enumerate([plot1, plot2, plot3]):
+        plot.savefig(f"plot_{i}.png", dpi=300, bbox_inches="tight")
     all_metrics = []
-    for __ in range(50):
+    for __ in range(1):
         all_metrics.append(
             copy.deepcopy(
                 env.get_eval_metrics(
@@ -396,15 +399,15 @@ video_frames = np.transpose(trajs, (0, 2, 3, 1))
 import imageio
 
 imageio.mimsave("output.mp4", video_frames, fps=20)
-save_path = f"/home/sunny/AnySafe_Reachability/scripts/logs/dreamer_dubins/PyHJ/sim_{args.safety_margin_type}_dist_type_{args.env_dist_type}/epoch_id_{epoch_id}"
+# save_path = f"/home/sunny/AnySafe_Reachability/scripts/logs/dreamer_dubins/PyHJ/sim_{args.safety_margin_type}_dist_type_{args.env_dist_type}/epoch_id_{epoch_id}"
 
-with open(f"{save_path}/metrics.txt", "w") as f:
-    for key, value in averaged_metrics.items():
-        f.write(f"{key}: {value}\n")
+# with open(f"{save_path}/metrics.txt", "w") as f:
+#     for key, value in averaged_metrics.items():
+#         f.write(f"{key}: {value}\n")
 
 
 import ipdb
 
 ipdb.set_trace()
 
-plt.close()
+# plt.close()

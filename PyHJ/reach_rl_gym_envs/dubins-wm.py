@@ -49,12 +49,17 @@ class Dubins_WM_Env(gym.Env):
         self.device = "cuda:0"
         self.num_constraints = 1
         self.pass_semantic_constraint = config.pass_semantic_constraint
+        self.pass_semantic_state = config.pass_semantic_state
         self.pass_constraint = config.safety_margin_type == "cos_sim"
+
+        self.state_shape = (
+            config.pa["sz_embedding"] if self.pass_semantic_state else 544
+        )
 
         self.constraint_shape = (
             config.pa["sz_embedding"]
             if self.pass_semantic_constraint
-            else config.constraint_embedding_dim
+            else self.state_shape
         )
         if self.pass_constraint:
             self.observation_space = spaces.Dict(
@@ -62,7 +67,7 @@ class Dubins_WM_Env(gym.Env):
                     "state": spaces.Box(
                         low=-np.inf,
                         high=np.inf,
-                        shape=(544,),
+                        shape=(self.state_shape,),
                         dtype=np.float32,
                     ),
                     "constraints": spaces.Box(
@@ -77,7 +82,7 @@ class Dubins_WM_Env(gym.Env):
             self.observation_space = spaces.Box(
                 low=-np.inf,
                 high=np.inf,
-                shape=(544,),
+                shape=(self.state_shape,),
                 dtype=np.float32,
             )
 
@@ -124,32 +129,33 @@ class Dubins_WM_Env(gym.Env):
             self.feat_size = config.dyn_stoch + config.dyn_deter
 
     def step(self, action):
-        init = {k: v[:, -1] for k, v in self.latent.items()}
-        ac_torch = (
-            torch.tensor([[action]], dtype=torch.float32).to(self.device)
-            * self.turnRate
-        )
-        self.latent = self.wm.dynamics.imagine_with_action(ac_torch, init)
-        self.feat = self.wm.dynamics.get_feat(self.latent)
-        rew, cont = self.safety_margin(self.feat)  # rew is negative if unsafe
+        with torch.no_grad():
+            init = {k: v[:, -1] for k, v in self.latent.items()}
+            ac_torch = (
+                torch.tensor([[action]], dtype=torch.float32).to(self.device)
+                * self.turnRate
+            )
+            self.latent = self.wm.dynamics.imagine_with_action(ac_torch, init)
+            self.feat = self.wm.dynamics.get_feat(self.latent)
+            rew, cont = self.safety_margin(self.feat)  # rew is negative if unsafe
 
-        self.feat = self.feat.detach().cpu().numpy()
+            self.feat = self.feat.detach().cpu().numpy()
 
-        if cont < 0.75:
-            terminated = True
-        else:
-            terminated = False
-        truncated = False
-        if self.pass_constraint:
-            self.obs = {
-                "state": np.copy(self.feat).flatten(),
-                "constraints": self.constraint_sem
-                if self.pass_semantic_constraint
-                else self.constraint_feat,  # Semantic embedding of the constraints
-            }
-        else:
-            self.obs = np.copy(self.feat).flatten()
-        info = {"is_first": False, "is_terminal": terminated}
+            if cont < 0.75:
+                terminated = True
+            else:
+                terminated = False
+            truncated = False
+            if self.pass_constraint:
+                self.obs = {
+                    "state": np.copy(self.feat).flatten(),
+                    "constraints": self.constraint_sem
+                    if self.pass_semantic_constraint
+                    else self.constraint_feat,  # Semantic embedding of the constraints
+                }
+            else:
+                self.obs = np.copy(self.feat).flatten()
+            info = {"is_first": False, "is_terminal": terminated}
         return self.obs, rew, terminated, truncated, info
 
     def reset(
@@ -160,9 +166,9 @@ class Dubins_WM_Env(gym.Env):
     ):
         super().reset(seed=seed)
 
-        init_traj = next(self.data)
-        self.privileged_state = init_traj["privileged_state"][:, -1]
-        data = self.wm.preprocess(init_traj)
+        self.init_traj = next(self.data)
+        self.privileged_state = self.init_traj["privileged_state"][:, -1]
+        data = self.wm.preprocess(self.init_traj)
         embed = self.encoder(data)
         self.latent, _ = self.wm.dynamics.observe(
             embed, data["action"], data["is_first"]
@@ -1014,10 +1020,18 @@ class Dubins_WM_Env(gym.Env):
             # Check if already in constraint
             or np.linalg.norm(priv_state[:2] - self.gt_constraint[:2])
             < self.gt_constraint[2]
-            or evaluate_V(obs=obs, policy=policy, critic=policy.critic) < 0.0
+            or evaluate_V(obs=obs, policy=policy, critic=policy.critic) < 0.1
         ):
             obs, __ = self.reset()
             priv_state = self.privileged_state.squeeze()
+
+        # import ipdb
+
+        # ipdb.set_trace()
+        # data = self.init_traj
+        # import ipdb
+
+        # ipdb.set_trace()
 
         gt_state = torch.tensor(
             [priv_state[0], priv_state[1], np.sin(priv_state[2]), np.cos(priv_state[2])]
@@ -1059,6 +1073,9 @@ class Dubins_WM_Env(gym.Env):
 
             obs, rew, done, _, info = self.step(action)
             obs_gt, rew_gt, done_gt, _, _ = gt_env.step(action)
+
+            # Closed loop
+
             if t == 0 and rew_gt < 0:
                 import ipdb
 
@@ -1124,7 +1141,7 @@ class Dubins_WM_Env(gym.Env):
                 # Check if already in constraint
                 or np.linalg.norm(priv_state[:2] - self.gt_constraint[:2])
                 < self.gt_constraint[2]
-                or evaluate_V(obs=obs, policy=policy, critic=policy.critic) < 0.3
+                or evaluate_V(obs=obs, policy=policy, critic=policy.critic) < 0.1
             ):
                 obs, __ = self.reset()
                 priv_state = self.privileged_state.squeeze()
