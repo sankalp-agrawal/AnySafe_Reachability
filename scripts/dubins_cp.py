@@ -143,11 +143,12 @@ offline_eps = collections.OrderedDict()
 
 expert_val_eps = collections.OrderedDict()
 tools.fill_expert_dataset_dubins(config, expert_val_eps, is_val_set=True)
+config.batch_size = 100
 eval_dataset = make_dataset(expert_val_eps, config)
 eval_len = len(expert_val_eps) // config.batch_length
 
 # Dataset Loader and Sampler
-BS = config.pa["sz_batch"]  # batch size
+BS = 300  # config.pa["sz_batch"]  # batch size
 BL = config.batch_length  # batch length
 
 losses_per_epoch = {
@@ -205,7 +206,7 @@ for batch_idx, data in pbar:
         all_pos_pairs.extend(pos_pairs)
 
 all_pos_pairs = torch.tensor(all_pos_pairs)
-alphas = [0.1, 0.05, 0.01]
+alphas = [0.1, 0.05, 0.01, 0.005, 0.001]
 thresh = np.clip(1 - 1 / (np.sqrt(2)) * epsilon, -1, 1)
 print(f"For Radius epsilon = {epsilon} with a normal threshold of: {-thresh}")
 for alpha in alphas:

@@ -178,7 +178,6 @@ test_envs = DummyVectorEnv(
     ]
 )
 
-
 # seed
 np.random.seed(args.seed)
 torch.manual_seed(args.seed)
@@ -268,7 +267,12 @@ policy = DDPGPolicy(
 )
 
 state_type = "z_sem" if args.pass_semantic_state else "z"
-constraint_type = "z_c_sem" if args.pass_semantic_constraint else "z_c"
+if args.pass_semantic_constraint:
+    constraint_type = "z_c_sem"
+elif args.pass_prototype:
+    constraint_type = "p"
+else:
+    constraint_type = "z_c"
 
 log_path = os.path.join(
     args.logdir + "/PyHJ",
@@ -517,33 +521,68 @@ for iter in range(warmup + args.total_episodes):
                 aggregated[key].append(value)
 
         # Compute averages
-        averaged_metrics = {key: np.mean(values) for key, values in aggregated.items()}
+        aggregate_metrics = {key: np.sum(values) for key, values in aggregated.items()}
+        metrics = {}
+        TPR = aggregate_metrics["TP"] / (
+            aggregate_metrics["TP"] + aggregate_metrics["FN"] + 1e-8
+        )
+        FPR = aggregate_metrics["FP"] / (
+            aggregate_metrics["FP"] + aggregate_metrics["TN"] + 1e-8
+        )
+        FNR = aggregate_metrics["FN"] / (
+            aggregate_metrics["TP"] + aggregate_metrics["FN"] + 1e-8
+        )
+        TNR = aggregate_metrics["TN"] / (
+            aggregate_metrics["TN"] + aggregate_metrics["FP"] + 1e-8
+        )
+        Accuracy = (aggregate_metrics["TP"] + aggregate_metrics["TN"]) / (
+            aggregate_metrics["TP"]
+            + aggregate_metrics["TN"]
+            + aggregate_metrics["FP"]
+            + aggregate_metrics["FN"]
+            + 1e-8
+        )
+        Precision = aggregate_metrics["TP"] / (
+            aggregate_metrics["TP"] + aggregate_metrics["FP"] + 1e-8
+        )
+        Recall = TPR
+        F1 = 2 * (Precision * Recall) / (Precision + Recall + 1e-8)
+        Balanced_Accuracy = 0.5 * (TPR + TNR)
+        metrics.update(
+            {
+                "TPR": TPR,
+                "FPR": FPR,
+                "FNR": FNR,
+                "TNR": TNR,
+                "Accuracy": Accuracy,
+                "Precision": Precision,
+                "Recall": Recall,
+                "F1": F1,
+                "Balanced_Accuracy": Balanced_Accuracy,
+            }
+        )
 
-        {key: np.mean(values) for key, values in aggregated.items()}
         in_dist_label = "in_dist" if in_dist else "out_dist"
         wandb.log(
             {
                 f"{in_dist_label}/binary_reach_avoid_plot": wandb.Image(plot1),
                 f"{in_dist_label}/continuous_plot": wandb.Image(plot2),
                 f"{in_dist_label}/safety_margin_function": wandb.Image(plot3),
-                **{
-                    f"{in_dist_label}/metric/{k}": v
-                    for k, v in averaged_metrics.items()
-                },
+                **{f"{in_dist_label}/metric/{k}": v for k, v in metrics.items()},
                 "num_epochs": epoch - 1,
             },
         )
 
-    # traj_imgs = env.get_trajectory(policy=policy)
-    # wandb.log(
-    #     {
-    #         "trajectory": wandb.Video(
-    #             np.array(traj_imgs),
-    #             fps=10,
-    #             format="mp4",
-    #         ),
-    #         "num_epochs": epoch - 1,
-    #     }
-    # )
+    traj_imgs = env.get_trajectory(policy=policy)
+    wandb.log(
+        {
+            "trajectory": wandb.Video(
+                np.array(traj_imgs),
+                fps=10,
+                format="mp4",
+            ),
+            "num_epochs": epoch - 1,
+        }
+    )
 
     plt.close()

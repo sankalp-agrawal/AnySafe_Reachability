@@ -163,7 +163,6 @@ test_envs = DummyVectorEnv(
     ]
 )
 
-
 # seed
 np.random.seed(args.seed)
 torch.manual_seed(args.seed)
@@ -253,11 +252,13 @@ policy = DDPGPolicy(
     actor_gradient_steps=args.actor_gradient_steps,
 )
 
-epoch_id = 8
+epoch_id = 6
 
+state_type = "z_sem" if args.pass_semantic_state else "z"
+constraint_type = "z_c_sem" if args.pass_semantic_constraint else "z_c"
 policy.load_state_dict(
     torch.load(
-        f"/home/sunny/AnySafe_Reachability/scripts/logs/dreamer_dubins/PyHJ/sim_{args.safety_margin_type}_dist_type_{args.env_dist_type}/epoch_id_{epoch_id}/policy.pth"
+        f"/home/sunny/AnySafe_Reachability/scripts/logs/dreamer_dubins/PyHJ/sim_{args.safety_margin_type}_dist_type_{args.env_dist_type}_V({state_type}, {constraint_type})_const_embd_{args.constraint_embedding_dim}/epoch_id_{epoch_id}/policy.pth"
     )
 )
 
@@ -344,20 +345,21 @@ if args.debug:
     args.step_per_epoch = 10
 cache = make_cache(config, thetas)
 
-env.config.env_dist_type = "v"
+# env.config.env_dist_type = "v"
 
 for in_dist in [True]:
-    plot1, plot2, plot3, __ = env.get_eval_plot(
-        cache=cache,
-        thetas=thetas,
-        config=config,
-        policy=policy,
-        in_distribution=in_dist,
-    )
-    for i, plot in enumerate([plot1, plot2, plot3]):
-        plot.savefig(f"plot_{i}.png", dpi=300, bbox_inches="tight")
+    for i in range(5):
+        plot1, plot2, plot3, metric = env.get_eval_plot(
+            cache=cache,
+            thetas=thetas,
+            config=config,
+            policy=policy,
+            in_distribution=in_dist,
+        )
+        plot1.savefig(f"results/plot_{i}.png", dpi=300, bbox_inches="tight")
+
     all_metrics = []
-    for __ in range(1):
+    for __ in range(50):
         all_metrics.append(
             copy.deepcopy(
                 env.get_eval_metrics(
@@ -377,34 +379,80 @@ for in_dist in [True]:
             aggregated[key].append(value)
 
     # Compute averages
-    averaged_metrics = {key: np.mean(values) for key, values in aggregated.items()}
+    aggregate_metrics = {key: np.sum(values) for key, values in aggregated.items()}
 
-    {key: np.mean(values) for key, values in aggregated.items()}
     in_dist_label = "in_dist" if in_dist else "out_dist"
 
+    TPR = aggregate_metrics["TP"] / (
+        aggregate_metrics["TP"] + aggregate_metrics["FN"] + 1e-8
+    )
+    FPR = aggregate_metrics["FP"] / (
+        aggregate_metrics["FP"] + aggregate_metrics["TN"] + 1e-8
+    )
+    FNR = aggregate_metrics["FN"] / (
+        aggregate_metrics["FN"] + aggregate_metrics["TP"] + 1e-8
+    )
+    TNR = aggregate_metrics["TN"] / (
+        aggregate_metrics["TN"] + aggregate_metrics["FP"] + 1e-8
+    )
+    Accuracy = (aggregate_metrics["TP"] + aggregate_metrics["TN"]) / (
+        aggregate_metrics["TP"]
+        + aggregate_metrics["FP"]
+        + aggregate_metrics["FN"]
+        + aggregate_metrics["TN"]
+        + 1e-8
+    )
+    Balanced_Accuracy = 0.5 * (TPR + TNR)
+    Precision = aggregate_metrics["TP"] / (
+        aggregate_metrics["TP"] + aggregate_metrics["FP"] + 1e-8
+    )
+    Recall = TPR
+    F1 = 2 * (Precision * Recall) / (Precision + Recall + 1e-8)
+    Intersection = np.sum((aggregate_metrics["TP"]))
+    Union = np.sum(
+        (aggregate_metrics["TP"] + aggregate_metrics["FP"] + aggregate_metrics["FN"])
+    )
+    IOU = Intersection / (Union + 1e-8)
+    aggregate_metrics.update(
+        {
+            "TPR": TPR,
+            "FPR": FPR,
+            "FNR": FNR,
+            "TNR": TNR,
+            "Accuracy": Accuracy,
+            "Balanced Accuracy": Balanced_Accuracy,
+            "Precision": Precision,
+            "Recall": Recall,
+            "F1": F1,
+            "IOU": IOU,
+        }
+    )
+
 success_rate = env.get_success_rate(policy=policy)
-averaged_metrics.update({"Success Rate": success_rate})
+aggregate_metrics.update({"Success Rate": success_rate})
+print("Averaged metrics over 50 runs:")
+for key, value in aggregate_metrics.items():
+    print(f"{key}: {value}")
 
 # Save as mp4
 
-trajs = []
+# trajs = []
 
-for i in range(30):
-    traj_imgs = env.get_trajectory(policy=policy)
-    trajs.append(traj_imgs)
+# for i in tqdm(range(30)):
+#     traj_imgs = env.get_trajectory(policy=policy)
+#     trajs.append(traj_imgs)
 
-trajs = np.concatenate(trajs, axis=0)
-# Save video as mp4 from numpy array
-video_frames = np.transpose(trajs, (0, 2, 3, 1))
-import imageio
+# trajs = np.concatenate(trajs, axis=0)
+# # Save video as mp4 from numpy array
+# video_frames = np.transpose(trajs, (0, 2, 3, 1))
+# import imageio
 
-imageio.mimsave("output.mp4", video_frames, fps=20)
-# save_path = f"/home/sunny/AnySafe_Reachability/scripts/logs/dreamer_dubins/PyHJ/sim_{args.safety_margin_type}_dist_type_{args.env_dist_type}/epoch_id_{epoch_id}"
+# imageio.mimsave("output.mp4", video_frames, fps=20)
 
-# with open(f"{save_path}/metrics.txt", "w") as f:
-#     for key, value in averaged_metrics.items():
-#         f.write(f"{key}: {value}\n")
-
+save_path = f"/home/sunny/AnySafe_Reachability/scripts/logs/dreamer_dubins/PyHJ/sim_{args.safety_margin_type}_dist_type_{args.env_dist_type}_V({state_type}, {constraint_type})_const_embd_{args.constraint_embedding_dim}/epoch_id_{epoch_id}"
+with open(f"{save_path}/metrics.txt", "w") as f:
+    for key, value in aggregate_metrics.items():
+        f.write(f"{key}: {value}\n")
 
 import ipdb
 

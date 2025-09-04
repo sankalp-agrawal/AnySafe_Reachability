@@ -7,13 +7,9 @@ import gymnasium as gym
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from torch.utils.tensorboard import SummaryWriter
 
 import wandb
-from PyHJ.data import Collector, VectorReplayBuffer
 from PyHJ.env import DummyVectorEnv
-from PyHJ.trainer import offpolicy_trainer
-from PyHJ.utils import WandbLogger
 from PyHJ.utils.net.common import Net
 from PyHJ.utils.net.continuous import ActorProb, Critic
 
@@ -229,20 +225,11 @@ log_path = os.path.join(
 )
 
 
-# collector
-train_collector = Collector(
-    policy,
-    train_envs,
-    VectorReplayBuffer(args.buffer_size, len(train_envs)),
-    exploration_noise=True,
-)
-test_collector = Collector(policy, test_envs)
-
 if args.warm_start_path is not None:
     policy.load_state_dict(torch.load(args.warm_start_path))
     args.kwargs = args.kwargs + "warmstarted"
 
-epoch = 0
+# epoch = 0
 # writer = SummaryWriter(log_path, filename_suffix="_"+timestr+"epoch_id_{}".format(epoch))
 # logger = TensorboardLogger(writer)
 log_path = (
@@ -258,6 +245,17 @@ log_path = (
     )
 )
 
+import ipdb
+
+ipdb.set_trace()
+
+epoch_id = 8
+save_path = os.path.join(log_path + "/epoch_id_{}".format(epoch_id), "policy.pth")
+policy.load_state_dict(torch.load(save_path))
+policy.eval()
+
+# /home/sunny/AnySafe_Reachability/scripts/logs/dreamer_dubins/PyHJ/sim_learned_dist_type_v_V(z, z_c_sem)_const_embd_512/epoch_id_8/policy.pth
+
 
 if args.continue_training_epoch is not None:
     epoch = args.continue_training_epoch
@@ -272,13 +270,6 @@ if args.continue_training_logdir is not None:
     epoch = args.continue_training_epoch
 
 
-def save_best_fn(policy, epoch=epoch):
-    torch.save(
-        policy.state_dict(),
-        os.path.join(log_path + "/epoch_id_{}".format(epoch), "policy.pth"),
-    )
-
-
 def stop_fn(mean_rewards):
     return False
 
@@ -288,97 +279,59 @@ if not os.path.exists(log_path + "/epoch_id_{}".format(epoch)):
     # print("log_path: ", log_path+"/epoch_id_{}".format(epoch))
     os.makedirs(log_path + "/epoch_id_{}".format(epoch))
 
-
-gammas = np.linspace(0.95, 0.9999, endpoint=True, num=args.total_episodes)
-
-logger = None
-for iter in range(args.total_episodes):
-    policy._gamma = gammas[iter]
-    if args.continue_training_epoch is not None:
-        print(
-            "episodes: {}, remaining episodes: {}".format(
-                epoch // args.epoch, args.total_episodes - iter
-            )
+if args.continue_training_epoch is not None:
+    print(
+        "episodes: {}, remaining episodes: {}".format(
+            epoch // args.epoch, args.total_episodes - iter
         )
-    else:
-        print(
-            "episodes: {}, remaining episodes: {}".format(
-                iter, args.total_episodes - iter
-            )
-        )
-    epoch = epoch + args.epoch
-    print("log_path: ", log_path + "/epoch_id_{}".format(epoch))
-    if args.total_episodes > 1:
-        writer = SummaryWriter(log_path + "/epoch_id_{}".format(epoch))
-    else:
-        if not os.path.exists(log_path + "/total_epochs_{}".format(epoch)):
-            print("Just created the log directory!")
-            print("log_path: ", log_path + "/total_epochs_{}".format(epoch))
-            os.makedirs(log_path + "/total_epochs_{}".format(epoch))
-        writer = SummaryWriter(log_path + "/total_epochs_{}".format(epoch))
-    if logger is None:
-        task_name = args.task.split("-")[-1]  # Take everything before the last dash
-        wandb_name = f"{task_name}_SAC_dist_type_{args.env_dist_type}"
-        logger = WandbLogger(name=wandb_name, project="Dubins", config=args)
-        logger.load(writer)
-
-    # import pdb; pdb.set_trace()
-    result = offpolicy_trainer(
-        policy,
-        train_collector,
-        test_collector,
-        args.epoch,
-        args.step_per_epoch,
-        args.step_per_collect,
-        args.test_num,
-        args.batch_size,
-        update_per_step=args.update_per_step,
-        stop_fn=stop_fn,
-        save_best_fn=save_best_fn,
-        logger=logger,
     )
-    save_best_fn(policy, epoch=epoch)
-
-    wandb.log(result)
-
-    in_dist_plots = env.get_eval_plot(policy, policy.critic1, in_distribution=True)
-    plot1, plot2 = in_dist_plots[0], in_dist_plots[1]
-    wandb.log(
-        {
-            "in_dist/binary_reach_avoid_plot": wandb.Image(plot1),
-            "in_dist/continuous_plot": wandb.Image(plot2),
-        }
+else:
+    print(
+        "episodes: {}, remaining episodes: {}".format(iter, args.total_episodes - iter)
     )
-    if len(in_dist_plots) == 3:
-        metrics = in_dist_plots[2]
-        metrics = {"in_dist/" + k: v for k, v in metrics.items()}
-        wandb.log(metrics)
+epoch = epoch + args.epoch
+print("log_path: ", log_path + "/epoch_id_{}".format(epoch))
 
-    out_dist_plots = env.get_eval_plot(policy, policy.critic1, in_distribution=False)
-    plot1, plot2 = out_dist_plots[0], out_dist_plots[1]
-    wandb.log(
-        {
-            "out_dist/binary_reach_avoid_plot": wandb.Image(plot1),
-            "out_dist/continuous_plot": wandb.Image(plot2),
-        }
-    )
-    if len(out_dist_plots) == 3:
-        metrics = out_dist_plots[2]
-        metrics = {"out_dist/" + k: v for k, v in metrics.items()}
-        wandb.log(metrics)
+in_dist_plots = env.get_eval_plot(policy, policy.critic1, in_distribution=True)
+plot1, plot2 = in_dist_plots[0], in_dist_plots[1]
+wandb.log(
+    {
+        "in_dist/binary_reach_avoid_plot": wandb.Image(plot1),
+        "in_dist/continuous_plot": wandb.Image(plot2),
+    }
+)
+if len(in_dist_plots) == 3:
+    metrics = in_dist_plots[2]
+    metrics = {"in_dist/" + k: v for k, v in metrics.items()}
+    wandb.log(metrics)
 
-    in_dist_imgs = env.generate_trajectory(policy=policy, in_distribution=True)
-    wandb.log({"in_dist/trajectory": [wandb.Video(in_dist_imgs, fps=10, format="mp4")]})
+out_dist_plots = env.get_eval_plot(policy, policy.critic1, in_distribution=False)
+plot1, plot2 = out_dist_plots[0], out_dist_plots[1]
+wandb.log(
+    {
+        "out_dist/binary_reach_avoid_plot": wandb.Image(plot1),
+        "out_dist/continuous_plot": wandb.Image(plot2),
+    }
+)
+if len(out_dist_plots) == 3:
+    metrics = out_dist_plots[2]
+    metrics = {"out_dist/" + k: v for k, v in metrics.items()}
+    wandb.log(metrics)
 
-    out_dist_imgs = env.generate_trajectory(policy=policy, in_distribution=False)
-    wandb.log(
-        {"out_dist/trajectory": [wandb.Video(out_dist_imgs, fps=10, format="mp4")]}
-    )
+in_dist_imgs = env.generate_trajectory(policy=policy, in_distribution=True)
+wandb.log({"in_dist/trajectory": [wandb.Video(in_dist_imgs, fps=10, format="mp4")]})
 
-    # success_rate = env.get_success_rate(policy, in_distribution=False)
-    # wandb.log({"out_dist/success_rate": success_rate})
+out_dist_imgs = env.generate_trajectory(policy=policy, in_distribution=False)
+wandb.log({"out_dist/trajectory": [wandb.Video(out_dist_imgs, fps=10, format="mp4")]})
 
-    # success_rate = env.get_success_rate(policy, in_distribution=True)
-    # wandb.log({"in_dist/success_rate": success_rate})
+success_rate = env.get_success_rate(policy, in_distribution=False)
+wandb.log({"out_dist/success_rate": success_rate})
 
-    plt.close()
+success_rate = env.get_success_rate(policy, in_distribution=True)
+wandb.log({"in_dist/success_rate": success_rate})
+
+import ipdb
+
+ipdb.set_trace()
+
+plt.close()

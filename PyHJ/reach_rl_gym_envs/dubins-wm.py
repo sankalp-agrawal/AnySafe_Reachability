@@ -148,13 +148,37 @@ class Dubins_WM_Env(gym.Env):
             truncated = False
             if self.pass_constraint:
                 self.obs = {
-                    "state": np.copy(self.feat).flatten(),
+                    "state": np.copy(self.feat).flatten()
+                    if not self.pass_semantic_state
+                    else np.copy(
+                        self.wm.semantic_encoder(
+                            torch.tensor(
+                                self.feat, device=self.device, dtype=torch.float32
+                            )
+                        )
+                        .detach()
+                        .cpu()
+                        .numpy()
+                    ).flatten(),
                     "constraints": self.constraint_sem
                     if self.pass_semantic_constraint
                     else self.constraint_feat,  # Semantic embedding of the constraints
                 }
             else:
-                self.obs = np.copy(self.feat).flatten()
+                self.obs = (
+                    np.copy(self.feat).flatten()
+                    if not self.pass_semantic_state
+                    else np.copy(
+                        self.wm.semantic_encoder(
+                            torch.tensor(
+                                self.feat, device=self.device, dtype=torch.float32
+                            )
+                        )
+                        .detach()
+                        .cpu()
+                        .numpy()
+                    ).flatten()
+                )
             info = {"is_first": False, "is_terminal": terminated}
         return self.obs, rew, terminated, truncated, info
 
@@ -181,13 +205,33 @@ class Dubins_WM_Env(gym.Env):
         self.select_constraints()
         if self.pass_constraint:
             self.obs = {
-                "state": np.copy(self.feat).flatten(),
+                "state": np.copy(self.feat).flatten()
+                if not self.pass_semantic_state
+                else np.copy(
+                    self.wm.semantic_encoder(
+                        torch.tensor(self.feat, device=self.device, dtype=torch.float32)
+                    )
+                    .detach()
+                    .cpu()
+                    .numpy()
+                ).flatten(),
                 "constraints": self.constraint_sem
                 if self.pass_semantic_constraint
                 else self.constraint_feat,  # Semantic embedding of the constraints
             }
         else:
-            self.obs = np.copy(self.feat).flatten()
+            self.obs = (
+                np.copy(self.feat).flatten()
+                if not self.pass_semantic_state
+                else np.copy(
+                    self.wm.semantic_encoder(
+                        torch.tensor(self.feat, device=self.device, dtype=torch.float32)
+                    )
+                    .detach()
+                    .cpu()
+                    .numpy()
+                ).flatten()
+            )
         return self.obs, {
             "is_first": True,
             "is_terminal": False,
@@ -224,7 +268,7 @@ class Dubins_WM_Env(gym.Env):
                     constraints, axis=-1
                 )
                 metric = -numerator / (denominator + 1e-8)  # (B)
-                metric = metric - self.config.safety_margin_threshold
+                # metric = metric
                 # metric = np.tanh(20 * metric)
                 # assert metric.ndim == 2, f"Expected dimension 2, got {metric.shape}"
                 # assert metric.shape[1] == 1, (
@@ -233,8 +277,12 @@ class Dubins_WM_Env(gym.Env):
                 # safety_margin = np.min(metric, axis=-1)  # (B)
                 safety_margin = metric  # (B)
                 if self.config.safety_margin_hard_threshold:
-                    safety_margin[safety_margin > 0] = 1.0
-                    safety_margin[safety_margin <= 0] = -1.0
+                    safety_margin[
+                        safety_margin > self.config.safety_margin_threshold
+                    ] = 1.0
+                    safety_margin[
+                        safety_margin <= self.config.safety_margin_threshold
+                    ] = -1.0
 
         else:
             raise ValueError(
@@ -500,10 +548,10 @@ class Dubins_WM_Env(gym.Env):
             data = next(self.data)
             constraint_state = np.array(data["privileged_state"])[0, -1]
             while (
-                constraint_state[0] < -1.0
-                or constraint_state[0] > 1.0
-                or constraint_state[1] < -1.0
-                or constraint_state[1] > 1.0
+                constraint_state[0] < -0.5
+                or constraint_state[0] > 0.5
+                or constraint_state[1] < -0.5
+                or constraint_state[1] > 0.5
             ):
                 data = next(self.data)
                 constraint_state = np.array(data["privileged_state"])[0, -1]
@@ -556,10 +604,17 @@ class Dubins_WM_Env(gym.Env):
                     compute_lz=False,
                 )
             elif len(constraints_info) == 3:  # feat_c is passed
-                feat_c, constraint_state, gt_constraint = constraints_info
+                __, constraint_state, gt_constraint = constraints_info
                 constraint_state = torch.tensor(constraint_state, dtype=torch.float32)
                 img = get_frame(states=constraint_state, config=self.config)
                 self.constraint_img = img
+
+                feat_c = self.get_latent(
+                    wm=self.wm,
+                    thetas=constraint_state[-1].reshape(-1),
+                    imgs=[img],
+                    compute_lz=False,
+                )
             self.constraint_feat = np.array(np.append(feat_c, 1.0))  # .reshape(
             #     self.num_constraints, -1
             # )
@@ -742,7 +797,14 @@ class Dubins_WM_Env(gym.Env):
                 )
                 if self.pass_constraint:
                     obs = {
-                        "state": feat,
+                        "state": feat
+                        if not self.pass_semantic_state
+                        else self.wm.semantic_encoder(
+                            torch.tensor(feat, device=self.device, dtype=torch.float32)
+                        )
+                        .detach()
+                        .cpu()
+                        .numpy(),
                         "constraints": einops.repeat(
                             self.constraint_sem
                             if self.pass_semantic_constraint
@@ -752,7 +814,16 @@ class Dubins_WM_Env(gym.Env):
                         ),
                     }
                 else:
-                    obs = feat
+                    obs = (
+                        feat
+                        if not self.pass_semantic_state
+                        else self.wm.semantic_encoder(
+                            torch.tensor(feat, device=self.device, dtype=torch.float32)
+                        )
+                        .detach()
+                        .cpu()
+                        .numpy()
+                    )
                 V = evaluate_V(obs=obs, policy=policy, critic=policy.critic)
             V = np.minimum(V, lz)
 
@@ -761,7 +832,9 @@ class Dubins_WM_Env(gym.Env):
             )  # Convert theta to index in the grid
 
             V = V.reshape((nx, ny)).T  # Reshape to match the grid
-            metrics = get_metrics(rl_values=V, gt_values=gt_values[:, :, nt_index].T)
+            metrics = get_metrics(
+                rl_values=V, gt_values=gt_values[:, :, nt_index].T, config=self.config
+            )
             # trivial solution
             # metrics = get_metrics(
             #     rl_values=lz.reshape((nx, ny)).T,
@@ -773,7 +846,9 @@ class Dubins_WM_Env(gym.Env):
 
             # Find contours for gt and rl Value functions
             contours_rl = measure.find_contours(
-                np.array(V > 0.0).astype(float)  # , level=0.0
+                np.array(V > self.config.safety_margin_threshold).astype(
+                    float
+                )  # , level=0.0
             )
             contours_gt = measure.find_contours(
                 np.array(gt_values[:, :, nt_index].T > 0).astype(float)  # , level=0.0
@@ -787,7 +862,9 @@ class Dubins_WM_Env(gym.Env):
 
             # Show sub-zero level set
             axes1[0, graph_index].imshow(
-                V > 0, extent=(-1.1, 1.1, -1.1, 1.1), origin="lower"
+                V > self.config.safety_margin_threshold,
+                extent=(-1.1, 1.1, -1.1, 1.1),
+                origin="lower",
             )
             axes1[2, graph_index].imshow(
                 gt_values[:, :, nt_index].T > 0,
@@ -911,7 +988,13 @@ class Dubins_WM_Env(gym.Env):
 
             for axes in [axes1, axes2, axes3]:
                 for j in range(3):
-                    label = rf"$\theta$={thetas[i]:.2f}, F1={metrics['F1']:.2f}, FPR={metrics['FPR']:.2f}"
+                    F1 = (
+                        2
+                        * metrics["TP"]
+                        / (2 * metrics["TP"] + metrics["FP"] + metrics["FN"] + 1e-8)
+                    )
+                    FPR = metrics["FP"] / (metrics["FP"] + metrics["TN"] + 1e-8)
+                    label = rf"$\theta$={thetas[i]:.2f}, F1={F1:.2f}, FPR={FPR:.2f}"
                     if j == 1:
                         label = rf"Topo Map, $\theta$={thetas[i]:.2f}, AUC={metrics['AUC']:.2f}"
                     elif j == 2:
@@ -955,13 +1038,13 @@ class Dubins_WM_Env(gym.Env):
                 aggregated[key].append(value)
 
         # Compute averages
-        averaged_metrics = {key: np.mean(values) for key, values in aggregated.items()}
+        aggregate_metrics = {key: np.sum(values) for key, values in aggregated.items()}
 
         return (
             fig1,
             fig2,
             fig3,
-            averaged_metrics,
+            aggregate_metrics,
         )
 
     def get_eval_metrics(self, cache, thetas, policy, config, in_distribution=True):
@@ -989,7 +1072,14 @@ class Dubins_WM_Env(gym.Env):
                 )
                 if self.pass_constraint:
                     obs = {
-                        "state": feat,
+                        "state": feat
+                        if not self.pass_semantic_state
+                        else self.wm.semantic_encoder(
+                            torch.tensor(feat, device=self.device, dtype=torch.float32)
+                        )
+                        .detach()
+                        .cpu()
+                        .numpy(),
                         "constraints": einops.repeat(
                             self.constraint_sem
                             if self.pass_semantic_constraint
@@ -999,7 +1089,16 @@ class Dubins_WM_Env(gym.Env):
                         ),
                     }
                 else:
-                    obs = feat
+                    obs = (
+                        feat
+                        if not self.pass_semantic_state
+                        else self.wm.semantic_encoder(
+                            torch.tensor(feat, device=self.device, dtype=torch.float32)
+                        )
+                        .detach()
+                        .cpu()
+                        .numpy()
+                    )
                 V = evaluate_V(obs=obs, policy=policy, critic=policy.critic)
             V = np.minimum(V, lz)
 
@@ -1008,7 +1107,9 @@ class Dubins_WM_Env(gym.Env):
             )  # Convert theta to index in the grid
 
             V = V.reshape((nx, ny)).T  # Reshape to match the grid
-            metrics = get_metrics(rl_values=V, gt_values=gt_values[:, :, nt_index].T)
+            metrics = get_metrics(
+                rl_values=V, gt_values=gt_values[:, :, nt_index].T, config=self.config
+            )
             # trivial solution
             # metrics = get_metrics(
             #     rl_values=lz.reshape((nx, ny)).T,
@@ -1024,7 +1125,7 @@ class Dubins_WM_Env(gym.Env):
                 aggregated[key].append(value)
 
         # Compute averages
-        averaged_metrics = {key: np.mean(values) for key, values in aggregated.items()}
+        averaged_metrics = {key: np.sum(values) for key, values in aggregated.items()}
 
         return averaged_metrics
 
@@ -1048,7 +1149,8 @@ class Dubins_WM_Env(gym.Env):
             # Check if already in constraint
             or np.linalg.norm(priv_state[:2] - self.gt_constraint[:2])
             < self.gt_constraint[2]
-            or evaluate_V(obs=obs, policy=policy, critic=policy.critic) < 0.1
+            or evaluate_V(obs=obs, policy=policy, critic=policy.critic)
+            < 0.1 + self.config.safety_margin_threshold
         ):
             obs, __ = self.reset()
             priv_state = self.privileged_state.squeeze()
@@ -1078,13 +1180,15 @@ class Dubins_WM_Env(gym.Env):
             with torch.no_grad():
                 if isinstance(obs, dict):
                     frame = self.wm.heads["decoder"](
-                        torch.tensor(obs["state"], device=self.device)
+                        torch.tensor(self.feat, device=self.device)
                         .unsqueeze(0)
                         .unsqueeze(0)
                     )["image"].mode()[0, 0]
                 else:
                     frame = self.wm.heads["decoder"](
-                        torch.tensor(obs, device=self.device).unsqueeze(0).unsqueeze(0)
+                        torch.tensor(self.feat, device=self.device)
+                        .unsqueeze(0)
+                        .unsqueeze(0)
                     )["image"].mode()[0, 0]
                 imgs_imagined.append(frame.cpu().numpy())
                 # V, _ = self.safety_margin(
@@ -1103,11 +1207,6 @@ class Dubins_WM_Env(gym.Env):
             obs_gt, rew_gt, done_gt, _, _ = gt_env.step(action)
 
             # Closed loop
-
-            if t == 0 and rew_gt < 0:
-                import ipdb
-
-                ipdb.set_trace()
             title_kwargs = {
                 "Nominal Policy": self.nominal_policy_type,
                 "Eps": self.config.safety_filter_eps,
@@ -1115,6 +1214,7 @@ class Dubins_WM_Env(gym.Env):
                 "V": f"{V:.2f}",
                 "R": f"{rew_gt:.2f}",
                 "A": f"{action.squeeze().item():.2f}",
+                "C": f"{done}",
             }
             img = gt_env.render(unsafe=unsafe, title_kwargs=title_kwargs)
 
@@ -1169,7 +1269,8 @@ class Dubins_WM_Env(gym.Env):
                 # Check if already in constraint
                 or np.linalg.norm(priv_state[:2] - self.gt_constraint[:2])
                 < self.gt_constraint[2]
-                or evaluate_V(obs=obs, policy=policy, critic=policy.critic) < 0.1
+                or evaluate_V(obs=obs, policy=policy, critic=policy.critic)
+                < 0.1 + self.config.safety_margin_threshold
             ):
                 obs, __ = self.reset()
                 priv_state = self.privileged_state.squeeze()
@@ -1194,12 +1295,12 @@ class Dubins_WM_Env(gym.Env):
                 with torch.no_grad():
                     V = evaluate_V(obs=obs, policy=policy, critic=policy.critic)
                     V = V.squeeze()
-                # if V < self.config.safety_filter_eps:
-                #     action = find_a(obs=obs, policy=policy)
-                # else:
-                #     action = self.nominal_policy()
+                if V < self.config.safety_filter_eps:
+                    action = find_a(obs=obs, policy=policy)
+                else:
+                    action = self.nominal_policy()
 
-                action = find_a(obs=obs, policy=policy)
+                # action = find_a(obs=obs, policy=policy)
 
                 obs, rew, done, _, info = self.step(action)
                 obs_gt, rew_gt, done_gt, _, _ = gt_env.step(action)

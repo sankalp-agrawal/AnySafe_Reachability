@@ -177,7 +177,7 @@ class RSSM(nn.Module):
 
     def obs_step(self, prev_state, prev_action, embed, is_first, sample=True):
         # initialize all prev_state
-        if prev_state == None or torch.sum(is_first) == len(is_first):
+        if prev_state is None or torch.sum(is_first) == len(is_first):
             prev_state = self.initial(len(is_first))
             prev_action = torch.zeros(
                 (len(is_first), self._num_actions), device=self._device
