@@ -66,6 +66,9 @@ class Franka_DINOWM_Env(gym.Env):
         self._reset_loader()
 
     def step(self, action):
+        import ipdb
+
+        ipdb.set_trace()
         ac_torch = torch.tensor([[action]], dtype=torch.float32).to(
             self.device
         )  # *self.scalar

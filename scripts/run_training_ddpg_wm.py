@@ -267,9 +267,9 @@ policy = DDPGPolicy(
 )
 
 state_type = "z_sem" if args.pass_semantic_state else "z"
-if args.pass_semantic_constraint:
+if args.pass_semantic_constraint and not args.pass_prototype:
     constraint_type = "z_c_sem"
-elif args.pass_prototype:
+elif args.pass_semantic_constraint and args.pass_prototype:
     constraint_type = "p"
 else:
     constraint_type = "z_c"

@@ -1180,13 +1180,13 @@ class Dubins_WM_Env(gym.Env):
             with torch.no_grad():
                 if isinstance(obs, dict):
                     frame = self.wm.heads["decoder"](
-                        torch.tensor(self.feat, device=self.device)
+                        torch.tensor(self.feat.flatten(), device=self.device)
                         .unsqueeze(0)
                         .unsqueeze(0)
                     )["image"].mode()[0, 0]
                 else:
                     frame = self.wm.heads["decoder"](
-                        torch.tensor(self.feat, device=self.device)
+                        torch.tensor(self.feat.flatten(), device=self.device)
                         .unsqueeze(0)
                         .unsqueeze(0)
                     )["image"].mode()[0, 0]

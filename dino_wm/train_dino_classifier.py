@@ -48,47 +48,36 @@ norm_transform = transforms.Normalize(
     mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
 )
 
+# Class is defined as:
+# If you are in circle centered on left third of screen, class 0
+# If you are in circle centered on middle third of screen, class 1
+# If you are in circle centered on right third of screen, class 2
+# If you are outside all circles, class 3
 
-# labels is a tensor of shape (B, 2)
-x_class_boundaries = [0, 224 // 3, 224 * 2 // 3, 224]  # x boundaries for 3 classes
-y_class_boundaries = [224 // 3, 224 * 2 // 3, 224]  # y boundaries for 3 classes
-# 3 * 2 = 6 classes in total
-nb_classes = (len(x_class_boundaries) - 1) * (len(y_class_boundaries) - 1)
-label_to_str = {
-    0: "Left Top",
-    1: "Left Bottom",
-    2: "Middle Top",
-    3: "Middle Bottom",
-    4: "Right Top",
-    5: "Right Bottom",
-}
-cmap = plt.cm.rainbow
-class_to_colors = {i: cmap(i / nb_classes) for i in range(nb_classes)}
+circle_centers = torch.tensor(
+    [
+        [224 // 6, 2 * 224 // 3],
+        [224 // 2, 2 * 224 // 3],
+        [224 * 5 // 6, 2 * 224 // 3],
+    ],
+    device="cuda:0",
+)
+radius = 30
+nb_classes = 4  # including the "safe" class
 
 
 def get_class_from_xy(labels):
-    assert labels.shape[-1] == 2, "Labels should have shape (B, 2)"
-    x_labels = torch.bucketize(
-        labels[..., 0], torch.tensor(x_class_boundaries, device=device)
-    )
-    y_labels = torch.bucketize(
-        labels[..., 1], torch.tensor(y_class_boundaries, device=device)
-    )
+    assert labels.shape[-1] == 2, "Labels should have shape (..., 2)"
 
-    class_labels = (x_labels - 1) * (len(y_class_boundaries) - 1) + (y_labels - 1)
-    class_labels[torch.logical_or(x_labels <= 0, y_labels <= 0)] = -1
-    class_labels[
-        torch.logical_or(
-            labels[..., 0] < x_class_boundaries[0],
-            labels[..., 0] >= x_class_boundaries[-1],
-        )
-    ] = -1
-    class_labels[
-        torch.logical_or(
-            labels[..., 1] < y_class_boundaries[0],
-            labels[..., 1] >= y_class_boundaries[-1],
-        )
-    ] = -1
+    # Compute pairwise distances: (..., num_centers)
+    distances = torch.norm(labels[..., None, :] - circle_centers[None, ...], dim=-1)
+
+    # Get nearest center index
+    class_labels = torch.argmin(distances, dim=-1)
+
+    # Mark "outside circle" as class 3
+    min_distances = torch.min(distances, dim=-1).values
+    class_labels = class_labels.masked_fill(min_distances > radius, 3)
 
     return class_labels
 

@@ -211,6 +211,10 @@ policy = DDPGPolicy(
     actor_gradient_steps=1,
 )
 
+import ipdb
+
+ipdb.set_trace()
+
 if args.latent_safe:
     log_path = os.path.join("logs/dinowm/latent_safe/class_{}".format(args.class_id))
 else:
