@@ -3,11 +3,16 @@ from typing import Optional
 
 import einops
 import gymnasium as gym
+import jax
+import jax.numpy as jnp
+import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from gymnasium import spaces
 from matplotlib.patches import Circle
+
+matplotlib.use("Agg")
 
 from PyHJ.reach_rl_gym_envs.utils.dubins_gt_solver import DubinsHJSolver
 from PyHJ.reach_rl_gym_envs.utils.env_eval_utils import get_eval_plot
@@ -66,18 +71,14 @@ class Dubins_Env(gym.Env):
         self.state[3] = np.cos(theta_next)
 
         # l(x) = (x-x0)^2 + (y-y0)^2 - r^2
-        rews = []
         x, y, r, u = (
             self.constraint  # x, y are the center of the circle, r is the radius, u is the active flag
         )
-        if u == 0:
-            rew = np.inf  # if the constraint is inactive, we set the reward to infinity
-        else:
-            rew = (self.state[0] - x) ** 2 + (self.state[1] - y) ** 2 - r**2
-        rews.append(rew)
-
-        rew = np.min(rews)  # take the minimum reward across all constraints
-
+        rew = (
+            (self.state[0] - self.constraint[0]) ** 2
+            + (self.state[1] - self.constraint[1]) ** 2
+            - self.constraint[2] ** 2
+        )
         terminated = False
         truncated = False
         if any(self.state[:2] > self.high[:2]) or any(self.state[:2] < self.low[:2]):
@@ -297,9 +298,18 @@ class Dubins_Env(gym.Env):
         elif self.distribution_type == "uni" or self.distribution_type == "ds":
             return np.array(
                 [
+                    np.random.uniform(low=-1.0, high=1.0),
+                    np.random.uniform(low=-1.0, high=1.0),
+                    np.random.uniform(low=0.5, high=0.5),
+                    1.0,
+                ]
+            )
+        elif self.distribution_type == "uni_small":
+            return np.array(
+                [
                     np.random.uniform(low=-0.5, high=0.5),
                     np.random.uniform(low=-0.5, high=0.5),
-                    np.random.uniform(low=0.1, high=0.5),
+                    np.random.uniform(low=0.5, high=0.5),
                     1.0,
                 ]
             )
@@ -328,7 +338,8 @@ class Dubins_Env(gym.Env):
     def get_eval_plot_f1(self, policy, critic):
         grid = np.load("/home/kensuke/HJRL/new_BRT_v1_w1.25.npy")
 
-        plot_idxs = [0, 7, 14, 20]
+        thetas = [3 * np.pi / 2, 7 * np.pi / 4, 0, np.pi / 4, np.pi / 2, np.pi]
+        plot_idxs = [int(np.round(theta / (2 * np.pi) * 51)) for theta in thetas]
 
         fig1, axes1 = plt.subplots(1, len(plot_idxs))
         fig2, axes2 = plt.subplots(1, len(plot_idxs))
@@ -432,10 +443,72 @@ class Dubins_Env(gym.Env):
                 unsafe = True
                 action = find_a(obs, policy)
             obs, rew, done, _, _ = self.step(action)
-            imgs.append(self.render(unsafe=unsafe, t=t))
+            title_kwargs = {"t": t}
+            imgs.append(self.render(unsafe=unsafe, title_kwargs=title_kwargs))
             t += 1
 
         imgs = np.array(imgs)  # (T, W, H, C)
         imgs = np.transpose(imgs, (0, 3, 1, 2))  # (T, C, W, H)
         return imgs
-        return imgs
+
+    def get_success_rate(self, policy, in_distribution=True):
+        def vector_to_bins(vec):
+            # vec = [x, y, theta]
+            bins = []
+
+            # First two components in [-1, 1]
+            for v in vec[:2]:
+                idx = int((v - (-1)) / (2 / 51))
+                idx = min(idx, 50)
+                bins.append(idx)
+
+            # Last component in [-pi, pi]
+            v = vec[2]
+            idx = int((v - (-np.pi)) / (2 * np.pi / 51))
+            idx = min(idx, 50)
+            bins.append(idx)
+
+            return bins
+
+        self.reset()
+
+        obs = self.obs
+        done = False
+        t = 0
+        success = 0
+        fail = 0
+        for _ in range(50):
+            self.reset(in_distribution=in_distribution)
+            obs = self.obs
+            gt_values = self.solver.solve(  # (nx, ny, nt)
+                constraints=self.constraint, constraints_shape=self.constraint_shape
+            )
+            indices = vector_to_bins(obs["state"])
+
+            valid = jnp.argwhere(gt_values > 0)
+            n = valid.shape[0]
+            idx = jax.random.randint(jax.random.PRNGKey(42), (), 0, n)
+
+            indices = valid[idx]
+            theta = 2 * np.pi * indices[2] / 51 - np.pi
+            self.obs["state"] = np.array(
+                [
+                    2 * indices[0] / 51 - 1,
+                    2 * indices[1] / 51 - 1,
+                    np.sin(theta),
+                    np.cos(theta),
+                ]
+            )
+
+            while not done:
+                # V = evaluate_V(obs=obs, policy=policy, critic=policy.critic1)
+                action = find_a(obs, policy)
+                obs, rew, done, _, _ = self.step(action)
+                t += 1
+                if done:
+                    success += 1
+                elif rew < 0:
+                    fail += 1
+                    done = True
+
+        return success / 50

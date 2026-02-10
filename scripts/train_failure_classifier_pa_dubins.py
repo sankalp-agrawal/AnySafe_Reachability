@@ -9,16 +9,17 @@ import einops
 import gymnasium  # as gym
 import matplotlib.pyplot as plt
 import numpy as np
-import PyHJ
 import ruamel.yaml as yaml
 import torch
 import torch.nn.functional as F
 import umap.umap_ as umap
-import wandb
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 # note: need to include the dreamerv3 repo for this
 from termcolor import cprint
+
+import PyHJ
+import wandb
 
 dreamer_dir = os.path.abspath("/home/sunny/AnySafe_Reachability/dreamerv3_torch")
 sys.path.append(dreamer_dir)
@@ -111,8 +112,6 @@ config = tools.set_wm_name(config)
 
 if config.pa["gpu_id"] != -1:
     torch.cuda.set_device(config.pa["gpu_id"])
-
-config.nb_classes = config.grid_size**2 + 1  # four quadrants in the 2D space
 
 
 # Setup wandb
@@ -306,7 +305,7 @@ for epoch in tqdm(range(0, config.pa["nb_epochs"]), desc="Training Epochs", posi
             # Normalize along the embedding dimension
             # (B T 512)
             sem_norm = F.normalize(
-                semantic_features[:, :], p=2, dim=-1
+                semantic_features, p=2, dim=-1
             )  # Each row becomes unit norm
 
             sem_norm = einops.rearrange(sem_norm, "B T Z -> (B T) Z")

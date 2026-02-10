@@ -72,31 +72,17 @@ class Actor(nn.Module):
             constraints[..., :-1]  # (B, C)
         )  # unmasked encodings of constraints (B, Z)
 
-        mask = constraints[..., -1] == 1  # (B)
-        mask_expanded = mask.unsqueeze(-1)  # (B, 1)
-
-        # Step 2: Zero out masked values and sum
-        encodings_masked = encodings * mask_expanded  # masked values are zeroed (B, Z)
-
-        # Step 3: Count number of True entries per batch
-        count = mask.sum(dim=-1, keepdim=True).clamp(
-            min=1
-        )  # shape (B, 1), clamp to avoid division by zero
-
-        # Step 4: Compute mean
-        encodings_masked = encodings_masked / count  # shape (B, Z)
-
         assert (
             torch.tensor(obs["state"], device=self.device).shape[:-1]
-            == encodings_masked.shape[:-1]
+            == encodings.shape[:-1]
         ), (
             "State and encodings must have the same shape except for the last dimension. Got {} and {}.".format(
                 torch.tensor(obs["state"], device=self.device).shape[:-1],
-                encodings_masked.shape[:-1],
+                encodings.shape[:-1],
             )
         )
         return torch.cat(
-            [torch.tensor(obs["state"], device=self.device), encodings_masked],
+            [torch.tensor(obs["state"], device=self.device), encodings],
             dim=-1,
         )
 
@@ -185,23 +171,8 @@ class Critic(nn.Module):
             constraints[..., :-1]  # (B, C)
         )  # unmasked encodings of constraints (B, Z)
 
-        mask = constraints[..., -1] == 1  # (B)
-        mask_expanded = mask.unsqueeze(-1)  # (B, 1)
-
-        # Step 2: Zero out masked values and sum
-        encodings_masked = encodings * mask_expanded  # masked values are zeroed (B, Z)
-        # sum_masked = encodings_masked  # .sum(dim=1)  # shape (B, Z)
-
-        # # Step 3: Count number of True entries per batch
-        # count = mask.sum(dim=1, keepdim=True).clamp(
-        #     min=1
-        # )  # shape (B, 1), clamp to avoid division by zero
-
-        # # Step 4: Compute mean
-        # encodings_masked = sum_masked / count  # shape (B, Z)
-
         return torch.cat(
-            [torch.tensor(obs["state"], device=self.device), encodings_masked], dim=-1
+            [torch.tensor(obs["state"], device=self.device), encodings], dim=-1
         )
 
     def forward(
@@ -328,15 +299,15 @@ class ActorProb(nn.Module):
         encodings_masked = (
             encodings * mask_expanded
         )  # masked values are zeroed (B, N, Z)
-        sum_masked = encodings_masked.sum(dim=1)  # shape (B, Z)
+        # sum_masked = encodings_masked.sum(dim=1)  # shape (B, Z)
 
         # Step 3: Count number of True entries per batch
-        count = mask.sum(dim=1, keepdim=True).clamp(
-            min=1
-        )  # shape (B, 1), clamp to avoid division by zero
+        # count = mask.sum(dim=1, keepdim=True).clamp(
+        #     min=1
+        # )  # shape (B, 1), clamp to avoid division by zero
 
         # Step 4: Compute mean
-        encodings_masked = sum_masked / count  # shape (B, Z)
+        # encodings_masked = encodings_masked / count  # shape (B, Z)
 
         return torch.cat(
             [torch.tensor(obs["state"], device=self.device), encodings_masked], dim=-1

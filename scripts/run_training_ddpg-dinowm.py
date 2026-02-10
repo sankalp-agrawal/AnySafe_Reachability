@@ -8,19 +8,18 @@ from torch.utils.tensorboard import SummaryWriter
 
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(parent_dir)
-
 import argparse
 import os
 import sys
-
-import wandb
 
 # from dreamer import make_dataset
 # NOTE: all the reach-avoid gym environments are in reach_rl_gym, the constraint information is output as an element of the info dictionary in gym.step() function
 from torch.utils.data import DataLoader
 from tqdm import *
 
+import wandb
 from dino_wm.dino_models import VideoTransformer
+from dino_wm.proxy_anchor.utils import load_state_dict_flexible
 from dino_wm.test_loader import SplitTrajectoryDataset
 from PyHJ.data import Collector, VectorReplayBuffer
 from PyHJ.env import DummyVectorEnv
@@ -73,11 +72,23 @@ if args.latent_safe:
         strict=False,
     )
 else:
-    wm.load_state_dict(
-        torch.load(
-            "/home/sunny/AnySafe_Reachability/dino_wm/checkpoints_pa/encoder_mrg_0.1_alpha_32_num_ex_all_ul_F.pth"
-        ),
-        strict=False,
+    # wm.load_state_dict(
+    #     torch.load(
+    #         "/home/sunny/AnySafe_Reachability/dino_wm/checkpoints_pa/encoder_mrg_0.1_alpha_32_bound_2x3.pth"
+    #     ),
+    #     strict=False,
+    # )
+
+    # wm.load_state_dict(
+    #     torch.load(
+    #         "/home/sunny/AnySafe_Reachability/dino_wm/checkpoints_pa/encoder_priv_mrg_0.1.pth"
+    #     ),
+    #     strict=False,
+    # )
+
+    load_state_dict_flexible(
+        wm,
+        "/home/sunny/AnySafe_Reachability/dino_wm/checkpoints_pa/encoder_priv.pth",
     )
 # wm.load_state_dict(
 #     torch.load(
@@ -200,6 +211,10 @@ policy = DDPGPolicy(
     actor_gradient_steps=1,
 )
 
+import ipdb
+
+ipdb.set_trace()
+
 if args.latent_safe:
     log_path = os.path.join("logs/dinowm/latent_safe/class_{}".format(args.class_id))
 else:
@@ -220,6 +235,11 @@ epoch = 0
 
 
 def save_best_fn(policy, epoch=epoch):
+    if not os.path.exists(log_path + "/epoch_id_{}".format(epoch)):
+        print("Just created the log directory!")
+        # print("log_path: ", log_path+"/epoch_id_{}".format(epoch))
+        os.makedirs(log_path + "/epoch_id_{}".format(epoch))
+
     if args.latent_safe:
         torch.save(
             policy.state_dict(),
@@ -232,19 +252,13 @@ def save_best_fn(policy, epoch=epoch):
         torch.save(
             policy.state_dict(),
             os.path.join(
-                log_path + "/epoch_id_{}".format(epoch), "rotvec_policy_prox.pth"
+                log_path + "/epoch_id_{}".format(epoch), "rotvec_policy_priv_180.pth"
             ),
         )
 
 
 def stop_fn(mean_rewards):
     return False
-
-
-if not os.path.exists(log_path + "/epoch_id_{}".format(epoch)):
-    print("Just created the log directory!")
-    # print("log_path: ", log_path+"/epoch_id_{}".format(epoch))
-    os.makedirs(log_path + "/epoch_id_{}".format(epoch))
 
 
 warmup = 1

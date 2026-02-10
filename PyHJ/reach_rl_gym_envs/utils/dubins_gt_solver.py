@@ -16,13 +16,10 @@ speed = 0.5
 # @title 3D Dubins Car Dynamics
 
 
-speed = 0.5
-
-
 class Dubins3D(dynamics.ControlAndDisturbanceAffineDynamics):
     def __init__(
         self,
-        max_turn_rate=1.0,
+        max_turn_rate=1.25,
         control_mode="max",
         disturbance_mode="min",
         control_space=None,

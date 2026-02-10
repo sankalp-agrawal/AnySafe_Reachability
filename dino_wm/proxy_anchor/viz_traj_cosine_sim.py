@@ -158,7 +158,7 @@ def make_comparison_video(
     # Tanh activation on selected outputs
     for key in ["ground_truth", "imagination"]:
         for subkey in (
-            ["pred_fail", "const1_cos_sim", "const2_cos_sim"]
+            ["pred_fail"]  # , "const1_cos_sim", "const2_cos_sim"]
             + [f"class_{_class}_prox" for _class in range(nb_classes)]
             + [f"class_{_class}_logit" for _class in range(nb_classes)]
         ):
@@ -323,6 +323,19 @@ def make_comparison_video(
     for x in range(BL - 1, T, EVAL_H):
         im_graph_ax.axvline(x, color="gray", linestyle="--", linewidth=0.5)
 
+    # Add horizontal lines for each class
+    for key in keys_to_plot:
+        if key in [f"class_{_class}_prox" for _class in range(nb_classes)]:
+            y = -np.tanh(
+                2 * transition.thresholds[keys_to_plot.index(key)].cpu().numpy()
+            )
+            gt_graph_ax.axhline(
+                y, color=colors[keys_to_plot.index(key)], linestyle="--", linewidth=0.5
+            )
+            im_graph_ax.axhline(
+                y, color=colors[keys_to_plot.index(key)], linestyle="--", linewidth=0.5
+            )
+
     # add vertical lines on ground truth graph every label transition
     transitions = (
         np.where(np.diff(output["ground_truth"]["gt_fail_label"], axis=0) != 0)[0] + 1
@@ -441,6 +454,7 @@ x_class_boundaries = np.array(
 y_class_boundaries = np.array(
     [224 // 3, 224 * 2 // 3, 224]
 )  # y boundaries for 3 classes
+# y_class_boundaries = np.array([0, 224])  # y boundaries for 3 classes
 # 3 * 2 = 6 classes in total
 nb_classes = (len(x_class_boundaries) - 1) * (len(y_class_boundaries) - 1)
 label_to_str = {
@@ -451,6 +465,11 @@ label_to_str = {
     4: "Right Top",
     5: "Right Bottom",
 }
+# label_to_str = {
+#     0: "Left",
+#     1: "Middle",
+#     2: "Right",
+# }
 cmap = plt.cm.rainbow
 class_to_colors = {i: cmap(i / nb_classes) for i in range(nb_classes)}
 
@@ -538,10 +557,19 @@ if __name__ == "__main__":
         dropout=0.1,
         nb_classes=nb_classes,
     ).to(device)
+    # load_state_dict_flexible(
+    #     transition,
+    #     "../checkpoints_pa/encoder_mrg_0.1_alpha_32_num_ex_all_ul_F.pth",
+    # )
     load_state_dict_flexible(
         transition,
-        "../checkpoints_pa/encoder_mrg_0.1_alpha_32_num_ex_all_ul_F.pth",
+        "/home/sunny/AnySafe_Reachability/dino_wm/checkpoints_pa/encoder_priv.pth",
     )
+    # load_state_dict_flexible(
+    #     transition,
+    #     "../checkpoints_pa/encoder_npair_mrg_0.1.pth",
+    # )
+
     # nb_classes = transition.proxies.shape[0]
     # load_state_dict_flexible(transition, "../checkpoints/best_testing.pth")
 
@@ -602,7 +630,7 @@ if __name__ == "__main__":
     )
     policy.load_state_dict(
         torch.load(
-            "/home/sunny/AnySafe_Reachability/scripts/logs/dinowm/epoch_id_16/rotvec_policy_prox.pth"
+            "/home/sunny/AnySafe_Reachability/scripts/logs/dinowm/epoch_id_16/rotvec_policy_priv.pth"
         )
     )
     split_policy = copy.deepcopy(policy)
@@ -631,8 +659,8 @@ if __name__ == "__main__":
         return data
 
     # select a random index
-    data_const_1 = randomly_select_constraint(const_data_loader, 4)  # 3, 103
-    data_const_2 = randomly_select_constraint(const_data_loader, 4)  # 1, 285
+    data_const_1 = randomly_select_constraint(const_data_loader, 1)  # 3, 103
+    data_const_2 = randomly_select_constraint(const_data_loader, 3)  # 1, 285
 
     # data_const_1 = {k: v[20:23].unsqueeze(0).to(device) for k, v in database[2].items()}
     # data_const_2 = {
@@ -656,6 +684,7 @@ if __name__ == "__main__":
                     inp1=data_const["cam_zed_embd"].to(device),
                     state=select_xyyaw_from_state(data_const["state"]).to(device),
                 ).detach()[0, -1],
+                "failure": data_const["failure"][0, -1].to(device),
             }
         )  # random class 0 frame
 
@@ -679,6 +708,8 @@ if __name__ == "__main__":
             ],
             "img_constraint1": constraint1["front"].unsqueeze(0).cpu().numpy(),
             "img_constraint2": constraint2["front"].unsqueeze(0).cpu().numpy(),
+            "const1_gt_label": copy.deepcopy(none_list),
+            "const2_gt_label": copy.deepcopy(none_list),
             "const1_cos_sim": copy.deepcopy(none_list),
             "const2_cos_sim": copy.deepcopy(none_list),
             "const1_value_fn": copy.deepcopy(none_list),
@@ -830,10 +861,11 @@ if __name__ == "__main__":
                         constraint["semantic_feat"],
                         dim=0,
                     ).item()
+                    # + 0.3
                 )
-                # What is cosine similarity with proxy and constraint?
+                # Debugging: What is cosine similarity with proxy and constraint?
                 F.cosine_similarity(
-                    transition.proxies[0].unsqueeze(0),
+                    transition.proxies[:],
                     constraint["semantic_feat"].unsqueeze(0),
                 )
 
@@ -846,6 +878,15 @@ if __name__ == "__main__":
                         device=device,
                     )
                 )
+
+                dist_const = torch.norm(
+                    data["failure"][BL - 1 + t].cpu() - constraint["failure"].cpu(),
+                    dim=-1,
+                ).item()
+
+                dist_const = -2 * (dist_const / 250) + 1
+
+                output["imagination"][f"{const_key}_gt_label"].append(-dist_const)
 
         lengths = [
             len(output["imagination"][key]) for key in output["imagination"].keys()
@@ -888,7 +929,7 @@ if __name__ == "__main__":
                     )
 
                     # pred_fail: [1, (T-1), 1]
-                    pred_fail = transition.fail_pred(latent)
+                    pred_fail = transition.fail_pred(inp1=inputs1, state=states)
 
                     # pred_labels: [1, (T-1), num_classes]
                     # pred_labels = transition.multi_class_head(latent)
@@ -966,6 +1007,7 @@ if __name__ == "__main__":
                         constraint["semantic_feat"],
                         dim=0,
                     ).item()
+                    # + 0.3
                 )
 
                 # Sanity Check: What is cosine similarity with proxy and constraint?
@@ -983,6 +1025,15 @@ if __name__ == "__main__":
                         device=device,
                     )
                 )
+
+                dist_const = torch.norm(
+                    data["failure"][BL - 1 + t].cpu() - constraint["failure"].cpu(),
+                    dim=-1,
+                ).item()
+
+                dist_const = -2 * (dist_const / 250) + 1
+
+                output["ground_truth"][f"{const_key}_gt_label"].append(-dist_const)
             # output["ground_truth"]["cosine_sim_prox"].append(cos_sim_fail * scale)
             # output["ground_truth"]["value_fn"].append(
             #     policy.critic(
@@ -1011,22 +1062,24 @@ if __name__ == "__main__":
         line_keys = [
             # "pred_fail",
             # "cosine_sim_prox",
-            # "const1_cos_sim",
+            "const1_cos_sim",
             # "const2_cos_sim",
+            "const1_gt_label",
+            # "const2_gt_label",
             # "value_fn_ken",
-            "gt_fail_label",
+            # "gt_fail_label",
             # "split_value_fn",
-            # "const1_value_fn",
+            "const1_value_fn",
             # "const2_value_fn",
         ]
         for _class in range(nb_classes):
             # line_keys.append(f"class_{_class}_logit")
             # line_keys.append(f"class_{_class}_prox")
             # line_keys.append(f"class_{_class}_value_fn")
+
             1 + 1
 
-        line_keys.append(f"class_{4}_prox")
-        line_keys.append(f"class_{4}_value_fn")
+        # line_keys.append(f"class_{5}_prox")
 
         make_comparison_video(
             output_dict=output,

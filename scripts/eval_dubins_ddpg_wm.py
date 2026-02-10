@@ -7,12 +7,10 @@ from collections import defaultdict
 
 import gymnasium  # as gym
 import matplotlib
-import matplotlib.pyplot as plt
 
 matplotlib.use("Agg")
 import numpy as np
 import torch
-from torch.utils.tensorboard import SummaryWriter
 
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(parent_dir)
@@ -39,12 +37,8 @@ from generate_data_traj_cont import get_frame
 from PIL import Image
 from termcolor import cprint
 
-import wandb
-from PyHJ.data import Collector, VectorReplayBuffer
 from PyHJ.env import DummyVectorEnv
 from PyHJ.exploration import GaussianNoise
-from PyHJ.trainer import offpolicy_trainer
-from PyHJ.utils import TensorboardLogger, WandbLogger
 from PyHJ.utils.net.common import Net
 from PyHJ.utils.net.continuous import Actor, Critic
 
@@ -128,15 +122,6 @@ config.num_actions = (
 )
 wm = models.WorldModel(env.observation_space_full, env.action_space, 0, config)
 
-# config = tools.set_wm_name(config)
-
-# ckpt_path = config.rssm_ckpt_path
-# ckpt_path = "logs/dreamer_dubins/dubins_mlp_obs_state_cnn_image_lz_None_sc_F_arrow_0.15/rssm_ckpt.pt"
-# checkpoint = torch.load(ckpt_path)
-# state_dict = {
-#     k[14:]: v for k, v in checkpoint["agent_state_dict"].items() if "_wm" in k
-# }
-# wm.load_state_dict(state_dict, strict=False)
 ckpt_path = "logs/checkpoints_pa/encoder_task_dubins-wm.pth"
 wm.load_state_dict(torch.load(ckpt_path), strict=False)
 wm.eval()
@@ -252,6 +237,7 @@ actor = Actor(
 ).to(args.device)
 actor_optim = torch.optim.AdamW(actor.parameters(), lr=args.actor_lr)
 
+
 policy = DDPGPolicy(
     critic,
     critic_optim,
@@ -266,67 +252,25 @@ policy = DDPGPolicy(
     actor_gradient_steps=args.actor_gradient_steps,
 )
 
+epoch_id = 6
+
 state_type = "z_sem" if args.pass_semantic_state else "z"
-if args.pass_semantic_constraint and not args.pass_prototype:
-    constraint_type = "z_c_sem"
-elif args.pass_semantic_constraint and args.pass_prototype:
-    constraint_type = "p"
-else:
-    constraint_type = "z_c"
+constraint_type = "z_c_sem" if args.pass_semantic_constraint else "z_c"
+policy.load_state_dict(
+    torch.load(
+        f"/home/sunny/AnySafe_Reachability/scripts/logs/dreamer_dubins/PyHJ/sim_{args.safety_margin_type}_dist_type_{args.env_dist_type}_V({state_type}, {constraint_type})_const_embd_{args.constraint_embedding_dim}/epoch_id_{epoch_id}/policy.pth"
+    )
+)
 
 log_path = os.path.join(
-    args.logdir + "/PyHJ",
-    f"sim_{args.safety_margin_type}_dist_type_{args.env_dist_type}_V({state_type}, {constraint_type})_const_embd_{args.constraint_embedding_dim}",
+    args.logdir + "/PyHJ", args.task, f"wm_dist_type_{args.env_dist_type}"
 )
-
-
-# collector
-train_collector = Collector(
-    policy,
-    train_envs,
-    VectorReplayBuffer(args.buffer_size, len(train_envs)),
-    exploration_noise=True,
-)
-test_collector = Collector(policy, test_envs)
-
-if args.warm_start_path is not None:
-    policy.load_state_dict(torch.load(args.warm_start_path))
-    args.kwargs = args.kwargs + "warmstarted"
-
-epoch = 0
-# writer = SummaryWriter(log_path, filename_suffix="_"+timestr+"epoch_id_{}".format(epoch))
-# logger = TensorboardLogger(writer)
-# log_path = (
-#     log_path
-#     + "/noise_{}_actor_lr_{}_critic_lr_{}_batch_{}_step_per_epoch_{}_kwargs_{}_seed_{}".format(
-#         args.exploration_noise,
-#         args.actor_lr,
-#         args.critic_lr,
-#         args.batch_size_pyhj,
-#         args.step_per_epoch,
-#         args.kwargs,
-#         args.seed,
-#     )
-# )
 
 
 if args.continue_training_epoch is not None:
     epoch = args.continue_training_epoch
     policy.load_state_dict(
         torch.load(os.path.join(log_path + "/epoch_id_{}".format(epoch), "policy.pth"))
-    )
-
-
-if args.continue_training_logdir is not None:
-    policy.load_state_dict(torch.load(args.continue_training_logdir))
-    # epoch = int(args.continue_training_logdir.split('_')[-9].split('_')[0])
-    epoch = args.continue_training_epoch
-
-
-def save_best_fn(policy, epoch=epoch):
-    torch.save(
-        policy.state_dict(),
-        os.path.join(log_path + "/epoch_id_{}".format(epoch), "policy.pth"),
     )
 
 
@@ -342,16 +286,10 @@ def fig_to_image(fig):
     return img.convert("RGB")
 
 
-if not os.path.exists(log_path + "/epoch_id_{}".format(epoch)):
-    print("Just created the log directory!")
-    # print("log_path: ", log_path+"/epoch_id_{}".format(epoch))
-    os.makedirs(log_path + "/epoch_id_{}".format(epoch))
-
-
 def make_cache(config, thetas):
     nx, ny = config.nx, config.ny
 
-    cache_file = os.path.normpath(os.path.join(log_path, "..", "cache.pkl"))
+    cache_file = os.path.join(log_path, "cache.pkl")
     if os.path.exists(cache_file):
         with open(cache_file, "rb") as f:
             cache = pickle.load(f)
@@ -361,7 +299,7 @@ def make_cache(config, thetas):
         elif set(cache.keys()) != set(thetas):
             print("Cache file exists but has different keys, recreating cache.")
         else:
-            print("Cache file exists and has correct dimensions, using it.")
+            print("Cache file exists and has correct dimensions and thetas, using it.")
             return cache
     else:
         print(f"Didn't find cache at {cache_file}, creating it.")
@@ -394,195 +332,130 @@ def make_cache(config, thetas):
         cache[theta] = [idxs, imgs_prev, theta_prev_lin]
 
     # pickle file
+    cache_file = os.path.join(log_path, "cache.pkl")
     with open(cache_file, "wb") as f:
         pickle.dump(cache, f)
     return cache
 
 
-if not os.path.exists(log_path + "/epoch_id_{}".format(epoch)):
-    print("Just created the log directory!")
-    # print("log_path: ", log_path+"/epoch_id_{}".format(epoch))
-    os.makedirs(log_path + "/epoch_id_{}".format(epoch))
 thetas = [3 * np.pi / 2, 7 * np.pi / 4, 0, np.pi / 4, np.pi / 2, np.pi]
 if args.debug:
     thetas = [0, np.pi / 6]
     print("Debug mode: using fewer thetas for debugging purposes.")
     args.step_per_epoch = 10
 cache = make_cache(config, thetas)
-logger = None
-warmup = args.warmup
-# plot1, plot2, plot3, metrics = env.get_eval_plot(
-#     cache=cache, thetas=thetas, config=config, policy=policy
-# )
 
-for iter in range(warmup + args.total_episodes):
-    if iter < warmup:
-        policy._gamma = 0  # for warmup the value fn
-        policy.warmup = True
-    else:
-        policy._gamma = config.gamma_pyhj
-        policy.warmup = False
+# env.config.env_dist_type = "v"
 
-    if args.continue_training_epoch is not None:
-        print(
-            "epoch: {}, remaining epochs: {}".format(
-                epoch // args.epoch, args.total_episodes - iter
-            )
-        )
-    else:
-        print(
-            "epoch: {}, remaining epochs: {}".format(iter, args.total_episodes - iter)
-        )
-    epoch = epoch + args.epoch
-    print("log_path: ", log_path + "/epoch_id_{}".format(epoch))
-    if args.total_episodes > 1:
-        writer = SummaryWriter(
-            log_path + "/epoch_id_{}".format(epoch)
-        )  # filename_suffix="_"+timestr+"_epoch_id_{}".format(epoch))
-    else:
-        if not os.path.exists(log_path + "/total_epochs_{}".format(epoch)):
-            print("Just created the log directory!")
-            print("log_path: ", log_path + "/total_epochs_{}".format(epoch))
-            os.makedirs(log_path + "/total_epochs_{}".format(epoch))
-        writer = SummaryWriter(
-            log_path + "/total_epochs_{}".format(epoch)
-        )  # filename_suffix="_"+timestr+"_epoch_id_{}".format(epoch))
-    if logger is None:
-        task_name = (
-            args.task
-        )  # .split("-")[:-1]  # Take everything before the last dash
-
-        wb_name_args = [
-            # f"{task_name}",
-            # "DDPG",
-            f"V({state_type}, {constraint_type})",
-            f"dist_type_{config.env_dist_type}",
-            f"sim_{config.safety_margin_type}_{config.safety_margin_threshold}{'*' if config.safety_margin_hard_threshold else ''}",
-            "proto" if config.pass_prototype else None,
-            f"critic_{config.critic_net}",
-            f"control_{config.control_net}",
-            # f"{config.wm_name}",
-        ]
-        wandb_name = ""
-        for arg in wb_name_args:
-            if arg is not None:
-                wandb_name += f"{arg}_"
-        wandb_name = wandb_name[:-1]  # Remove the last underscore
-        logger = WandbLogger(name=wandb_name, project="Dubins", config=config)
-        logger.load(writer)
-
-        wandb.define_metric("num_epochs", step_metric="num_epochs")
-        wandb.define_metric("*", step_metric="num_epochs")
-    logger = TensorboardLogger(writer)
-
-    # import pdb; pdb.set_trace()
-    result = offpolicy_trainer(
-        policy=policy,
-        train_collector=train_collector,
-        test_collector=test_collector,
-        max_epoch=args.epoch,
-        step_per_epoch=args.step_per_epoch,
-        step_per_collect=args.step_per_collect,
-        episode_per_test=args.test_num,
-        batch_size=args.batch_size_pyhj,
-        update_per_step=args.update_per_step,
-        stop_fn=stop_fn,
-        save_best_fn=save_best_fn,
-        logger=logger,
-    )
-
-    save_best_fn(policy, epoch=epoch)
-    for in_dist in [True, False]:
-        plot1, plot2, plot3, __ = env.get_eval_plot(
+for in_dist in [True]:
+    for i in range(5):
+        plot1, plot2, plot3, metric = env.get_eval_plot(
             cache=cache,
             thetas=thetas,
             config=config,
             policy=policy,
             in_distribution=in_dist,
         )
-        all_metrics = []
-        for __ in range(5):
-            all_metrics.append(
-                copy.deepcopy(
-                    env.get_eval_metrics(
-                        cache=cache,
-                        thetas=thetas,
-                        config=config,
-                        policy=policy,
-                        in_distribution=in_dist,
-                    )
+        plot1.savefig(f"results/plot_{i}.png", dpi=300, bbox_inches="tight")
+
+    all_metrics = []
+    for __ in range(50):
+        all_metrics.append(
+            copy.deepcopy(
+                env.get_eval_metrics(
+                    cache=cache,
+                    thetas=thetas,
+                    config=config,
+                    policy=policy,
+                    in_distribution=in_dist,
                 )
             )
-
-        aggregated = defaultdict(list)
-
-        for metrics in all_metrics:
-            for key, value in metrics.items():
-                aggregated[key].append(value)
-
-        # Compute averages
-        aggregate_metrics = {key: np.sum(values) for key, values in aggregated.items()}
-        metrics = {}
-        TPR = aggregate_metrics["TP"] / (
-            aggregate_metrics["TP"] + aggregate_metrics["FN"] + 1e-8
-        )
-        FPR = aggregate_metrics["FP"] / (
-            aggregate_metrics["FP"] + aggregate_metrics["TN"] + 1e-8
-        )
-        FNR = aggregate_metrics["FN"] / (
-            aggregate_metrics["TP"] + aggregate_metrics["FN"] + 1e-8
-        )
-        TNR = aggregate_metrics["TN"] / (
-            aggregate_metrics["TN"] + aggregate_metrics["FP"] + 1e-8
-        )
-        Accuracy = (aggregate_metrics["TP"] + aggregate_metrics["TN"]) / (
-            aggregate_metrics["TP"]
-            + aggregate_metrics["TN"]
-            + aggregate_metrics["FP"]
-            + aggregate_metrics["FN"]
-            + 1e-8
-        )
-        Precision = aggregate_metrics["TP"] / (
-            aggregate_metrics["TP"] + aggregate_metrics["FP"] + 1e-8
-        )
-        Recall = TPR
-        F1 = 2 * (Precision * Recall) / (Precision + Recall + 1e-8)
-        Balanced_Accuracy = 0.5 * (TPR + TNR)
-        metrics.update(
-            {
-                "TPR": TPR,
-                "FPR": FPR,
-                "FNR": FNR,
-                "TNR": TNR,
-                "Accuracy": Accuracy,
-                "Precision": Precision,
-                "Recall": Recall,
-                "F1": F1,
-                "Balanced_Accuracy": Balanced_Accuracy,
-            }
         )
 
-        in_dist_label = "in_dist" if in_dist else "out_dist"
-        wandb.log(
-            {
-                f"{in_dist_label}/binary_reach_avoid_plot": wandb.Image(plot1),
-                f"{in_dist_label}/continuous_plot": wandb.Image(plot2),
-                f"{in_dist_label}/safety_margin_function": wandb.Image(plot3),
-                **{f"{in_dist_label}/metric/{k}": v for k, v in metrics.items()},
-                "num_epochs": epoch - 1,
-            },
-        )
+    aggregated = defaultdict(list)
 
-    traj_imgs = env.get_trajectory(policy=policy)
-    wandb.log(
+    for metrics in all_metrics:
+        for key, value in metrics.items():
+            aggregated[key].append(value)
+
+    # Compute averages
+    aggregate_metrics = {key: np.sum(values) for key, values in aggregated.items()}
+
+    in_dist_label = "in_dist" if in_dist else "out_dist"
+
+    TPR = aggregate_metrics["TP"] / (
+        aggregate_metrics["TP"] + aggregate_metrics["FN"] + 1e-8
+    )
+    FPR = aggregate_metrics["FP"] / (
+        aggregate_metrics["FP"] + aggregate_metrics["TN"] + 1e-8
+    )
+    FNR = aggregate_metrics["FN"] / (
+        aggregate_metrics["FN"] + aggregate_metrics["TP"] + 1e-8
+    )
+    TNR = aggregate_metrics["TN"] / (
+        aggregate_metrics["TN"] + aggregate_metrics["FP"] + 1e-8
+    )
+    Accuracy = (aggregate_metrics["TP"] + aggregate_metrics["TN"]) / (
+        aggregate_metrics["TP"]
+        + aggregate_metrics["FP"]
+        + aggregate_metrics["FN"]
+        + aggregate_metrics["TN"]
+        + 1e-8
+    )
+    Balanced_Accuracy = 0.5 * (TPR + TNR)
+    Precision = aggregate_metrics["TP"] / (
+        aggregate_metrics["TP"] + aggregate_metrics["FP"] + 1e-8
+    )
+    Recall = TPR
+    F1 = 2 * (Precision * Recall) / (Precision + Recall + 1e-8)
+    Intersection = np.sum((aggregate_metrics["TP"]))
+    Union = np.sum(
+        (aggregate_metrics["TP"] + aggregate_metrics["FP"] + aggregate_metrics["FN"])
+    )
+    IOU = Intersection / (Union + 1e-8)
+    aggregate_metrics.update(
         {
-            "trajectory": wandb.Video(
-                np.array(traj_imgs),
-                fps=10,
-                format="mp4",
-            ),
-            "num_epochs": epoch - 1,
+            "TPR": TPR,
+            "FPR": FPR,
+            "FNR": FNR,
+            "TNR": TNR,
+            "Accuracy": Accuracy,
+            "Balanced Accuracy": Balanced_Accuracy,
+            "Precision": Precision,
+            "Recall": Recall,
+            "F1": F1,
+            "IOU": IOU,
         }
     )
 
-    plt.close()
+success_rate = env.get_success_rate(policy=policy)
+aggregate_metrics.update({"Success Rate": success_rate})
+print("Averaged metrics over 50 runs:")
+for key, value in aggregate_metrics.items():
+    print(f"{key}: {value}")
+
+# Save as mp4
+
+# trajs = []
+
+# for i in tqdm(range(30)):
+#     traj_imgs = env.get_trajectory(policy=policy)
+#     trajs.append(traj_imgs)
+
+# trajs = np.concatenate(trajs, axis=0)
+# # Save video as mp4 from numpy array
+# video_frames = np.transpose(trajs, (0, 2, 3, 1))
+# import imageio
+
+# imageio.mimsave("output.mp4", video_frames, fps=20)
+
+save_path = f"/home/sunny/AnySafe_Reachability/scripts/logs/dreamer_dubins/PyHJ/sim_{args.safety_margin_type}_dist_type_{args.env_dist_type}_V({state_type}, {constraint_type})_const_embd_{args.constraint_embedding_dim}/epoch_id_{epoch_id}"
+with open(f"{save_path}/metrics.txt", "w") as f:
+    for key, value in aggregate_metrics.items():
+        f.write(f"{key}: {value}\n")
+
+import ipdb
+
+ipdb.set_trace()
+
+# plt.close()

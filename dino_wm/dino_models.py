@@ -352,11 +352,25 @@ class VideoTransformer(nn.Module):
             nn.Linear(semantic_dim, 512),
         )
 
+        # self.semantic_encoder = nn.Sequential(
+        #     nn.LayerNorm(semantic_dim),
+        #     nn.Linear(semantic_dim, semantic_dim, bias=False),
+        #     nn.ReLU(inplace=True),
+        #     nn.Linear(semantic_dim, 512, bias=False),
+        # )
+
         self.margin_head = nn.Sequential(
             LayerNorm(semantic_dim),
             nn.Linear(semantic_dim, semantic_dim),
             nn.ReLU(),
             nn.Linear(semantic_dim, 1),
+        )
+
+        self.multi_class_classifier = nn.Sequential(
+            LayerNorm(semantic_dim),
+            nn.Linear(semantic_dim, semantic_dim),
+            nn.ReLU(),
+            nn.Linear(semantic_dim, nb_classes),
         )
 
         # self.margin_head = nn.Sequential(
@@ -408,10 +422,11 @@ class VideoTransformer(nn.Module):
         # Generate predictions
         pred1 = self.front_head(x)  # [B (T-1) N P]
         state_preds = self.state_pred(x)  # [B (T-1) S]
+        # fail_preds = self.fail_pred(x)  # [B (T-1) 1]
         fail_preds = self.fail_pred(inp1=pred1, state=state_preds)  # [B (T-1) 1]
 
         semantic_features = (  # [ B (T-1) E ] E - embedding dimension
-            self.semantic_embed(inp1=video1, state=states)
+            self.semantic_embed(inp1=pred1, state=state_preds)
         )
 
         if return_latent:
@@ -460,14 +475,19 @@ class VideoTransformer(nn.Module):
         x = rearrange(x, "b (s n) d -> b s n d", s=num_frames)
         return x
 
+    # def fail_pred(self, features):
+    #     # features = torch.mean(features, dim=-2)
+    #     fail_preds = self.margin_head(features)
+    #     fail_preds = torch.mean(fail_preds, dim=2)  # Average over patches
+    #     return fail_preds
+
     def fail_pred(self, inp1, state):
-        # features = torch.mean(features, dim=-2)
-        features = torch.cat(
+        features = torch.cat(  # [B T N (P + S)]
             (
-                inp1,
-                einops.repeat(state, 'b t s -> b t n s', n = inp1.shape[2])
+                inp1,  # [B T N P]
+                einops.repeat(state, "b t s -> b t n s", n=inp1.shape[2]),  # [B T N S]
             ),
-            dim = -1,
+            dim=-1,
         )
         fail_preds = self.margin_head(features)
         fail_preds = torch.mean(fail_preds, dim=2)  # Average over patches
@@ -489,6 +509,7 @@ class VideoTransformer(nn.Module):
             ),
             dim=-1,
         )
+        # features = inp1
         # semantic_features: [B T N E]
         # features = torch.norm(features, dim=-2)  # Average over patches
         # features = torch.mean(features, dim=-2)  # Average over patches
@@ -509,6 +530,22 @@ class VideoTransformer(nn.Module):
         xy_preds = self.xy_state_head(features)
         xy_preds = torch.mean(xy_preds, dim=2)  # Average over patches
         return xy_preds
+
+    def multi_class_pred(self, inp1, state):
+        features = torch.cat(  # [B T N (P + S)]
+            (
+                inp1,  # [B T N P]
+                einops.repeat(state, "b t s -> b t n s", n=inp1.shape[2]),  # [B T N S]
+            ),
+            dim=-1,
+        )
+        multi_class_preds = self.multi_class_classifier(features)
+        # Average over patches
+        # multi_class_preds: [B T nb_classes]
+        multi_class_preds = torch.mean(multi_class_preds, dim=2)
+        multi_class_preds = F.softmax(multi_class_preds, dim=-1)
+
+        return multi_class_preds
 
     @torch.no_grad()
     def get_dino_features(self, video: torch.Tensor) -> torch.Tensor:

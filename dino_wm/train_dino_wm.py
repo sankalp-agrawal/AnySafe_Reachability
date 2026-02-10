@@ -3,7 +3,6 @@ import random
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-import wandb
 from dino_decoder import VQVAE
 from dino_models import VideoTransformer, normalize_acs, select_xyyaw_from_state
 from einops import rearrange
@@ -13,6 +12,8 @@ from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from torchvision import transforms
 from tqdm import tqdm
+
+import wandb
 
 dino = torch.hub.load("facebookresearch/dinov2", "dinov2_vits14_reg")
 
@@ -293,6 +294,9 @@ if __name__ == "__main__":
                 output_state = data_state[:, 1:]
 
                 data_acs = eval_data["action"].to(device)
+                # import ipdb
+
+                # ipdb.set_trace()
                 data_acs = normalize_acs(data_acs, device)
                 acs = data_acs[:, :-1]
                 pred1, pred_state, _, __, latent = transition(

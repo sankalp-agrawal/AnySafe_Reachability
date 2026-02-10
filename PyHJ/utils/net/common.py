@@ -233,6 +233,7 @@ class Net(nn.Module):
                 "constraint_dim and constraint_embedding_dim must be set if "
                 "constraint is used in the network."
             )
+
             self.constraint_encoder = MLP(
                 input_dim=constraint_dim,
                 output_dim=constraint_embedding_dim,

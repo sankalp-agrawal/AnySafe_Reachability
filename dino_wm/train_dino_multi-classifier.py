@@ -1,5 +1,4 @@
 import random
-import sys
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -48,36 +47,48 @@ norm_transform = transforms.Normalize(
     mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
 )
 
-# Class is defined as:
-# If you are in circle centered on left third of screen, class 0
-# If you are in circle centered on middle third of screen, class 1
-# If you are in circle centered on right third of screen, class 2
-# If you are outside all circles, class 3
 
-circle_centers = torch.tensor(
-    [
-        [224 // 6, 2 * 224 // 3],
-        [224 // 2, 2 * 224 // 3],
-        [224 * 5 // 6, 2 * 224 // 3],
-    ],
-    device="cuda:0",
-)
-radius = 30
-nb_classes = 4  # including the "safe" class
+# labels is a tensor of shape (B, 2)
+x_class_boundaries = [0, 224 // 3, 224 * 2 // 3, 224]  # x boundaries for 3 classes
+y_class_boundaries = [224 // 3, 224 * 2 // 3, 224]  # y boundaries for 3 classes
+# 3 * 2 = 6 classes in total
+nb_classes = (len(x_class_boundaries) - 1) * (len(y_class_boundaries) - 1)
+label_to_str = {
+    0: "Left Top",
+    1: "Left Bottom",
+    2: "Middle Top",
+    3: "Middle Bottom",
+    4: "Right Top",
+    5: "Right Bottom",
+}
+cmap = plt.cm.rainbow
+class_to_colors = {i: cmap(i / nb_classes) for i in range(nb_classes)}
 
 
 def get_class_from_xy(labels):
-    assert labels.shape[-1] == 2, "Labels should have shape (..., 2)"
+    device = "cuda:0"
+    assert labels.shape[-1] == 2, "Labels should have shape (B, 2)"
+    x_labels = torch.bucketize(
+        labels[..., 0], torch.tensor(x_class_boundaries, device=device)
+    )
+    y_labels = torch.bucketize(
+        labels[..., 1], torch.tensor(y_class_boundaries, device=device)
+    )
 
-    # Compute pairwise distances: (..., num_centers)
-    distances = torch.norm(labels[..., None, :] - circle_centers[None, ...], dim=-1)
-
-    # Get nearest center index
-    class_labels = torch.argmin(distances, dim=-1)
-
-    # Mark "outside circle" as class 3
-    min_distances = torch.min(distances, dim=-1).values
-    class_labels = class_labels.masked_fill(min_distances > radius, 3)
+    class_labels = (x_labels - 1) * (len(y_class_boundaries) - 1) + (y_labels - 1)
+    class_labels[torch.logical_or(x_labels <= 0, y_labels <= 0)] = -1
+    class_labels[
+        torch.logical_or(
+            labels[..., 0] < x_class_boundaries[0],
+            labels[..., 0] >= x_class_boundaries[-1],
+        )
+    ] = -1
+    class_labels[
+        torch.logical_or(
+            labels[..., 1] < y_class_boundaries[0],
+            labels[..., 1] >= y_class_boundaries[-1],
+        )
+    ] = -1
 
     return class_labels
 
@@ -105,15 +116,7 @@ def fail_loss(pred, fail_data):
 
 
 if __name__ == "__main__":
-    assert len(sys.argv) == 2, "Please provide the class number as an argument."
-    _class = sys.argv[1]
-    assert _class.isdigit(), "Class number must be an integer."
-    _class = int(_class)
-    assert 0 <= _class < nb_classes, (
-        f"Class number must be between 0 and {nb_classes - 1}."
-    )
-    print(f"Training for class: {_class}")
-    wandb.init(project="Latent Safe", name=f"Classifier Class {_class} DINO")
+    wandb.init(project="Latent Safe", name="Multi Class Classifier")
 
     use_amp = True
     scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
@@ -132,13 +135,19 @@ if __name__ == "__main__":
     hdf5_file_test = "/home/sunny/data/sweeper/test/consolidated.h5"
 
     expert_data = SplitTrajectoryDataset(
-        hdf5_file, BL, split="train", num_test=0, only_pass_labeled_examples=True
+        hdf5_file,
+        BL,
+        split="train",
+        num_test=0,
+        only_pass_labeled_examples=True,
+        num_examples_per_class=-1,
+        xy_to_class_label_fn=get_class_from_xy,
     )
     expert_data_eval = SplitTrajectoryDataset(
-        hdf5_file, BL, split="test", num_test=5, only_pass_labeled_examples=True
+        hdf5_file_test, BL, split="train", num_test=0, only_pass_labeled_examples=True
     )
     expert_data_imagine = SplitTrajectoryDataset(
-        hdf5_file_test, 32, split="test", num_test=5, only_pass_labeled_examples=True
+        hdf5_file_test, 32, split="train", num_test=0, only_pass_labeled_examples=True
     )
 
     expert_loader = iter(DataLoader(expert_data, batch_size=BS, shuffle=True))
@@ -172,7 +181,7 @@ if __name__ == "__main__":
     # transition.load_state_dict(torch.load("checkpoints/best_testing.pth"), strict=False)
 
     for name, param in transition.named_parameters():
-        param.requires_grad = name.startswith("margin_head")
+        param.requires_grad = name.startswith("multi_class_classifier")
 
     data = next(expert_loader)
 
@@ -195,14 +204,16 @@ if __name__ == "__main__":
     # Forward pass
     optimizer = AdamW(
         [
-            {"params": transition.margin_head.parameters(), "lr": 5e-5},
+            {"params": transition.multi_class_classifier.parameters(), "lr": 5e-5},
         ]
     )
 
     best_eval = float("inf")
     best_fail = float("inf")
     iters = []
-    train_iter = 10000
+    train_iter = 20_000
+
+    criterion = torch.nn.CrossEntropyLoss()
 
     for i in tqdm(range(train_iter), desc="Training", unit="iter"):
         if i % len(expert_loader) == 0:
@@ -232,20 +243,24 @@ if __name__ == "__main__":
         optimizer.zero_grad()
 
         with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=use_amp):
-            pred1, pred_state, __, __, latent = transition(
-                inputs1, states, acs, return_latent=True
-            )
-            pred_fail = transition.fail_pred(inp1=output1, state=output_state)
+            # pred1, pred_state, __, __, latent = transition(
+            #     inputs1, states, acs, return_latent=True
+            # )
+            pred_fail = transition.multi_class_pred(inp1=output1, state=output_state)
             # gt_labels: [BS T]
             gt_labels = get_class_from_xy(data["failure"][:, 1:].to(device))
             # mask: [BS]
-            mask = (gt_labels[:, -1] != -1.0).squeeze()
-            gt_labels = (gt_labels[mask] == _class).float()  # [BS]
-            pred_fail = pred_fail[mask]
+            mask = gt_labels != -1.0
+            # ~(gt_labels[:, :] == -1.0).any(dim=-1).squeeze() --- IGNORE ---
+            gt_labels = (gt_labels[mask]).float()  # [BS]
+            pred_fail = pred_fail[mask, :]
             # Unsafe = 1.0, Safe = 0.0
-            loss = fail_loss(pred_fail.squeeze(), gt_labels)
+            loss = criterion(
+                pred_fail.reshape(-1, nb_classes), gt_labels.long().reshape(-1)
+            )
+            # loss = fail_loss(pred_fail.squeeze(), gt_labels)
 
-        pred_labels = (pred_fail < 0).float()
+        pred_labels = torch.argmax(pred_fail, dim=-1).float()
         true_labels = gt_labels
         # correct = (pred_labels.to(true_labels.device) == true_labels).float().sum()
         # accuracy = correct / (true_labels.shape[0] * true_labels.shape[1])
@@ -254,6 +269,17 @@ if __name__ == "__main__":
             pred_labels.flatten().cpu().numpy().astype(int),
         )
         wandb.log({"train_balanced_accuracy": balanced_accuracy})
+
+        # Confusion matrix
+        # wandb.log(
+        #     {
+        #         "train/confusion_matrix": wandb.plot.confusion_matrix(
+        #             preds=pred_labels.flatten().cpu().numpy(),
+        #             y_true=true_labels.flatten().cpu().numpy(),
+        #             class_names=list(label_to_str.values()),
+        #         )
+        #     }
+        # )
 
         scaler.scale(loss).backward()
         scaler.step(optimizer)
@@ -351,19 +377,24 @@ if __name__ == "__main__":
                 acs = data_acs[:, :-1]
                 acs = normalize_acs(acs, device)
 
-                pred1, pred_state, __, __ = transition(inputs1, states, acs)
-                pred_fail = transition.fail_pred(inp1=output1, state=output_state)
+                # pred1, pred_state, __, __ = transition(inputs1, states, acs)
+                pred_fail = transition.multi_class_pred(
+                    inp1=output1, state=output_state
+                )
 
                 gt_labels = get_class_from_xy(eval_data["failure"][:, 1:].to(device))
-                mask = (gt_labels[:, -1] != -1.0).squeeze()
+                mask = gt_labels != -1.0
 
-                gt_labels = (gt_labels[mask] == _class).float()  # [BS]
-                pred_fail = pred_fail[mask]
+                gt_labels = (gt_labels[mask]).float()  # [BS]
+                pred_fail = pred_fail[mask, :]
 
                 # 1 for unsafe, 0 for safe
-                loss = fail_loss(pred_fail, gt_labels)
+                loss = criterion(
+                    pred_fail.reshape(-1, nb_classes), gt_labels.long().reshape(-1)
+                )
+                # loss = fail_loss(pred_fail, gt_labels)
 
-            pred_labels = (pred_fail < 0).float()
+            pred_labels = (torch.argmax(pred_fail, dim=-1)).float()
             true_labels = gt_labels
             # correct = (pred_labels.to(true_labels.device) == true_labels).float().sum()
             # accuracy = correct / (true_labels.shape[0] * true_labels.shape[1])
@@ -373,11 +404,22 @@ if __name__ == "__main__":
             )
             wandb.log({"eval_balanced_accuracy": balanced_accuracy})
 
+            # Confusion matrix
+            wandb.log(
+                {
+                    "eval/confusion_matrix": wandb.plot.confusion_matrix(
+                        preds=pred_labels.flatten().cpu().numpy(),
+                        y_true=true_labels.flatten().cpu().numpy(),
+                        class_names=list(label_to_str.values()),
+                    )
+                }
+            )
+
             print(f"\rIter {i}, Eval Loss: {loss.item():.4f},")
 
             torch.save(
                 transition.state_dict(),
-                f"checkpoints_latent_safe/class_{_class}_classifier_dino.pth",
+                "checkpoints/multi_class_classifier_dino.pth",
             )
 
             if loss < best_eval:
@@ -385,7 +427,7 @@ if __name__ == "__main__":
                 print(f"New best at iter {i}, saving model.")
                 torch.save(
                     transition.state_dict(),
-                    f"checkpoints_latent_safe/class_{_class}_best_classifier_dino.pth",
+                    "checkpoints/best_multi_class_classifier_dino.pth",
                 )
 
             transition.train()
