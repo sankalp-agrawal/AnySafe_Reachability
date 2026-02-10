@@ -63,7 +63,7 @@ class Actor(nn.Module):
         """Preprocess the observation for the critic."""
         if set(obs.keys()) != set(["state", "constraints"]):
             raise NotImplementedError(
-                "obs beyond state and constraint is not supported yet."
+                f"obs beyond state and constraint is not supported yet. Recieved {obs.keys()}"
             )
         assert obs["constraints"].ndim == 2, "Constraints should be 2D tensor."
         constraints = torch.tensor(obs["constraints"], device=self.device)  # (B, C + 1)

@@ -79,6 +79,11 @@ def update_plot():
     width = images[current_idx].shape[1]
     third = width // 3
 
+    # update progress bar
+    progress = current_idx / len(images)
+    rect = plt.Rectangle((0, 0), int(progress * width), 10, color="salmon")
+    ax.add_patch(rect)
+
     ax.axis("off")
     fig.canvas.draw()
 
@@ -161,7 +166,7 @@ def postprocess_trajectory(traj_file, labels, label_type):
 plt.ion()
 
 if __name__ == "__main__":
-    directory = "/home/sunny/data/sweeper/test/optimal"
+    directory = "/data/sunny/sweeper/train/optimal"
     label_type = "separated_label"
     reset_regardless_of_label = False
     start_idx = 0
@@ -204,6 +209,10 @@ if __name__ == "__main__":
             ha="center",
             fontsize=12,
         )
+        # add progress bar
+        rect = plt.Rectangle((0, 0), 224, 10, color="lightgray")
+        ax.add_patch(rect)
+
 
         process_trajectory(traj_file)
         if images:
