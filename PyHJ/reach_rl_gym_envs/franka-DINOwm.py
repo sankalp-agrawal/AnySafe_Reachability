@@ -46,7 +46,7 @@ class Franka_DINOWM_Env(gym.Env):
                 shape=(397,),
                 dtype=np.float32,
             )
-        self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(3,), dtype=np.float32)
+        self.action_space = spaces.Box(low=-0.0, high=1.0, shape=(3,), dtype=np.float32)
         self.front_hist = None
         self.state_hist = None
         if self.pass_constraint:

@@ -9,6 +9,7 @@ import gym
 import torch
 import numpy as np
 from torch import nn
+import gymnasium
 from numba import njit
 from abc import ABC, abstractmethod
 from typing import Any, Dict, Tuple, Union, Optional, Callable
@@ -129,7 +130,9 @@ class BasePolicy_Annealing_Avoid(ABC, nn.Module):
         :return: action in the same form of input "act" but remap to the target action
             space.
         """
-        if isinstance(self.action_space, gym.spaces.Box) and \
+        if (isinstance(act, torch.Tensor)):
+            act = act.detach().cpu().numpy()
+        if (isinstance(self.action_space, gym.spaces.Box) or isinstance(self.action_space, gymnasium.spaces.box.Box)) and \
                 isinstance(act, np.ndarray):
             # currently this action mapping only supports np.ndarray action
             if self.action_bound_method == "clip":

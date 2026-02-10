@@ -353,10 +353,10 @@ class VideoTransformer(nn.Module):
         )
 
         self.margin_head = nn.Sequential(
-            LayerNorm(total_dim),
-            nn.Linear(total_dim, total_dim),
+            LayerNorm(semantic_dim),
+            nn.Linear(semantic_dim, semantic_dim),
             nn.ReLU(),
-            nn.Linear(total_dim, 1),
+            nn.Linear(semantic_dim, 1),
         )
 
         # self.margin_head = nn.Sequential(
@@ -408,7 +408,7 @@ class VideoTransformer(nn.Module):
         # Generate predictions
         pred1 = self.front_head(x)  # [B (T-1) N P]
         state_preds = self.state_pred(x)  # [B (T-1) S]
-        fail_preds = self.fail_pred(x)  # [B (T-1) 1]
+        fail_preds = self.fail_pred(inp1=pred1, state=state_preds)  # [B (T-1) 1]
 
         semantic_features = (  # [ B (T-1) E ] E - embedding dimension
             self.semantic_embed(inp1=video1, state=states)
@@ -460,8 +460,15 @@ class VideoTransformer(nn.Module):
         x = rearrange(x, "b (s n) d -> b s n d", s=num_frames)
         return x
 
-    def fail_pred(self, features):
+    def fail_pred(self, inp1, state):
         # features = torch.mean(features, dim=-2)
+        features = torch.cat(
+            (
+                inp1,
+                einops.repeat(state, 'b t s -> b t n s', n = inp1.shape[2])
+            ),
+            dim = -1,
+        )
         fail_preds = self.margin_head(features)
         fail_preds = torch.mean(fail_preds, dim=2)  # Average over patches
         return fail_preds

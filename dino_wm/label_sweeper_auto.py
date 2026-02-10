@@ -155,12 +155,17 @@ def postprocess_trajectory(traj_file, labels, label_type):
 plt.ion()
 
 if __name__ == "__main__":
-    directory = "/home/sunny/data/sweeper/test/optimal"
+    directory = "/data/sunny/sweeper/exp_3/"
     label_type = "xy_pos_label"
     reset_regardless_of_label = True
     start_idx = 0
     # Get all pickle files with "unsafe" in the filename
-    hdf5_files = [f for f in os.listdir(directory) if "traj" in f]
+    hdf5_files = []
+    for root, dirs, filenames in os.walk(directory):
+        for filename in filenames:
+            if "traj" in filename:
+                hdf5_files.append(os.path.join(root, filename))
+    # hdf5_files = [f for f in os.listdir(directory) if "traj" in f]
     hdf5_files = sorted(hdf5_files)
     print("total files:", len(hdf5_files))
     # Get the full paths
